@@ -1001,23 +1001,29 @@ async fn handle_mouse(
                 }
             }
             MouseEventKind::ScrollUp => {
+                let hit = ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row);
                 if matches!(app.focus, app::Focus::WsDiff)
-                    || matches!(
-                        ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row),
-                        Some(ui::screens::workspace::WorkspaceHit::DiffPane)
-                    )
+                    || matches!(hit, Some(ui::screens::workspace::WorkspaceHit::DiffPane))
                 {
                     app.ws_diff_scroll = app.ws_diff_scroll.saturating_sub(3);
+                } else if matches!(app.focus, app::Focus::WsTerminal)
+                    || matches!(hit, Some(ui::screens::workspace::WorkspaceHit::TerminalPane))
+                {
+                    let tab_id = app.active_tab_id();
+                    app.scroll_terminal_scrollback(id, &tab_id, 3);
                 }
             }
             MouseEventKind::ScrollDown => {
+                let hit = ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row);
                 if matches!(app.focus, app::Focus::WsDiff)
-                    || matches!(
-                        ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row),
-                        Some(ui::screens::workspace::WorkspaceHit::DiffPane)
-                    )
+                    || matches!(hit, Some(ui::screens::workspace::WorkspaceHit::DiffPane))
                 {
                     app.ws_diff_scroll = app.ws_diff_scroll.saturating_add(3);
+                } else if matches!(app.focus, app::Focus::WsTerminal)
+                    || matches!(hit, Some(ui::screens::workspace::WorkspaceHit::TerminalPane))
+                {
+                    let tab_id = app.active_tab_id();
+                    app.scroll_terminal_scrollback(id, &tab_id, -3);
                 }
             }
             _ => {}

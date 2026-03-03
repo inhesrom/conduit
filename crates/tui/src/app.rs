@@ -340,6 +340,17 @@ impl TuiApp {
         state.parser_mut(tab_id).set_size(rows, cols);
     }
 
+    pub fn scroll_terminal_scrollback(&mut self, id: WorkspaceId, tab_id: &str, delta: isize) {
+        let state = self
+            .terminal_state
+            .entry(id)
+            .or_insert_with(WorkspaceTerminalState::new);
+        let parser = state.parser_mut(tab_id);
+        let current = parser.screen().scrollback() as isize;
+        let next = (current + delta).max(0) as usize;
+        parser.set_scrollback(next);
+    }
+
     pub fn should_send_resize(
         &mut self,
         id: WorkspaceId,
