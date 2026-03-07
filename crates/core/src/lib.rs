@@ -15,7 +15,7 @@ use tokio::sync::{broadcast, mpsc};
 use protocol::{AttentionLevel, Command, Event, WorkspaceSummary};
 use state::{AppState, Workspace};
 use uuid::Uuid;
-use workspace::attention::{append_recent_output, detect_needs_input_text};
+use workspace::attention::AttentionDetector;
 use workspace::git::{
     checkout_branch, checkout_remote_branch, commit, create_branch, diff_commit, diff_file,
     git_fetch, git_pull, git_push, refresh_git, stage_all, stage_file, unstage_all, unstage_file,
@@ -387,26 +387,32 @@ pub fn spawn_core() -> CoreHandle {
                                     let cmd_tx_outputs = cmd_tx_internal.clone();
                                     let out_tab_id = tid.clone();
                                     tokio::spawn(async move {
-                                    let mut recent_agent_output = String::new();
-                                    let mut idle_armed = false;
-                                    let mut idle_triggered = false;
-                                    const AGENT_IDLE_NEEDS_INPUT_SECS: u64 = 10;
+                                    let mut detector = AttentionDetector::new();
+                                    let mut attention_active = false;
+                                    const SETTLE_MS: u64 = 500;
+
+                                    let is_agent = matches!(kind, protocol::TerminalKind::Agent);
+                                    let mut settle_armed = false;
 
                                     loop {
-                                        let out = if matches!(kind, protocol::TerminalKind::Agent)
-                                            && idle_armed
-                                        {
+                                        let out = if is_agent && settle_armed {
                                             tokio::select! {
-                                                maybe_out = out_rx.recv() => maybe_out,
-                                                _ = tokio::time::sleep(Duration::from_secs(AGENT_IDLE_NEEDS_INPUT_SECS)) => {
-                                                    idle_armed = false;
-                                                    idle_triggered = true;
-                                                    let _ = cmd_tx_outputs
-                                                        .send(Command::SetAttention {
-                                                            id,
-                                                            level: AttentionLevel::NeedsInput,
-                                                        })
-                                                        .await;
+                                                maybe_out = out_rx.recv() => {
+                                                    // New output arrived before settle timeout —
+                                                    // reset the timer by continuing the loop.
+                                                    maybe_out
+                                                }
+                                                _ = tokio::time::sleep(Duration::from_millis(SETTLE_MS)) => {
+                                                    settle_armed = false;
+                                                    if detector.check_for_prompt() {
+                                                        attention_active = true;
+                                                        let _ = cmd_tx_outputs
+                                                            .send(Command::SetAttention {
+                                                                id,
+                                                                level: AttentionLevel::NeedsInput,
+                                                            })
+                                                            .await;
+                                                    }
                                                     continue;
                                                 }
                                             }
@@ -418,31 +424,16 @@ pub fn spawn_core() -> CoreHandle {
 
                                         match out {
                                             TerminalOutput::Bytes(bytes) => {
-                                                if matches!(kind, protocol::TerminalKind::Agent) {
-                                                    if idle_triggered {
+                                                if is_agent {
+                                                    if attention_active {
+                                                        attention_active = false;
                                                         let _ = cmd_tx_outputs
                                                             .send(Command::ClearAttention { id })
                                                             .await;
-                                                        idle_triggered = false;
                                                     }
-
-                                                    append_recent_output(
-                                                        &mut recent_agent_output,
-                                                        &bytes,
-                                                    );
-                                                    if detect_needs_input_text(&recent_agent_output)
-                                                    {
-                                                        let _ = cmd_tx_outputs
-                                                            .send(Command::SetAttention {
-                                                                id,
-                                                                level: AttentionLevel::NeedsInput,
-                                                            })
-                                                            .await;
-                                                        // Prevent stale prompt text from re-triggering
-                                                        // until fresh prompt output appears.
-                                                        recent_agent_output.clear();
+                                                    if detector.append(&bytes) {
+                                                        settle_armed = true;
                                                     }
-                                                    idle_armed = true;
                                                 }
                                                 let data_b64 =
                                                     base64::engine::general_purpose::STANDARD

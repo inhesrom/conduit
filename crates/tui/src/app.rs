@@ -341,11 +341,16 @@ impl TuiApp {
     }
 
     pub fn append_terminal_bytes(&mut self, id: WorkspaceId, tab_id: &str, bytes: &[u8]) {
+        let is_new_ws = !self.terminal_state.contains_key(&id);
         let state = self
             .terminal_state
             .entry(id)
             .or_insert_with(WorkspaceTerminalState::new);
+        let is_new_tab = !state.tabs.contains_key(tab_id);
         state.tab_mut(tab_id).append_bytes(bytes);
+        if is_new_ws || is_new_tab {
+            self.last_resize_sent.remove(&(id, tab_id.to_string()));
+        }
     }
 
     pub fn reset_terminal(&mut self, id: WorkspaceId, tab_id: &str) {
@@ -354,14 +359,22 @@ impl TuiApp {
             .entry(id)
             .or_insert_with(WorkspaceTerminalState::new);
         state.tab_mut(tab_id).reset();
+        self.last_resize_sent.remove(&(id, tab_id.to_string()));
     }
 
     pub fn resize_terminal_parser(&mut self, id: WorkspaceId, tab_id: &str, cols: u16, rows: u16) {
-        let state = self
-            .terminal_state
-            .entry(id)
-            .or_insert_with(WorkspaceTerminalState::new);
-        state.tab_mut(tab_id).rebuild_for_size(cols, rows);
+        if let Some(state) = self.terminal_state.get_mut(&id) {
+            if let Some(tab) = state.tabs.get_mut(tab_id) {
+                tab.rebuild_for_size(cols, rows);
+            }
+        }
+    }
+
+    pub fn has_terminal_tab(&self, id: WorkspaceId, tab_id: &str) -> bool {
+        self.terminal_state
+            .get(&id)
+            .and_then(|s| s.tabs.get(tab_id))
+            .is_some()
     }
 
     pub fn scroll_terminal_scrollback(&mut self, id: WorkspaceId, tab_id: &str, delta: isize) {

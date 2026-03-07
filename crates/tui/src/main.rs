@@ -317,11 +317,6 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        terminal.draw(|frame| match app.route {
-            Route::Home => ui::screens::home::render(frame, frame.area(), &app),
-            Route::Workspace { .. } => ui::screens::workspace::render(frame, frame.area(), &app),
-        })?;
-
         if let Route::Workspace { id } = app.route {
             if let Ok(size) = terminal.size() {
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
@@ -330,7 +325,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 let rows = inner.height.max(1);
                 let tid = app.active_tab_id();
                 let kind = app.active_tab_kind();
-                if app.should_send_resize(id, &tid, cols, rows) {
+                if app.has_terminal_tab(id, &tid) && app.should_send_resize(id, &tid, cols, rows) {
                     app.resize_terminal_parser(id, &tid, cols, rows);
                     let _ = backend
                         .cmd_tx
@@ -345,6 +340,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 }
             }
         }
+
+        terminal.draw(|frame| match app.route {
+            Route::Home => ui::screens::home::render(frame, frame.area(), &app),
+            Route::Workspace { .. } => ui::screens::workspace::render(frame, frame.area(), &app),
+        })?;
 
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
