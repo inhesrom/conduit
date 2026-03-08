@@ -10,6 +10,8 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::ui::widgets::tile_grid;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     HomeGrid,
@@ -142,15 +144,23 @@ impl TuiApp {
         self.focus = Focus::HomeGrid;
     }
 
-    pub fn move_home_selection(&mut self, delta: isize) {
-        if self.workspaces.is_empty() {
+    pub fn move_home_selection(&mut self, dx: isize, dy: isize) {
+        let cols = tile_grid::COLS as usize;
+        let len = self.workspaces.len();
+        if len == 0 {
             self.home_selected = 0;
             return;
         }
 
-        let len = self.workspaces.len() as isize;
-        let next = (self.home_selected as isize + delta).clamp(0, len - 1);
-        self.home_selected = next as usize;
+        let cur_col = (self.home_selected % cols) as isize;
+        let cur_row = (self.home_selected / cols) as isize;
+        let max_row = ((len - 1) / cols) as isize;
+
+        let new_col = (cur_col + dx).clamp(0, (cols - 1) as isize);
+        let new_row = (cur_row + dy).clamp(0, max_row);
+
+        let new_idx = (new_row as usize) * cols + (new_col as usize);
+        self.home_selected = new_idx.min(len - 1);
     }
 
     pub fn set_home_selection(&mut self, index: usize) {

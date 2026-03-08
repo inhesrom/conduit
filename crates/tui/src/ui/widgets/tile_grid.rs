@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-const COLS: u16 = 3;
+pub const COLS: u16 = 3;
 pub const TILE_H: u16 = 9;
 pub const ORANGE: Color = Color::Rgb(255, 165, 0);
 

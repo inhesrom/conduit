@@ -478,14 +478,14 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         }
                                     }
                                     KeyCode::Down | KeyCode::Char('j') => {
-                                        app.move_home_selection(1)
+                                        app.move_home_selection(0, 1)
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => app.move_home_selection(-1),
+                                    KeyCode::Up | KeyCode::Char('k') => app.move_home_selection(0, -1),
                                     KeyCode::Left | KeyCode::Char('h') => {
-                                        app.move_home_selection(-1)
+                                        app.move_home_selection(-1, 0)
                                     }
                                     KeyCode::Right | KeyCode::Char('l') => {
-                                        app.move_home_selection(1)
+                                        app.move_home_selection(1, 0)
                                     }
                                     KeyCode::Char('n') => {
                                         let cwd = std::env::current_dir()
