@@ -15,7 +15,7 @@ use tile_grid::ORANGE;
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let chunks = home_chunks(area);
     render_dashboard(frame, chunks[0], app);
-    tile_grid::render(frame, chunks[1], &app.workspaces, app.home_selected, app.flash_on);
+    tile_grid::render(frame, chunks[1], &app.workspaces, app.home_selected, app.flash_on, app.settings.attention_notifications);
     footer::render(frame, chunks[2], app);
     render_modals(frame, area, app);
 }
@@ -118,6 +118,52 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 ),
             modal,
         );
+    }
+
+    if app.is_settings_open() {
+        let modal = centered_rect(area, 50, 8);
+        frame.render_widget(Clear, modal);
+
+        let cursor = if app.settings_selected == 0 { "> " } else { "  " };
+        let toggle = render_toggle(app.settings.attention_notifications);
+        let row = Line::from(vec![
+            Span::styled(cursor, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("Attention notifications   "),
+            toggle,
+        ]);
+        let hint = Line::from(vec![
+            Span::styled("j/k", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Space", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" close", Style::default().fg(Color::DarkGray)),
+        ]);
+        let body = vec![Line::from(""), row, Line::from(""), Line::from(""), hint];
+
+        frame.render_widget(
+            Paragraph::new(body).block(
+                Block::default()
+                    .title(" Settings ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+            modal,
+        );
+    }
+}
+
+fn render_toggle(enabled: bool) -> Span<'static> {
+    if enabled {
+        Span::styled(
+            "━━● ON ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("OFF ●━━", Style::default().fg(Color::DarkGray))
     }
 }
 

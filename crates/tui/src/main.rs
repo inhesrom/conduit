@@ -360,6 +360,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_renaming_tab()
                         && !app.is_committing()
                         && !app.is_creating_branch()
+                        && !app.is_settings_open()
                         && !matches!(app.focus, app::Focus::WsTerminal)
                     {
                         break;
@@ -367,7 +368,23 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
                     match app.route {
                         Route::Home => {
-                            if app.is_confirming_delete() {
+                            if app.is_settings_open() {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('S') => app.close_settings(),
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        app.settings_selected = (app.settings_selected + 1)
+                                            .min(app.settings_count() - 1);
+                                    }
+                                    KeyCode::Up | KeyCode::Char('k') => {
+                                        app.settings_selected =
+                                            app.settings_selected.saturating_sub(1);
+                                    }
+                                    KeyCode::Enter | KeyCode::Char(' ') => {
+                                        app.toggle_selected_setting()
+                                    }
+                                    _ => {}
+                                }
+                            } else if app.is_confirming_delete() {
                                 match key.code {
                                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                                         if let Some(id) = app.take_delete_workspace() {
@@ -453,6 +470,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         app.begin_add_workspace(cwd);
                                     }
                                     KeyCode::Char('D') => app.begin_delete_workspace(),
+                                    KeyCode::Char('S') => app.open_settings(),
                                     KeyCode::Char('!') => {
                                         if let Some(id) = app.selected_workspace_id() {
                                             let level = app

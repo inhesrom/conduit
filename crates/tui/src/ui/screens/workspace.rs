@@ -206,10 +206,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         Route::Workspace { id } => Some(id),
         _ => None,
     };
-    let attention = ws_id
-        .and_then(|id| app.workspaces.iter().find(|w| w.id == id))
-        .map(|w| w.attention)
-        .unwrap_or(AttentionLevel::None);
+    let attention = app.effective_attention(
+        ws_id
+            .and_then(|id| app.workspaces.iter().find(|w| w.id == id))
+            .map(|w| w.attention)
+            .unwrap_or(AttentionLevel::None),
+    );
 
     let title = ws_id
         .and_then(|id| app.workspaces.iter().find(|w| w.id == id))

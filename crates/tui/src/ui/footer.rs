@@ -43,6 +43,14 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     gap(),
                     key("Esc"), desc(" cancel"),
                 ]
+            } else if app.is_settings_open() {
+                vec![
+                    key("j/k"), desc(" navigate"),
+                    gap(),
+                    key("Space"), desc(" toggle"),
+                    gap(),
+                    key("Esc"), desc(" close"),
+                ]
             } else if app.is_confirming_delete() {
                 vec![
                     key("Y"), desc(" confirm delete"),
@@ -58,6 +66,8 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key("D"), desc(" delete"),
                     gap(),
                     key("!"), desc(" attention"),
+                    gap(),
+                    key("S"), desc(" settings"),
                     gap(),
                     key("q"), desc(" quit"),
                 ]

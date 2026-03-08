@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use protocol::{BranchInfo, GitState, RemoteBranchInfo, Route, TerminalKind, WorkspaceId, WorkspaceSummary};
+use protocol::{AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, Route, TerminalKind, WorkspaceId, WorkspaceSummary};
 use ratatui::{
     style::{Color as TuiColor, Modifier, Style},
     text::{Line, Span},
@@ -57,6 +57,9 @@ pub struct TuiApp {
     pub git_action_message: Option<(String, Instant)>,
     pub commit_input: Option<String>,
     pub create_branch_input: Option<String>,
+    pub settings: Settings,
+    pub settings_open: bool,
+    pub settings_selected: usize,
 }
 
 impl Default for TuiApp {
@@ -93,6 +96,9 @@ impl Default for TuiApp {
             git_action_message: None,
             commit_input: None,
             create_branch_input: None,
+            settings: load_settings(),
+            settings_open: false,
+            settings_selected: 0,
         }
     }
 }
@@ -515,6 +521,39 @@ impl TuiApp {
         self.create_branch_input.is_some()
     }
 
+    pub fn is_settings_open(&self) -> bool {
+        self.settings_open
+    }
+
+    pub fn open_settings(&mut self) {
+        self.settings_open = true;
+        self.settings_selected = 0;
+    }
+
+    pub fn close_settings(&mut self) {
+        self.settings_open = false;
+    }
+
+    pub fn toggle_selected_setting(&mut self) {
+        match self.settings_selected {
+            0 => self.settings.attention_notifications = !self.settings.attention_notifications,
+            _ => {}
+        }
+        let _ = save_settings(&self.settings);
+    }
+
+    pub fn settings_count(&self) -> usize {
+        1
+    }
+
+    pub fn effective_attention(&self, raw: AttentionLevel) -> AttentionLevel {
+        if self.settings.attention_notifications {
+            raw
+        } else {
+            AttentionLevel::None
+        }
+    }
+
     pub fn begin_create_branch(&mut self) {
         self.create_branch_input = Some(String::new());
     }
@@ -881,4 +920,55 @@ fn tabs_persist_path() -> Option<PathBuf> {
         return None;
     };
     Some(base.join("multiws").join("tui_tabs.json"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default = "default_true")]
+    pub attention_notifications: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            attention_notifications: true,
+        }
+    }
+}
+
+fn settings_persist_path() -> Option<PathBuf> {
+    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg)
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".config")
+    } else {
+        return None;
+    };
+    Some(base.join("multiws").join("settings.json"))
+}
+
+fn load_settings() -> Settings {
+    let Some(path) = settings_persist_path() else {
+        return Settings::default();
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Settings::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_settings(settings: &Settings) -> anyhow::Result<()> {
+    let Some(path) = settings_persist_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let raw = serde_json::to_string_pretty(settings)?;
+    fs::write(path, raw)?;
+    Ok(())
 }

@@ -21,6 +21,7 @@ pub fn render(
     items: &[WorkspaceSummary],
     selected: usize,
     flash_on: bool,
+    attention_enabled: bool,
 ) {
     if items.is_empty() {
         render_empty_state(frame, area);
@@ -33,7 +34,7 @@ pub fn render(
         if tile.width < 8 || tile.height < 9 {
             continue;
         }
-        render_tile(frame, tile, ws, i == selected, flash_on);
+        render_tile(frame, tile, ws, i == selected, flash_on, attention_enabled);
     }
 }
 
@@ -87,8 +88,9 @@ fn render_tile(
     ws: &WorkspaceSummary,
     is_selected: bool,
     flash_on: bool,
+    attention_enabled: bool,
 ) {
-    let border_style = tile_border_style(ws, is_selected, flash_on);
+    let border_style = tile_border_style(ws, is_selected, flash_on, attention_enabled);
     let border_type = if is_selected {
         BorderType::Thick
     } else {
@@ -100,7 +102,7 @@ fn render_tile(
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     ));
-    let title_right = build_status_badge(&ws.attention, flash_on);
+    let title_right = build_status_badge(&ws.attention, flash_on, attention_enabled);
     let body_lines = build_body_lines(ws);
 
     let block = Block::default()
@@ -114,7 +116,16 @@ fn render_tile(
 }
 
 /// Computes the border style based on attention level, selection, and flash phase.
-fn tile_border_style(ws: &WorkspaceSummary, is_selected: bool, flash_on: bool) -> Style {
+fn tile_border_style(ws: &WorkspaceSummary, is_selected: bool, flash_on: bool, attention_enabled: bool) -> Style {
+    if !attention_enabled {
+        return if is_selected {
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+    }
     let base = match ws.attention {
         AttentionLevel::Error => {
             if flash_on {
@@ -152,7 +163,10 @@ fn tile_border_style(ws: &WorkspaceSummary, is_selected: bool, flash_on: bool) -
 
 /// Builds the right-aligned status badge for attention states.
 /// Returns an empty line for non-attention tiles.
-fn build_status_badge(attention: &AttentionLevel, flash_on: bool) -> Line<'static> {
+fn build_status_badge(attention: &AttentionLevel, flash_on: bool, attention_enabled: bool) -> Line<'static> {
+    if !attention_enabled {
+        return Line::from("");
+    }
     match attention {
         AttentionLevel::NeedsInput => {
             let style = Style::default().fg(ORANGE);
