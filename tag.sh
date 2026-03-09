@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=$(grep '^version' crates/tui/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+VERSION=$(grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
 TAG="v$VERSION"
 
 if git rev-parse "$TAG" >/dev/null 2>&1; then
