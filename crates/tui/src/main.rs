@@ -450,6 +450,52 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, data: &[u8]) -
     Ok(())
 }
 
+/// Rolling buffer that stores recent terminal events for replay on client reconnect.
+/// Caps total size at ~2 MB to bound memory usage.
+struct EventHistory {
+    /// Serialized event frames (each is a JSON payload).
+    frames: Vec<Vec<u8>>,
+    total_bytes: usize,
+}
+
+const EVENT_HISTORY_MAX_BYTES: usize = 2 * 1024 * 1024; // 2 MB
+
+impl EventHistory {
+    fn new() -> Self {
+        Self {
+            frames: Vec::new(),
+            total_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, payload: Vec<u8>) {
+        self.total_bytes += payload.len();
+        self.frames.push(payload);
+        // Evict oldest frames when over budget
+        while self.total_bytes > EVENT_HISTORY_MAX_BYTES && !self.frames.is_empty() {
+            let removed = self.frames.remove(0);
+            self.total_bytes -= removed.len();
+        }
+    }
+
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        self.frames.clone()
+    }
+}
+
+/// Returns true if the event is worth replaying to a reconnecting client.
+fn is_replayable(evt: &CoreEvent) -> bool {
+    matches!(
+        evt,
+        CoreEvent::TerminalOutput { .. }
+            | CoreEvent::TerminalStarted { .. }
+            | CoreEvent::TerminalExited { .. }
+            | CoreEvent::WorkspaceList { .. }
+            | CoreEvent::WorkspaceGitUpdated { .. }
+            | CoreEvent::WorkspaceAttentionChanged { .. }
+    )
+}
+
 async fn run_daemon(name: &str) -> Result<()> {
     let sock_path = session_socket_path(name)?;
     if let Some(parent) = sock_path.parent() {
@@ -471,11 +517,36 @@ async fn run_daemon(name: &str) -> Result<()> {
     }
     let _guard = CleanupGuard(sock_path.clone());
 
+    // Shared history buffer for replaying events to reconnecting clients
+    let history = std::sync::Arc::new(tokio::sync::Mutex::new(EventHistory::new()));
+
+    // Background task: record replayable events into history
+    {
+        let history = history.clone();
+        let mut evt_rx = core.evt_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match evt_rx.recv().await {
+                    Ok(evt) => {
+                        if is_replayable(&evt) {
+                            if let Ok(payload) = serde_json::to_vec(&evt) {
+                                history.lock().await.push(payload);
+                            }
+                        }
+                    }
+                    Err(RecvError::Closed) => break,
+                    Err(RecvError::Lagged(_)) => continue,
+                }
+            }
+        });
+    }
+
     loop {
         let (stream, _) = listener.accept().await?;
         let (mut reader, mut writer) = stream.into_split();
         let cmd_tx = core.cmd_tx.clone();
         let mut evt_rx = core.evt_tx.subscribe();
+        let history = history.clone();
 
         // Bridge: read Commands from socket, send Events back
         tokio::spawn(async move {
@@ -505,6 +576,16 @@ async fn run_daemon(name: &str) -> Result<()> {
                     }
                 }
             });
+
+            // Replay historical events to the newly connected client
+            {
+                let snapshot = history.lock().await.snapshot();
+                for frame in snapshot {
+                    if write_tx.send(frame).await.is_err() {
+                        return;
+                    }
+                }
+            }
 
             // Forward events to write channel
             let write_tx2 = write_tx.clone();
