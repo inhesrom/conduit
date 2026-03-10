@@ -350,9 +350,17 @@ fn self_update() -> Result<()> {
         return Err(anyhow!("extracted archive does not contain 'anvl' binary"));
     }
 
+    // Remove the running binary first — Linux allows unlinking an in-use
+    // executable but blocks writing to it (ETXTBSY / "Text file busy").
+    std::fs::remove_file(&current_exe).with_context(|| {
+        format!(
+            "failed to remove old binary at {}. You may need to run with sudo.",
+            current_exe.display()
+        )
+    })?;
     std::fs::copy(&new_binary, &current_exe).with_context(|| {
         format!(
-            "failed to replace binary at {}. You may need to run with sudo.",
+            "failed to install new binary at {}.",
             current_exe.display()
         )
     })?;
