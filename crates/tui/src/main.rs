@@ -226,12 +226,12 @@ async fn main() -> Result<()> {
                     name
                 )
             })?;
-            if !socket_alive(&entry.socket_path) {
-                return Err(anyhow!(
-                    "session '{}' exists but its socket is not reachable",
-                    name,
-                ));
-            }
+            let entry = if !socket_alive(&entry.socket_path) {
+                eprintln!("session '{}' is stale, restarting…", name);
+                ensure_session_running(&name).await?
+            } else {
+                entry
+            };
             if cli.detach {
                 println!(
                     "session '{}' is running (detached)",
