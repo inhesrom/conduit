@@ -66,6 +66,14 @@ fn git_add_all(dir: &Path) {
         .unwrap();
 }
 
+fn git_add_file(dir: &Path, file: &str) {
+    Command::new("git")
+        .args(["add", "--", file])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+}
+
 fn git_commit(dir: &Path, message: &str) {
     Command::new("git")
         .args(["commit", "-m", message])
@@ -184,6 +192,62 @@ async fn refresh_git_over_fake_ssh_preserves_changed_paths_and_branch_names() {
         .local_branches
         .iter()
         .any(|branch| branch.name == "aaa-feature"));
+}
+
+#[tokio::test]
+async fn refresh_git_over_fake_ssh_matches_local_changed_statuses() {
+    let _lock = SSH_ENV_LOCK.lock().unwrap();
+    let repo = TempDir::new().unwrap();
+    let fake_bin_dir = TempDir::new().unwrap();
+    let fake_ssh = write_fake_ssh_script(fake_bin_dir.path());
+
+    git_init(repo.path());
+    write_file(
+        repo.path(),
+        "models/spectrogram/checkpoint_epoch_005.pt",
+        "base-005",
+    );
+    write_file(
+        repo.path(),
+        "models/spectrogram/checkpoint_epoch_010.pt",
+        "base-010",
+    );
+    git_add_all(repo.path());
+    git_commit(repo.path(), "initial commit");
+
+    write_file(
+        repo.path(),
+        "models/spectrogram/checkpoint_epoch_005.pt",
+        "staged-change",
+    );
+    git_add_file(repo.path(), "models/spectrogram/checkpoint_epoch_005.pt");
+    write_file(
+        repo.path(),
+        "models/spectrogram/checkpoint_epoch_010.pt",
+        "unstaged-change",
+    );
+
+    let _ssh_bin = EnvVarGuard::set("ANVL_SSH_BIN", fake_ssh.display().to_string());
+    let _fake_mode = EnvVarGuard::set("ANVL_FAKE_SSH_MODE", "ok");
+    let _shell = EnvVarGuard::set("SHELL", "/bin/bash");
+
+    let local = refresh_git(repo.path(), None).await.unwrap();
+    let ssh = refresh_git(repo.path(), Some(&fake_target()))
+        .await
+        .unwrap();
+
+    let local_changed: Vec<_> = local
+        .changed
+        .iter()
+        .map(|f| (f.path.clone(), f.index_status, f.worktree_status))
+        .collect();
+    let ssh_changed: Vec<_> = ssh
+        .changed
+        .iter()
+        .map(|f| (f.path.clone(), f.index_status, f.worktree_status))
+        .collect();
+
+    assert_eq!(ssh_changed, local_changed);
 }
 
 #[tokio::test]

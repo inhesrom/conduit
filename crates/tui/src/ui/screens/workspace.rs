@@ -181,6 +181,38 @@ pub fn build_terminal_title_line(
     Line::from(spans)
 }
 
+fn status_marker(c: char) -> char {
+    match c {
+        ' ' => '-',
+        other => other,
+    }
+}
+
+fn changed_file_line(f: &protocol::ChangedFile) -> Line<'static> {
+    let idx = f.index_status;
+    let wt = f.worktree_status;
+    let idx_style = match idx {
+        '?' => Style::default().fg(Color::Red),
+        ' ' => Style::default().fg(Color::DarkGray),
+        _ => Style::default().fg(Color::Green),
+    };
+    let wt_style = match wt {
+        '?' => Style::default().fg(Color::Red),
+        ' ' => Style::default().fg(Color::DarkGray),
+        _ => Style::default().fg(Color::Yellow),
+    };
+
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("I:", Style::default().fg(Color::DarkGray)),
+        Span::styled(status_marker(idx).to_string(), idx_style),
+        Span::raw(" "),
+        Span::styled("W:", Style::default().fg(Color::DarkGray)),
+        Span::styled(status_marker(wt).to_string(), wt_style),
+        Span::raw(format!(" {}", f.path)),
+    ])
+}
+
 const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn spinner_frame(tick: u8) -> &'static str {
@@ -290,24 +322,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         // Expanded files
         if app.ws_uncommitted_expanded && !changed.is_empty() {
             for f in &changed {
-                let idx = f.index_status;
-                let wt = f.worktree_status;
-                let idx_style = match idx {
-                    '?' => Style::default().fg(Color::Red),
-                    ' ' => Style::default().fg(Color::DarkGray),
-                    _ => Style::default().fg(Color::Green),
-                };
-                let wt_style = match wt {
-                    '?' => Style::default().fg(Color::Red),
-                    ' ' => Style::default().fg(Color::DarkGray),
-                    _ => Style::default().fg(Color::Yellow),
-                };
-                log_items.push(ListItem::new(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(idx.to_string(), idx_style),
-                    Span::styled(wt.to_string(), wt_style),
-                    Span::raw(format!(" {}", f.path)),
-                ])));
+                log_items.push(ListItem::new(changed_file_line(f)));
             }
         }
 
@@ -928,6 +943,7 @@ pub fn terminal_content_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::borrow::Cow;
 
     // --- pane_border_style tests ---
 
@@ -1154,6 +1170,17 @@ mod tests {
             .unwrap();
     }
 
+    fn line_to_string(line: Line<'_>) -> String {
+        line.spans
+            .into_iter()
+            .map(|span| match span.content {
+                Cow::Borrowed(s) => s.to_string(),
+                Cow::Owned(s) => s,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
     fn make_git_state() -> GitState {
         GitState {
             branch: Some("main".into()),
@@ -1253,5 +1280,35 @@ mod tests {
         app.set_workspace_git(id, make_git_state());
         app.ws_uncommitted_expanded = true;
         smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn changed_file_line_makes_unstaged_status_explicit() {
+        let line = changed_file_line(&ChangedFile {
+            path: "models/spectrogram/checkpoint_epoch_005.pt".into(),
+            index_status: ' ',
+            worktree_status: 'M',
+        });
+        assert_eq!(
+            line_to_string(line),
+            "  I:- W:M models/spectrogram/checkpoint_epoch_005.pt"
+        );
+    }
+
+    #[test]
+    fn changed_file_line_distinguishes_staged_and_unstaged() {
+        let staged = line_to_string(changed_file_line(&ChangedFile {
+            path: "checkpoint.pt".into(),
+            index_status: 'M',
+            worktree_status: ' ',
+        }));
+        let unstaged = line_to_string(changed_file_line(&ChangedFile {
+            path: "checkpoint.pt".into(),
+            index_status: ' ',
+            worktree_status: 'M',
+        }));
+
+        assert_eq!(staged, "  I:M W:- checkpoint.pt");
+        assert_eq!(unstaged, "  I:- W:M checkpoint.pt");
     }
 }
