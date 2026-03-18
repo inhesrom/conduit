@@ -304,7 +304,6 @@ pub struct TuiApp {
     pub confirm_discard_file: Option<String>,
     pub stash_input: Option<String>,
     pub confirm_stash_pull_pop: Option<WorkspaceId>,
-    pub terminal_fullscreen: bool,
     pub ws_expanded_commit: Option<usize>,
     pub commit_files_cache: HashMap<String, Vec<String>>,
     pub ws_tag_filter: bool,
@@ -357,7 +356,6 @@ impl Default for TuiApp {
             confirm_discard_file: None,
             stash_input: None,
             confirm_stash_pull_pop: None,
-            terminal_fullscreen: false,
             ws_expanded_commit: None,
             commit_files_cache: HashMap::new(),
             ws_tag_filter: false,
@@ -399,11 +397,15 @@ impl TuiApp {
         self.persist_tabs_for_active_workspace();
         self.route = Route::Home;
         self.focus = Focus::HomeGrid;
-        self.terminal_fullscreen = false;
+    }
+
+    pub fn terminal_fullscreen(&self) -> bool {
+        self.active_tab().fullscreen
     }
 
     pub fn toggle_terminal_fullscreen(&mut self) {
-        self.terminal_fullscreen = !self.terminal_fullscreen;
+        let idx = self.ws_active_tab.min(self.ws_tabs.len().saturating_sub(1));
+        self.ws_tabs[idx].fullscreen = !self.ws_tabs[idx].fullscreen;
     }
 
     pub fn move_home_selection(&mut self, dx: isize, dy: isize) {
@@ -1332,6 +1334,7 @@ impl WorkspaceTabsState {
                     label: t.label.clone(),
                     kind: t.kind,
                     passthrough: false,
+                    fullscreen: false,
                 })
                 .collect(),
             active: saved.active,
@@ -1421,6 +1424,8 @@ pub struct TerminalTab {
     pub kind: TerminalKind,
     /// When true, Esc and Tab are forwarded to the terminal instead of being intercepted.
     pub passthrough: bool,
+    /// When true, git panes are hidden and the terminal fills the workspace.
+    pub fullscreen: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1462,6 +1467,7 @@ impl TerminalTab {
             label: "agent".to_string(),
             kind: TerminalKind::Agent,
             passthrough: false,
+            fullscreen: false,
         }
     }
 
@@ -1471,6 +1477,7 @@ impl TerminalTab {
             label,
             kind: TerminalKind::Shell,
             passthrough: false,
+            fullscreen: false,
         }
     }
 }
@@ -1767,15 +1774,15 @@ mod tests {
     }
 
     #[test]
-    fn go_home_resets_state() {
+    fn go_home_preserves_tab_fullscreen() {
         let mut app = app_with_workspaces(2);
         let id = app.workspaces[0].id;
         app.open_workspace(id);
-        app.terminal_fullscreen = true;
+        app.toggle_terminal_fullscreen();
+        assert!(app.terminal_fullscreen());
         app.go_home();
         assert!(matches!(app.route, Route::Home));
         assert_eq!(app.focus, Focus::HomeGrid);
-        assert!(!app.terminal_fullscreen);
     }
 
     // ===== Terminal tab management =====
@@ -1807,6 +1814,7 @@ mod tests {
             label: "agent".into(),
             kind: TerminalKind::Agent,
             passthrough: false,
+            fullscreen: false,
         }];
         app.ws_active_tab = 0;
         assert!(!app.can_close_active_tab());
@@ -2133,11 +2141,41 @@ mod tests {
     #[test]
     fn toggle_fullscreen() {
         let mut app = TuiApp::default();
-        assert!(!app.terminal_fullscreen);
+        assert!(!app.terminal_fullscreen());
         app.toggle_terminal_fullscreen();
-        assert!(app.terminal_fullscreen);
+        assert!(app.terminal_fullscreen());
         app.toggle_terminal_fullscreen();
-        assert!(!app.terminal_fullscreen);
+        assert!(!app.terminal_fullscreen());
+    }
+
+    #[test]
+    fn fullscreen_is_per_tab() {
+        let mut app = TuiApp::default(); // 2 tabs: agent (0), shell (1)
+
+        // Toggle fullscreen on tab 0
+        app.ws_active_tab = 0;
+        app.toggle_terminal_fullscreen();
+        assert!(app.terminal_fullscreen());
+
+        // Tab 1 should still be off
+        app.ws_active_tab = 1;
+        assert!(!app.terminal_fullscreen());
+
+        // Toggle fullscreen on tab 1
+        app.toggle_terminal_fullscreen();
+        assert!(app.terminal_fullscreen());
+
+        // Tab 0 should still be on (independent)
+        app.ws_active_tab = 0;
+        assert!(app.terminal_fullscreen());
+
+        // Toggle off on tab 0
+        app.toggle_terminal_fullscreen();
+        assert!(!app.terminal_fullscreen());
+
+        // Tab 1 should be unaffected
+        app.ws_active_tab = 1;
+        assert!(app.terminal_fullscreen());
     }
 
     #[test]

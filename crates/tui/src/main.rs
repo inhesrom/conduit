@@ -1143,7 +1143,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 let inner = ui::screens::workspace::terminal_content_rect(
                     area,
                     app.focus,
-                    app.terminal_fullscreen,
+                    app.terminal_fullscreen(),
                 );
                 let cols = inner.width.max(1);
                 let rows = inner.height.max(1);
@@ -2600,7 +2600,7 @@ async fn forward_mouse_to_terminal(
     }
 
     let content =
-        ui::screens::workspace::terminal_content_rect(area, app.focus, app.terminal_fullscreen);
+        ui::screens::workspace::terminal_content_rect(area, app.focus, app.terminal_fullscreen());
     if !point_in_rect(content, mouse.column, mouse.row) {
         return false;
     }

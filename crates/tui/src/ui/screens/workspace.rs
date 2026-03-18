@@ -220,7 +220,7 @@ fn spinner_frame(tick: u8) -> &'static str {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let l = layout(area, app.focus, app.terminal_fullscreen);
+    let l = layout(area, app.focus, app.terminal_fullscreen());
 
     let ws_id = match app.route {
         Route::Workspace { id } => Some(id),
@@ -275,7 +275,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         l.header,
     );
 
-    if !app.terminal_fullscreen {
+    if !app.terminal_fullscreen() {
         // --- Git Log (merged uncommitted + commits + tags) ---
         let changed = ws_id
             .and_then(|id| app.workspace_git.get(&id))
@@ -883,7 +883,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 }
 
 pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit> {
-    let l = layout(area, app.focus, app.terminal_fullscreen);
+    let l = layout(area, app.focus, app.terminal_fullscreen());
 
     let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
     if point_inside(l.header) {
@@ -1096,7 +1096,7 @@ mod tests {
         // Body = 35 rows (3..38). Terminal gets 35% = ~12 rows, git gets 65% = ~23 rows.
         // Git area starts around row 15. Left 35% has log (top) and branches (bottom).
         // The git log is in the top half of the left git area.
-        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
         let result = hit_test(area, &app, l.git_log.x + 1, l.git_log.y + 1);
         assert!(matches!(result, Some(WorkspaceHit::LogList(_))));
     }
@@ -1106,7 +1106,7 @@ mod tests {
         let (mut app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
         app.focus = Focus::WsBranches;
-        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
         let result = hit_test(area, &app, l.git_branches.x + 1, l.git_branches.y + 1);
         assert!(matches!(result, Some(WorkspaceHit::BranchesPane(_))));
     }
@@ -1116,7 +1116,7 @@ mod tests {
         let (mut app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
         app.focus = Focus::WsDiff;
-        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
         let result = hit_test(area, &app, l.git_diff.x + 1, l.git_diff.y + 1);
         assert_eq!(result, Some(WorkspaceHit::DiffPane));
     }
@@ -1125,7 +1125,7 @@ mod tests {
     fn hit_test_terminal_tabs() {
         let (app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
-        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
         let result = hit_test(area, &app, l.terminal_tabs.x + 1, l.terminal_tabs.y + 1);
         assert!(matches!(result, Some(WorkspaceHit::TerminalTab(_))));
     }
@@ -1143,7 +1143,7 @@ mod tests {
     fn hit_test_fullscreen_git_area_returns_terminal_or_none() {
         let (mut app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
-        app.terminal_fullscreen = true;
+        app.toggle_terminal_fullscreen();
         // In fullscreen mode, git panes are zero-sized.
         // The area that would normally be git log should now be terminal pane or None.
         let l_normal = layout(area, Focus::WsLog, false);
@@ -1250,7 +1250,7 @@ mod tests {
     #[test]
     fn render_workspace_fullscreen() {
         let (mut app, _) = app_with_workspace();
-        app.terminal_fullscreen = true;
+        app.toggle_terminal_fullscreen();
         smoke_render_workspace(&app, 120, 40);
     }
 
