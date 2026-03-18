@@ -1175,8 +1175,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
             // Extract selected text from the rendered buffer before applying highlights.
             if let Some(sel) = &app.pending_copy_selection {
-                pending_clipboard_text =
-                    Some(extract_selected_text_from_buf(frame.buffer_mut(), sel));
+                let borders = match app.route {
+                    Route::Home => ui::screens::home::border_rects(frame.area(), &app),
+                    Route::Workspace { .. } => {
+                        ui::screens::workspace::border_rects(frame.area(), &app)
+                    }
+                };
+                pending_clipboard_text = Some(extract_selected_text_from_buf(
+                    frame.buffer_mut(),
+                    sel,
+                    &borders,
+                ));
             }
             if let Some(sel) = &app.mouse_selection {
                 if !sel.is_empty() {
@@ -2437,6 +2446,7 @@ async fn handle_mouse(
             if let Some(sel) = &mut app.mouse_selection {
                 sel.end_col = mouse.column;
                 sel.end_row = mouse.row;
+                sel.clamp_to_confine();
             }
             return;
         }
@@ -2454,7 +2464,12 @@ async fn handle_mouse(
     match app.route {
         Route::Home => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
+                app.mouse_selection =
+                    if let Some(r) = ui::screens::home::pane_rect_at(area, app, mouse.column, mouse.row) {
+                        Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
+                    } else {
+                        Some(app::MouseSelection::at(mouse.column, mouse.row))
+                    };
                 if app.is_confirming_delete() {
                     let rect = ui::screens::home::delete_modal_rect(area);
                     if point_in_rect(rect, mouse.column, mouse.row) {
@@ -2499,7 +2514,12 @@ async fn handle_mouse(
         },
         Route::Workspace { id } => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
+                app.mouse_selection =
+                    if let Some(r) = ui::screens::workspace::pane_rect_at(area, app, mouse.column, mouse.row) {
+                        Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
+                    } else {
+                        Some(app::MouseSelection::at(mouse.column, mouse.row))
+                    };
                 if let Some(hit) =
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
@@ -2906,6 +2926,176 @@ mod tests {
     fn rejects_unsupported_release_targets() {
         assert!(detect_release_target("darwin", "x86_64").is_err());
     }
+
+    // --- is_border_cell tests ---
+
+    #[test]
+    fn border_cell_on_outer_ring() {
+        let r = ratatui::layout::Rect::new(5, 5, 10, 8);
+        let rects = vec![r];
+        // Top edge
+        assert!(is_border_cell(5, 5, &rects));
+        assert!(is_border_cell(10, 5, &rects));
+        // Bottom edge
+        assert!(is_border_cell(5, 12, &rects));
+        assert!(is_border_cell(14, 12, &rects));
+        // Left edge
+        assert!(is_border_cell(5, 8, &rects));
+        // Right edge
+        assert!(is_border_cell(14, 8, &rects));
+    }
+
+    #[test]
+    fn border_cell_interior_not_detected() {
+        let r = ratatui::layout::Rect::new(5, 5, 10, 8);
+        let rects = vec![r];
+        assert!(!is_border_cell(6, 6, &rects));
+        assert!(!is_border_cell(10, 10, &rects));
+    }
+
+    #[test]
+    fn border_cell_outside_not_detected() {
+        let r = ratatui::layout::Rect::new(5, 5, 10, 8);
+        let rects = vec![r];
+        assert!(!is_border_cell(4, 5, &rects));
+        assert!(!is_border_cell(15, 5, &rects));
+        assert!(!is_border_cell(5, 4, &rects));
+        assert!(!is_border_cell(5, 13, &rects));
+    }
+
+    #[test]
+    fn border_cell_empty_rects() {
+        assert!(!is_border_cell(5, 5, &[]));
+    }
+
+    // --- extract_selected_text_from_buf with border rects ---
+
+    #[test]
+    fn extract_text_replaces_border_cells_with_spaces() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        // Create a 10x3 buffer simulating a small bordered pane
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(area);
+
+        // Fill border ring with box-drawing chars
+        for col in 0..10u16 {
+            buf.cell_mut(ratatui::layout::Position::new(col, 0))
+                .unwrap()
+                .set_symbol("─");
+            buf.cell_mut(ratatui::layout::Position::new(col, 2))
+                .unwrap()
+                .set_symbol("─");
+        }
+        for row in 0..3u16 {
+            buf.cell_mut(ratatui::layout::Position::new(0, row))
+                .unwrap()
+                .set_symbol("│");
+            buf.cell_mut(ratatui::layout::Position::new(9, row))
+                .unwrap()
+                .set_symbol("│");
+        }
+        // Interior content
+        for (i, ch) in "hello   ".chars().enumerate() {
+            buf.cell_mut(ratatui::layout::Position::new(1 + i as u16, 1))
+                .unwrap()
+                .set_symbol(&ch.to_string());
+        }
+
+        let sel = app::MouseSelection {
+            anchor_col: 0,
+            anchor_row: 0,
+            end_col: 9,
+            end_row: 2,
+            confine: None,
+        };
+        let border_rects = vec![area];
+        let text = extract_selected_text_from_buf(&buf, &sel, &border_rects);
+        // Border chars should be replaced; only content remains
+        assert!(!text.contains('─'));
+        assert!(!text.contains('│'));
+        assert!(text.contains("hello"));
+    }
+
+    #[test]
+    fn extract_text_preserves_interior_box_drawing() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        // 12x3 buffer with a border rect on [0..10], but box-drawing in interior
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::empty(area);
+
+        // Fill everything with spaces first
+        for row in 0..3u16 {
+            for col in 0..12u16 {
+                buf.cell_mut(ratatui::layout::Position::new(col, row))
+                    .unwrap()
+                    .set_symbol(" ");
+            }
+        }
+
+        // Put a box-drawing char in the interior (simulating `tree` output)
+        buf.cell_mut(ratatui::layout::Position::new(5, 1))
+            .unwrap()
+            .set_symbol("├");
+
+        let sel = app::MouseSelection {
+            anchor_col: 0,
+            anchor_row: 0,
+            end_col: 11,
+            end_row: 2,
+            confine: None,
+        };
+        // Border rect covers only columns 0..10
+        let border_rects = vec![Rect::new(0, 0, 10, 3)];
+        let text = extract_selected_text_from_buf(&buf, &sel, &border_rects);
+        // The ├ at (5,1) is interior to the border rect, so it IS preserved
+        assert!(text.contains('├'));
+    }
+
+    #[test]
+    fn extract_text_collapses_blank_lines() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+
+        // Fill with spaces
+        for row in 0..5u16 {
+            for col in 0..10u16 {
+                buf.cell_mut(ratatui::layout::Position::new(col, row))
+                    .unwrap()
+                    .set_symbol(" ");
+            }
+        }
+        // Put text on row 0 and row 4, leaving rows 1-3 blank
+        for (i, ch) in "top".chars().enumerate() {
+            buf.cell_mut(ratatui::layout::Position::new(i as u16, 0))
+                .unwrap()
+                .set_symbol(&ch.to_string());
+        }
+        for (i, ch) in "bot".chars().enumerate() {
+            buf.cell_mut(ratatui::layout::Position::new(i as u16, 4))
+                .unwrap()
+                .set_symbol(&ch.to_string());
+        }
+
+        let sel = app::MouseSelection {
+            anchor_col: 0,
+            anchor_row: 0,
+            end_col: 9,
+            end_row: 4,
+            confine: None,
+        };
+        let text = extract_selected_text_from_buf(&buf, &sel, &[]);
+        // Should have at most one blank line between "top" and "bot"
+        assert!(text.contains("top"));
+        assert!(text.contains("bot"));
+        assert!(!text.contains("\n\n\n"));
+    }
 }
 
 /// xterm-256 colour 39 — a medium sky-blue used for mouse selection highlighting.
@@ -2934,13 +3124,26 @@ fn apply_selection_highlight(frame: &mut ratatui::Frame, sel: &app::MouseSelecti
     }
 }
 
+/// Returns `true` if `(col, row)` falls on the outer 1-cell border ring of any rect.
+fn is_border_cell(col: u16, row: u16, border_rects: &[ratatui::layout::Rect]) -> bool {
+    for r in border_rects {
+        if col >= r.x && col < r.right() && row >= r.y && row < r.bottom() {
+            if col == r.x || col == r.right() - 1 || row == r.y || row == r.bottom() - 1 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn extract_selected_text_from_buf(
     buf: &ratatui::buffer::Buffer,
     sel: &app::MouseSelection,
+    border_rects: &[ratatui::layout::Rect],
 ) -> String {
     let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
     let width = buf.area.width;
-    let mut result = String::new();
+    let mut lines: Vec<String> = Vec::new();
     for row in start_row..=end_row {
         let row_start = if row == start_row { start_col } else { 0 };
         let row_end = if row == end_row {
@@ -2950,16 +3153,33 @@ fn extract_selected_text_from_buf(
         };
         let mut line = String::new();
         for col in row_start..=row_end {
-            if let Some(cell) = buf.cell(ratatui::layout::Position::new(col, row)) {
+            if is_border_cell(col, row, border_rects) {
+                line.push(' ');
+            } else if let Some(cell) = buf.cell(ratatui::layout::Position::new(col, row)) {
                 line.push_str(cell.symbol());
             }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+
+    // Collapse consecutive blank lines to at most one
+    let mut result = String::new();
+    let mut prev_blank = false;
+    for line in &lines {
+        let is_blank = line.trim().is_empty();
+        if is_blank && prev_blank {
+            continue;
         }
         if !result.is_empty() {
             result.push('\n');
         }
-        result.push_str(line.trim_end());
+        result.push_str(line);
+        prev_blank = is_blank;
     }
-    result
+
+    // Strip leading/trailing blank lines
+    let trimmed = result.trim_matches('\n');
+    trimmed.to_string()
 }
 
 async fn start_workspace_tab_terminals(

@@ -72,7 +72,7 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
 }
 
 /// Computes the `Rect` for tile at grid position `index` given `cols` columns.
-fn tile_rect(area: Rect, index: usize, cols: usize, tile_w: u16) -> Rect {
+pub fn tile_rect(area: Rect, index: usize, cols: usize, tile_w: u16) -> Rect {
     let row = index / cols;
     let col = index % cols;
     Rect {

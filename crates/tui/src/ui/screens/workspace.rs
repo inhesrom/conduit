@@ -926,6 +926,34 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
     None
 }
 
+/// Returns the `Rect` of the pane containing the given point, if any.
+///
+/// Used to confine mouse drag selections to a single pane.
+pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
+    let l = layout(area, app.focus, app.terminal_fullscreen());
+    let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
+
+    if point_inside(l.terminal_pane) {
+        return Some(l.terminal_pane);
+    }
+    if point_inside(l.git_log) {
+        return Some(l.git_log);
+    }
+    if point_inside(l.git_diff) {
+        return Some(l.git_diff);
+    }
+    if point_inside(l.git_branches) {
+        return Some(l.git_branches);
+    }
+    if point_inside(l.terminal_tabs) {
+        return Some(l.terminal_tabs);
+    }
+    if point_inside(l.header) {
+        return Some(l.header);
+    }
+    None
+}
+
 pub fn terminal_content_rect(
     area: Rect,
     focus: crate::app::Focus,
@@ -938,6 +966,51 @@ pub fn terminal_content_rect(
         pane.width.saturating_sub(2),
         pane.height.saturating_sub(2),
     )
+}
+
+/// Returns the outer `Rect` of every bordered pane in the workspace screen.
+///
+/// Used during text extraction so that border cells can be replaced with spaces,
+/// preventing box-drawing characters from leaking into clipboard text.
+pub fn border_rects(area: Rect, app: &TuiApp) -> Vec<Rect> {
+    let l = layout(area, app.focus, app.terminal_fullscreen());
+    let mut rects = vec![l.header, l.terminal_tabs, l.terminal_pane, l.footer];
+
+    if !app.terminal_fullscreen() {
+        rects.push(l.git_log);
+        rects.push(l.git_diff);
+
+        // Branch sub-pane split (local/remote)
+        let branch_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(l.git_branches);
+        rects.push(branch_split[0]);
+        rects.push(branch_split[1]);
+    }
+
+    // Individual tab rects inside terminal_tabs
+    let tabs_block = Block::default()
+        .title("Tabs")
+        .borders(Borders::ALL);
+    let tabs_inner = tabs_block.inner(l.terminal_tabs);
+    if !app.ws_tabs.is_empty() {
+        let tab_rects = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                app.ws_tabs
+                    .iter()
+                    .map(|_| Constraint::Ratio(1, app.ws_tabs.len().max(1) as u32))
+                    .collect::<Vec<_>>(),
+            )
+            .split(tabs_inner);
+        for r in tab_rects.iter() {
+            rects.push(*r);
+        }
+    }
+
+    rects.retain(|r| r.width > 0 && r.height > 0);
+    rects
 }
 
 #[cfg(test)]
@@ -1310,5 +1383,38 @@ mod tests {
 
         assert_eq!(staged, "  I:M W:- checkpoint.pt");
         assert_eq!(unstaged, "  I:- W:M checkpoint.pt");
+    }
+
+    // --- border_rects tests ---
+
+    #[test]
+    fn border_rects_normal_mode() {
+        let (app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        let rects = border_rects(area, &app);
+        // Should have: header, terminal_tabs, terminal_pane, footer,
+        // git_log, git_diff, 2 branch sub-panes = 8 minimum
+        assert!(rects.len() >= 8, "got {} rects", rects.len());
+        for r in &rects {
+            assert!(r.width > 0 && r.height > 0, "zero-sized rect: {:?}", r);
+        }
+    }
+
+    #[test]
+    fn border_rects_fullscreen_has_fewer() {
+        let (mut app, _) = app_with_workspace();
+        app.toggle_terminal_fullscreen();
+        let area = Rect::new(0, 0, 120, 40);
+        let rects_fs = border_rects(area, &app);
+
+        app.toggle_terminal_fullscreen();
+        let rects_normal = border_rects(area, &app);
+
+        assert!(
+            rects_fs.len() < rects_normal.len(),
+            "fullscreen {} should have fewer rects than normal {}",
+            rects_fs.len(),
+            rects_normal.len()
+        );
     }
 }

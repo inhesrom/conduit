@@ -200,6 +200,8 @@ pub struct MouseSelection {
     pub end_col: u16,
     /// Current row of the drag endpoint.
     pub end_row: u16,
+    /// Optional bounding rect that confines the selection to a single pane.
+    pub confine: Option<ratatui::layout::Rect>,
 }
 
 impl MouseSelection {
@@ -210,6 +212,26 @@ impl MouseSelection {
             anchor_row: row,
             end_col: col,
             end_row: row,
+            confine: None,
+        }
+    }
+
+    /// Creates a zero-length selection anchored at the given position, confined to `rect`.
+    pub fn at_confined(col: u16, row: u16, rect: ratatui::layout::Rect) -> Self {
+        Self {
+            anchor_col: col,
+            anchor_row: row,
+            end_col: col,
+            end_row: row,
+            confine: Some(rect),
+        }
+    }
+
+    /// Clamp `end_col`/`end_row` to the confine rect (if set).
+    pub fn clamp_to_confine(&mut self) {
+        if let Some(r) = self.confine {
+            self.end_col = self.end_col.clamp(r.x, r.right().saturating_sub(1));
+            self.end_row = self.end_row.clamp(r.y, r.bottom().saturating_sub(1));
         }
     }
 
@@ -2055,6 +2077,7 @@ mod tests {
             anchor_row: 0,
             end_col: 5,
             end_row: 3,
+            confine: None,
         };
         let ((sc, sr), (ec, er)) = sel.ordered();
         assert_eq!((sc, sr), (0, 0));
@@ -2068,6 +2091,7 @@ mod tests {
             anchor_row: 3,
             end_col: 0,
             end_row: 0,
+            confine: None,
         };
         let ((sc, sr), (ec, er)) = sel.ordered();
         assert_eq!((sc, sr), (0, 0));

@@ -470,6 +470,36 @@ pub fn grid_rect(area: Rect) -> Rect {
     home_chunks(area)[1]
 }
 
+/// Returns the `Rect` of the pane containing the given point, if any.
+pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
+    let chunks = home_chunks(area);
+    let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
+
+    if point_inside(chunks[0]) {
+        return Some(chunks[0]);
+    }
+    if point_inside(chunks[2]) {
+        return Some(chunks[2]);
+    }
+
+    // Check individual tile rects
+    let grid_area = chunks[1];
+    let tile_w = grid_area.width / tile_grid::COLS;
+    let cols = tile_grid::COLS as usize;
+    for i in 0..app.workspaces.len() {
+        let r = tile_grid::tile_rect(grid_area, i, cols, tile_w);
+        if r.width > 0 && r.height > 0 && point_inside(r) {
+            return Some(r);
+        }
+    }
+
+    // Fall back to the whole grid area
+    if point_inside(grid_area) {
+        return Some(grid_area);
+    }
+    None
+}
+
 /// Splits the home screen area into dashboard header, grid, and footer chunks.
 fn home_chunks(area: Rect) -> Vec<Rect> {
     Layout::default()
@@ -481,6 +511,30 @@ fn home_chunks(area: Rect) -> Vec<Rect> {
         ])
         .split(area)
         .to_vec()
+}
+
+/// Returns the outer `Rect` of every bordered pane on the home screen.
+///
+/// Used during text extraction so that border cells can be replaced with spaces.
+pub fn border_rects(area: Rect, app: &TuiApp) -> Vec<Rect> {
+    let chunks = home_chunks(area);
+    let mut rects = vec![
+        chunks[0], // dashboard header (Borders::ALL + Rounded)
+        chunks[2], // footer (Borders::TOP)
+    ];
+
+    // Individual tile rects from the grid
+    let grid_area = chunks[1];
+    let tile_w = grid_area.width / tile_grid::COLS;
+    let cols = tile_grid::COLS as usize;
+    for i in 0..app.workspaces.len() {
+        let r = tile_grid::tile_rect(grid_area, i, cols, tile_w);
+        if r.width > 0 && r.height > 0 {
+            rects.push(r);
+        }
+    }
+
+    rects
 }
 
 #[cfg(test)]
@@ -551,5 +605,26 @@ mod tests {
     fn render_home_very_small_terminal() {
         let app = TuiApp::default();
         smoke_render_home(&app, 20, 10);
+    }
+
+    // --- border_rects tests ---
+
+    #[test]
+    fn border_rects_includes_dashboard_and_footer() {
+        let app = TuiApp::default();
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let rects = super::border_rects(area, &app);
+        // At minimum: dashboard header + footer = 2
+        assert!(rects.len() >= 2, "got {} rects", rects.len());
+    }
+
+    #[test]
+    fn border_rects_includes_tiles() {
+        let mut app = TuiApp::default();
+        app.set_workspaces(vec![make_ws("a"), make_ws("b"), make_ws("c")]);
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let rects = super::border_rects(area, &app);
+        // dashboard + footer + 3 tiles = 5
+        assert!(rects.len() >= 5, "got {} rects", rects.len());
     }
 }
