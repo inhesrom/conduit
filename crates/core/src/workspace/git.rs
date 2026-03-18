@@ -259,7 +259,7 @@ fn parse_tags_output(output: &str) -> Vec<TagInfo> {
 }
 
 fn parse_local_branches_output(output: &str) -> Vec<BranchInfo> {
-    output
+    let mut branches: Vec<BranchInfo> = output
         .lines()
         .filter_map(|line| {
             let line = line.trim_end();
@@ -286,7 +286,10 @@ fn parse_local_branches_output(output: &str) -> Vec<BranchInfo> {
                 behind: track.1,
             })
         })
-        .collect()
+        .collect();
+    // Sort so the checked-out (HEAD) branch appears first
+    branches.sort_by(|a, b| b.is_head.cmp(&a.is_head));
+    branches
 }
 
 fn parse_remote_branches_output(output: &str) -> Vec<RemoteBranchInfo> {
@@ -1046,6 +1049,18 @@ mod tests {
         let input = "* main\n\n  dev\n  ";
         let branches = parse_local_branches_output(input);
         assert_eq!(branches.len(), 2);
+    }
+
+    #[test]
+    fn local_branches_head_sorted_first() {
+        let input = "  alpha\n  beta\n* main [ahead 1]\n  zeta";
+        let branches = parse_local_branches_output(input);
+        assert_eq!(branches.len(), 4);
+        assert_eq!(branches[0].name, "main");
+        assert!(branches[0].is_head);
+        assert!(!branches[1].is_head);
+        assert!(!branches[2].is_head);
+        assert!(!branches[3].is_head);
     }
 
     // --- parse_remote_branches_output ---
