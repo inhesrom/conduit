@@ -15,13 +15,43 @@ use tile_grid::ORANGE;
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let chunks = home_chunks(area);
     render_dashboard(frame, chunks[0], app);
+
+    let grid_area = chunks[1];
+    let tile_w = grid_area.width / tile_grid::COLS;
+    let body_max = (tile_w as usize).saturating_sub(6);
+    let expanded = &app.home_expanded_tiles;
+    let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
+    let preview_lines = app.settings.preview_lines;
+    let tile_data: Vec<tile_grid::TileData> = app
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(i, ws)| {
+            let num_lines = if expanded.contains(&i) {
+                preview_lines
+            } else {
+                0 // collapsed tiles don't show preview
+            };
+            tile_grid::TileData {
+                summary: ws,
+                preview: if num_lines > 0 {
+                    app.tile_preview_lines(ws.id, body_max as u16, num_lines)
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect();
+
     tile_grid::render(
         frame,
-        chunks[1],
-        &app.workspaces,
+        grid_area,
+        &tile_data,
         app.home_selected,
         app.spinner_tick % 2 == 0,
         app.settings.attention_notifications,
+        expanded,
+        expanded_h,
     );
     footer::render(frame, chunks[2], app);
     render_modals(frame, area, app);
@@ -364,49 +394,61 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
     }
 
     if app.is_settings_open() {
-        let modal = centered_rect(area, 50, 8);
+        let modal = centered_rect(area, 50, 10);
         frame.render_widget(Clear, modal);
 
-        let cursor = if app.settings_selected == 0 {
+        let key_style = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(Color::DarkGray);
+        let cursor_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+
+        let cursor0 = if app.settings_selected == 0 {
             "> "
         } else {
             "  "
         };
         let toggle = render_toggle(app.settings.attention_notifications);
-        let row = Line::from(vec![
-            Span::styled(
-                cursor,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        let row0 = Line::from(vec![
+            Span::styled(cursor0, cursor_style),
             Span::raw("Attention notifications   "),
             toggle,
         ]);
-        let hint = Line::from(vec![
+
+        let cursor1 = if app.settings_selected == 1 {
+            "> "
+        } else {
+            "  "
+        };
+        let row1 = Line::from(vec![
+            Span::styled(cursor1, cursor_style),
+            Span::raw("Preview lines             "),
             Span::styled(
-                "j/k",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
+                format!("\u{25C2} {} \u{25B8}", app.settings.preview_lines),
+                Style::default().fg(Color::Cyan),
             ),
-            Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "Space",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" close", Style::default().fg(Color::DarkGray)),
         ]);
-        let body = vec![Line::from(""), row, Line::from(""), Line::from(""), hint];
+
+        let hint = Line::from(vec![
+            Span::styled("j/k", key_style),
+            Span::styled(" navigate  ", desc_style),
+            Span::styled("Space", key_style),
+            Span::styled(" toggle  ", desc_style),
+            Span::styled("h/l", key_style),
+            Span::styled(" adjust  ", desc_style),
+            Span::styled("Esc", key_style),
+            Span::styled(" close", desc_style),
+        ]);
+        let body = vec![
+            Line::from(""),
+            row0,
+            row1,
+            Line::from(""),
+            Line::from(""),
+            hint,
+        ];
 
         frame.render_widget(
             Paragraph::new(body).block(
@@ -482,13 +524,21 @@ pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
         return Some(chunks[2]);
     }
 
-    // Check individual tile rects
+    // Check individual tile rects (use index_at for expansion-aware hit testing)
     let grid_area = chunks[1];
     let tile_w = grid_area.width / tile_grid::COLS;
     let cols = tile_grid::COLS as usize;
-    for i in 0..app.workspaces.len() {
+    let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
+    if let Some(i) = tile_grid::index_at(
+        grid_area,
+        x,
+        y,
+        app.workspaces.len(),
+        &app.home_expanded_tiles,
+        expanded_h,
+    ) {
         let r = tile_grid::tile_rect(grid_area, i, cols, tile_w);
-        if r.width > 0 && r.height > 0 && point_inside(r) {
+        if r.width > 0 && r.height > 0 {
             return Some(r);
         }
     }

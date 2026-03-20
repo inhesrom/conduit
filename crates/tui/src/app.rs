@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -329,6 +329,8 @@ pub struct TuiApp {
     pub ws_expanded_commit: Option<usize>,
     pub commit_files_cache: HashMap<String, Vec<String>>,
     pub ws_tag_filter: bool,
+    /// Indices of expanded tiles on the home screen.
+    pub home_expanded_tiles: HashSet<usize>,
 }
 
 impl Default for TuiApp {
@@ -381,6 +383,7 @@ impl Default for TuiApp {
             ws_expanded_commit: None,
             commit_files_cache: HashMap::new(),
             ws_tag_filter: false,
+            home_expanded_tiles: HashSet::new(),
         }
     }
 }
@@ -447,6 +450,17 @@ impl TuiApp {
 
         let new_idx = (new_row as usize) * cols + (new_col as usize);
         self.home_selected = new_idx.min(len - 1);
+    }
+
+    pub fn toggle_home_expanded_tile(&mut self) {
+        if self.workspaces.is_empty() {
+            self.home_expanded_tiles.clear();
+            return;
+        }
+        let idx = self.home_selected;
+        if !self.home_expanded_tiles.remove(&idx) {
+            self.home_expanded_tiles.insert(idx);
+        }
     }
 
     pub fn set_home_selection(&mut self, index: usize) {
@@ -883,6 +897,116 @@ impl TuiApp {
         lines
     }
 
+    /// Extracts the most recent `num_lines` non-empty rows from a workspace's
+    /// agent terminal, with full ANSI styling.
+    ///
+    /// Walks the visible screen bottom-to-top (freshest output first), then
+    /// continues into scrollback (offset 0 = most recently scrolled off) until
+    /// `num_lines` rows are collected.  The result is in chronological order.
+    pub fn tile_preview_lines(
+        &self,
+        id: WorkspaceId,
+        max_cols: u16,
+        num_lines: u16,
+    ) -> Vec<Line<'static>> {
+        let Some(state) = self.terminal_state.get(&id) else {
+            return Vec::new();
+        };
+        let Some(tab) = state.tabs.get("agent") else {
+            return Vec::new();
+        };
+        let screen = tab.parser.screen();
+        let (rows, cols) = screen.size();
+        let use_cols = cols.min(max_cols);
+        let scrollback_count = screen.scrollback_count();
+
+        let needed = num_lines as usize;
+        let mut collected: Vec<Line<'static>> = Vec::new();
+
+        // Phase 1: visible screen rows, bottom-to-top (most recent first)
+        for r in (0..rows).rev() {
+            if collected.len() >= needed {
+                break;
+            }
+            let mut has_content = false;
+            for c in 0..use_cols {
+                if let Some(cell) = screen.cell(r, c) {
+                    if cell.has_contents() && !cell.contents().trim().is_empty() {
+                        has_content = true;
+                        break;
+                    }
+                }
+            }
+            if has_content {
+                collected.push(self.styled_screen_row(screen, r, use_cols));
+            }
+        }
+
+        // Phase 2: scrollback rows (offset 0 = most recently scrolled off)
+        if collected.len() < needed {
+            for offset in 0..scrollback_count {
+                if collected.len() >= needed {
+                    break;
+                }
+                let mut has_content = false;
+                for c in 0..use_cols {
+                    if let Some(cell) = screen.scrollback_cell(offset, c) {
+                        if cell.has_contents() && !cell.contents().trim().is_empty() {
+                            has_content = true;
+                            break;
+                        }
+                    }
+                }
+                if has_content {
+                    collected.push(self.styled_scrollback_row(screen, offset, use_cols));
+                }
+            }
+        }
+
+        // Both phases collected most-recent-first; reverse to chronological
+        collected.truncate(needed);
+        collected.reverse();
+        collected
+    }
+
+    fn styled_scrollback_row(
+        &self,
+        screen: &vt100::Screen,
+        offset: usize,
+        use_cols: u16,
+    ) -> Line<'static> {
+        let mut spans = Vec::new();
+        for c in 0..use_cols {
+            let Some(cell) = screen.scrollback_cell(offset, c) else {
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            spans.push(styled_span_from_cell(cell));
+        }
+        Line::from(spans)
+    }
+
+    fn styled_screen_row(
+        &self,
+        screen: &vt100::Screen,
+        row: u16,
+        use_cols: u16,
+    ) -> Line<'static> {
+        let mut spans = Vec::new();
+        for c in 0..use_cols {
+            let Some(cell) = screen.cell(row, c) else {
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            spans.push(styled_span_from_cell(cell));
+        }
+        Line::from(spans)
+    }
+
     pub fn terminal_mouse_state(
         &self,
         id: WorkspaceId,
@@ -1118,13 +1242,25 @@ impl TuiApp {
     pub fn toggle_selected_setting(&mut self) {
         match self.settings_selected {
             0 => self.settings.attention_notifications = !self.settings.attention_notifications,
+            1 => {} // preview_lines uses adjust, not toggle
+            _ => {}
+        }
+        let _ = save_settings(&self.settings);
+    }
+
+    pub fn adjust_selected_setting(&mut self, delta: i16) {
+        match self.settings_selected {
+            1 => {
+                let val = self.settings.preview_lines as i16 + delta;
+                self.settings.preview_lines = val.clamp(4, 30) as u16;
+            }
             _ => {}
         }
         let _ = save_settings(&self.settings);
     }
 
     pub fn settings_count(&self) -> usize {
-        1
+        2
     }
 
     pub fn effective_attention(&self, raw: AttentionLevel) -> AttentionLevel {
@@ -1516,6 +1652,28 @@ fn map_color(color: vt100::Color) -> TuiColor {
     }
 }
 
+/// Converts a vt100 cell into a styled ratatui Span (no cursor rendering).
+fn styled_span_from_cell(cell: &vt100::Cell) -> Span<'static> {
+    let fg = map_color(cell.fgcolor());
+    let bg = map_color(cell.bgcolor());
+    let mut style = Style::default().fg(fg).bg(bg);
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    let text = if cell.has_contents() {
+        cell.contents()
+    } else {
+        " ".to_string()
+    };
+    Span::styled(text, style)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct TabsPersistFile {
     workspaces: HashMap<String, PersistedWorkspaceTabs>,
@@ -1565,16 +1723,23 @@ fn tabs_persist_path() -> Option<PathBuf> {
 pub struct Settings {
     #[serde(default = "default_true")]
     pub attention_notifications: bool,
+    #[serde(default = "default_preview_lines")]
+    pub preview_lines: u16,
 }
 
 fn default_true() -> bool {
     true
 }
 
+fn default_preview_lines() -> u16 {
+    12
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             attention_notifications: true,
+            preview_lines: 12,
         }
     }
 }

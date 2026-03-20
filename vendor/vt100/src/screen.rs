@@ -601,6 +601,23 @@ impl Screen {
         self.grid().visible_cell(crate::grid::Pos { row, col })
     }
 
+    /// Returns the number of rows currently in the scrollback buffer.
+    #[must_use]
+    pub fn scrollback_count(&self) -> usize {
+        self.grid().scrollback_count()
+    }
+
+    /// Returns a cell from a scrollback row. `offset` 0 is the most recently
+    /// scrolled-off row; higher offsets go further back in history.
+    #[must_use]
+    pub fn scrollback_cell(
+        &self,
+        offset: usize,
+        col: u16,
+    ) -> Option<&crate::cell::Cell> {
+        self.grid().scrollback_row(offset).and_then(|r| r.get(col))
+    }
+
     /// Returns whether the text in row `row` should wrap to the next line.
     #[must_use]
     pub fn row_wrapped(&self, row: u16) -> bool {

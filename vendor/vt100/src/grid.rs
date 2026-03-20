@@ -176,6 +176,21 @@ impl Grid {
         self.scrollback_len
     }
 
+    /// Returns the number of rows currently stored in the scrollback buffer.
+    pub fn scrollback_count(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Returns a reference to the scrollback row at the given offset from
+    /// the bottom (0 = most recent scrollback row).
+    pub fn scrollback_row(&self, offset: usize) -> Option<&crate::row::Row> {
+        if offset >= self.scrollback.len() {
+            return None;
+        }
+        let idx = self.scrollback.len() - 1 - offset;
+        self.scrollback.get(idx)
+    }
+
     pub fn scrollback(&self) -> usize {
         self.scrollback_offset
     }

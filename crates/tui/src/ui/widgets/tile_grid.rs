@@ -7,21 +7,39 @@ use ratatui::{
     Frame,
 };
 
+use std::collections::HashSet;
+
 pub const COLS: u16 = 3;
-pub const TILE_H: u16 = 9;
+/// Collapsed tile height — metadata only (branch, path, stats).
+pub const TILE_H: u16 = 7;
 pub const ORANGE: Color = Color::Rgb(255, 165, 0);
+
+/// Computes the expanded tile height from the configured preview line count.
+/// Layout: 3 info lines + 1 divider + preview_lines + 2 borders.
+pub fn tile_h_expanded(preview_lines: u16) -> u16 {
+    preview_lines + 6
+}
+
+/// Pairs a workspace summary with optional terminal preview lines for tile rendering.
+pub struct TileData<'a> {
+    pub summary: &'a WorkspaceSummary,
+    pub preview: Vec<Line<'static>>,
+}
 
 /// Renders the workspace tile grid into `area`.
 ///
 /// Each workspace in `items` is displayed as a fixed-size rounded card.
 /// `selected` highlights the focused tile; `flash_on` drives attention pulse.
+/// `expanded` is the index of the tile that should be shown in expanded mode, if any.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
-    items: &[WorkspaceSummary],
+    items: &[TileData],
     selected: usize,
     flash_on: bool,
     attention_enabled: bool,
+    expanded: &HashSet<usize>,
+    expanded_h: u16,
 ) {
     if items.is_empty() {
         render_empty_state(frame, area);
@@ -30,32 +48,52 @@ pub fn render(
 
     let tile_w = area.width / COLS;
     let cols = COLS as usize;
-    for (i, ws) in items.iter().enumerate() {
-        let tile = tile_rect(area, i, cols, tile_w);
-        if tile.width < 8 || tile.height < 9 {
+    for (i, td) in items.iter().enumerate() {
+        let is_expanded = expanded.contains(&i);
+        let tile = tile_rect_with_expansion(area, i, cols, tile_w, expanded, expanded_h);
+        let min_h: u16 = if is_expanded { expanded_h } else { TILE_H };
+        if tile.width < 8 || tile.height < min_h {
             continue;
         }
-        render_tile(frame, tile, ws, i == selected, flash_on, attention_enabled);
+        render_tile(
+            frame,
+            tile,
+            td.summary,
+            &td.preview,
+            i == selected,
+            is_expanded,
+            flash_on,
+            attention_enabled,
+        );
     }
 }
 
 /// Returns the tile index at pixel coordinate (`x`, `y`) within `area`,
 /// or `None` if the coordinate falls outside all tiles.
-pub fn index_at(area: Rect, x: u16, y: u16, item_count: usize) -> Option<usize> {
+pub fn index_at(
+    area: Rect,
+    x: u16,
+    y: u16,
+    item_count: usize,
+    expanded: &HashSet<usize>,
+    expanded_h: u16,
+) -> Option<usize> {
     if item_count == 0 {
         return None;
     }
     if x < area.x || y < area.y || x >= area.right() || y >= area.bottom() {
         return None;
     }
-    let rel_x = x - area.x;
-    let rel_y = y - area.y;
     let tile_w = area.width / COLS;
     let cols = COLS as usize;
-    let col = (rel_x / tile_w) as usize;
-    let row = (rel_y / TILE_H) as usize;
-    let idx = row * cols + col;
-    (idx < item_count).then_some(idx)
+    // Check each tile rect since rows can have mixed heights
+    for i in 0..item_count {
+        let r = tile_rect_with_expansion(area, i, cols, tile_w, expanded, expanded_h);
+        if x >= r.x && y >= r.y && x < r.right() && y < r.bottom() {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// Draws the placeholder shown when there are no workspaces.
@@ -71,16 +109,55 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
     );
 }
 
-/// Computes the `Rect` for tile at grid position `index` given `cols` columns.
+/// Computes the `Rect` for tile at grid position `index` given `cols` columns,
+/// without any expansion.
 pub fn tile_rect(area: Rect, index: usize, cols: usize, tile_w: u16) -> Rect {
-    let row = index / cols;
+    let empty = HashSet::new();
+    tile_rect_with_expansion(area, index, cols, tile_w, &empty, 0)
+}
+
+/// Computes the `Rect` for tile at grid position `index`, accounting for
+/// expanded tiles that make their row taller.
+fn tile_rect_with_expansion(
+    area: Rect,
+    index: usize,
+    cols: usize,
+    tile_w: u16,
+    expanded: &HashSet<usize>,
+    expanded_h: u16,
+) -> Rect {
+    let target_row = index / cols;
     let col = index % cols;
+
+    // Calculate Y offset by summing row heights
+    let mut y = area.y;
+    for r in 0..target_row {
+        y += row_height(r, cols, expanded, expanded_h);
+    }
+
+    let h = if expanded.contains(&index) {
+        expanded_h
+    } else {
+        TILE_H
+    };
+
     Rect {
         x: area.x + (col as u16 * tile_w),
-        y: area.y + (row as u16 * TILE_H),
+        y,
         width: tile_w.min(area.width.saturating_sub(col as u16 * tile_w)),
-        height: TILE_H.min(area.height.saturating_sub(row as u16 * TILE_H)),
+        height: h.min(area.height.saturating_sub(y - area.y)),
     }
+}
+
+/// Returns the height of a given grid row, which is `expanded_h` if
+/// any tile in that row is expanded, otherwise TILE_H.
+fn row_height(row: usize, cols: usize, expanded: &HashSet<usize>, expanded_h: u16) -> u16 {
+    for &exp_idx in expanded {
+        if exp_idx / cols == row {
+            return expanded_h;
+        }
+    }
+    TILE_H
 }
 
 /// Renders a single workspace tile into `tile`.
@@ -88,7 +165,9 @@ fn render_tile(
     frame: &mut Frame,
     tile: Rect,
     ws: &WorkspaceSummary,
+    preview: &[Line<'static>],
     is_selected: bool,
+    is_expanded: bool,
     flash_on: bool,
     attention_enabled: bool,
 ) {
@@ -106,7 +185,8 @@ fn render_tile(
     ));
     let title_right = build_status_badge(&ws.attention, flash_on, attention_enabled);
     let body_max = (tile.width as usize).saturating_sub(6);
-    let body_lines = build_body_lines(ws, body_max);
+    let interior_rows = tile.height.saturating_sub(2) as usize;
+    let body_lines = build_body_lines(ws, body_max, preview, is_expanded, interior_rows);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -192,20 +272,67 @@ fn build_status_badge(
     }
 }
 
-/// Builds the 7 inner body lines displayed inside a workspace tile.
+/// Builds the interior body lines for a workspace tile.
 ///
-/// The count is fixed at 7 to fill `TILE_H - 2` rows (tile height minus
-/// the top and bottom border lines).
-fn build_body_lines(ws: &WorkspaceSummary, body_max: usize) -> Vec<Line<'static>> {
-    vec![
-        Line::from(""),
+/// In collapsed mode (5 interior lines): branch, path, stats, and padding.
+/// In expanded mode: branch, path, stats, divider, preview lines, padding.
+fn build_body_lines(
+    ws: &WorkspaceSummary,
+    body_max: usize,
+    preview: &[Line<'static>],
+    is_expanded: bool,
+    interior_rows: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
         build_branch_line(ws, body_max),
         build_path_line(ws, body_max),
-        Line::from(""),
         build_stats_line(ws),
-        Line::from(""),
-        Line::from(""),
-    ]
+    ];
+
+    if is_expanded {
+        lines.push(Line::from(Span::styled(
+            "╶".repeat(body_max),
+            dim_style(),
+        )));
+
+        let preview_slots = interior_rows.saturating_sub(4); // 3 info + 1 divider
+        if preview.is_empty() {
+            lines.push(Line::from(Span::styled(" No output yet.", dim_style())));
+        } else {
+            for i in 0..preview_slots.min(preview.len()) {
+                lines.push(truncate_line(&preview[i], body_max));
+            }
+        }
+    }
+
+    // Pad to fill interior
+    while lines.len() < interior_rows {
+        lines.push(Line::from(""));
+    }
+
+    lines
+}
+
+/// Truncates a styled `Line` to fit within `max_width` visible characters.
+fn truncate_line(line: &Line<'static>, max_width: usize) -> Line<'static> {
+    let mut result_spans = Vec::new();
+    let mut width = 0;
+    for span in &line.spans {
+        if width >= max_width {
+            break;
+        }
+        let remaining = max_width - width;
+        let char_count = span.content.chars().count();
+        if char_count <= remaining {
+            result_spans.push(span.clone());
+            width += char_count;
+        } else {
+            let truncated: String = span.content.chars().take(remaining).collect();
+            width += remaining;
+            result_spans.push(Span::styled(truncated, span.style));
+        }
+    }
+    Line::from(result_spans)
 }
 
 fn build_branch_line(ws: &WorkspaceSummary, body_max: usize) -> Line<'static> {
@@ -317,48 +444,52 @@ mod tests {
         Rect::new(0, 0, 90, 36)
     }
 
+    fn no_expand() -> HashSet<usize> {
+        HashSet::new()
+    }
+
     // --- index_at ---
 
     #[test]
     fn index_at_first_tile() {
-        assert_eq!(index_at(area(), 1, 1, 6), Some(0));
+        assert_eq!(index_at(area(), 1, 1, 6, &no_expand(), 18), Some(0));
     }
 
     #[test]
     fn index_at_second_column() {
         let a = area();
         let tile_w = a.width / COLS;
-        assert_eq!(index_at(a, tile_w + 1, 1, 6), Some(1));
+        assert_eq!(index_at(a, tile_w + 1, 1, 6, &no_expand(), 18), Some(1));
     }
 
     #[test]
     fn index_at_second_row() {
-        assert_eq!(index_at(area(), 1, TILE_H + 1, 6), Some(3));
+        assert_eq!(index_at(area(), 1, TILE_H + 1, 6, &no_expand(), 18), Some(3));
     }
 
     #[test]
     fn index_at_outside_area() {
-        assert_eq!(index_at(area(), 200, 200, 6), None);
+        assert_eq!(index_at(area(), 200, 200, 6, &no_expand(), 18), None);
     }
 
     #[test]
     fn index_at_zero_items() {
-        assert_eq!(index_at(area(), 1, 1, 0), None);
+        assert_eq!(index_at(area(), 1, 1, 0, &no_expand(), 18), None);
     }
 
     #[test]
     fn index_at_beyond_item_count() {
         // Click where a 7th tile would be, but only 3 items exist
-        assert_eq!(index_at(area(), 1, TILE_H + 1, 3), None);
+        assert_eq!(index_at(area(), 1, TILE_H + 1, 3, &no_expand(), 18), None);
     }
 
     #[test]
     fn index_at_offset_area() {
         let a = Rect::new(10, 5, 90, 36);
         // Click before the area
-        assert_eq!(index_at(a, 5, 5, 3), None);
+        assert_eq!(index_at(a, 5, 5, 3, &no_expand(), 18), None);
         // Click inside the area
-        assert_eq!(index_at(a, 11, 6, 3), Some(0));
+        assert_eq!(index_at(a, 11, 6, 3, &no_expand(), 18), Some(0));
     }
 
     // --- tile_rect ---
@@ -390,6 +521,38 @@ mod tests {
         let r = tile_rect(a, 1, COLS as usize, tile_w);
         assert_eq!(r.x, 10 + tile_w);
         assert_eq!(r.y, 5);
+    }
+
+    // --- tile_rect_with_expansion ---
+
+    #[test]
+    fn expanded_tile_gets_taller_height() {
+        let a = area();
+        let tile_w = a.width / COLS;
+        let exp = HashSet::from([0]);
+        let r = tile_rect_with_expansion(a, 0, COLS as usize, tile_w, &exp, 18);
+        assert_eq!(r.height, 18);
+    }
+
+    #[test]
+    fn non_expanded_sibling_in_expanded_row_still_short() {
+        let a = area();
+        let tile_w = a.width / COLS;
+        // Tile 0 is expanded; tile 1 is in same row but not expanded
+        let exp = HashSet::from([0]);
+        let r = tile_rect_with_expansion(a, 1, COLS as usize, tile_w, &exp, 18);
+        // It still gets TILE_H height, just at the same y offset
+        assert_eq!(r.height, TILE_H);
+    }
+
+    #[test]
+    fn second_row_offset_accounts_for_expanded_first_row() {
+        let a = area();
+        let tile_w = a.width / COLS;
+        // Tile 0 is expanded, so first row is 18 tall
+        let exp = HashSet::from([0]);
+        let r = tile_rect_with_expansion(a, 3, COLS as usize, tile_w, &exp, 18);
+        assert_eq!(r.y, 18);
     }
 
     // --- truncate_end ---
@@ -607,5 +770,59 @@ mod tests {
         let line = build_path_line(&ws, 60);
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("server:"));
+    }
+
+    // --- build_body_lines tests ---
+
+    #[test]
+    fn body_lines_collapsed_no_preview() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let lines = build_body_lines(&ws, 30, &[], false, 5);
+        assert_eq!(lines.len(), 5);
+        // No divider in collapsed mode
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(!all_text.contains("╶"));
+    }
+
+    #[test]
+    fn body_lines_expanded_with_preview() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let preview = vec![
+            Line::from("line 1"),
+            Line::from("line 2"),
+            Line::from("line 3"),
+        ];
+        let lines = build_body_lines(&ws, 30, &preview, true, 16);
+        assert_eq!(lines.len(), 16);
+        // Should contain divider
+        let divider_text: String = lines[3]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(divider_text.contains("╶"));
+        // Should contain preview content
+        let preview_text: String = lines[4]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(preview_text.contains("line 1"));
+    }
+
+    #[test]
+    fn body_lines_expanded_empty_preview() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let lines = build_body_lines(&ws, 30, &[], true, 16);
+        assert_eq!(lines.len(), 16);
+        let no_output_text: String = lines[4]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(no_output_text.contains("No output yet."));
     }
 }

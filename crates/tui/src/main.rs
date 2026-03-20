@@ -1276,6 +1276,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     KeyCode::Enter | KeyCode::Char(' ') => {
                                         app.toggle_selected_setting()
                                     }
+                                    KeyCode::Left | KeyCode::Char('h') => {
+                                        app.adjust_selected_setting(-1)
+                                    }
+                                    KeyCode::Right | KeyCode::Char('l') => {
+                                        app.adjust_selected_setting(1)
+                                    }
                                     _ => {}
                                 }
                             } else if app.is_confirming_delete() {
@@ -1526,6 +1532,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     KeyCode::Right | KeyCode::Char('l') => {
                                         app.move_home_selection(1, 0)
+                                    }
+                                    KeyCode::Char(' ') => {
+                                        app.toggle_home_expanded_tile()
                                     }
                                     KeyCode::Char('n') => {
                                         let cwd = std::env::current_dir()
@@ -2506,11 +2515,14 @@ async fn handle_mouse(
                 }
 
                 let grid = ui::screens::home::grid_rect(area);
+                let expanded_h = ui::widgets::tile_grid::tile_h_expanded(app.settings.preview_lines);
                 if let Some(idx) = ui::widgets::tile_grid::index_at(
                     grid,
                     mouse.column,
                     mouse.row,
                     app.workspaces.len(),
+                    &app.home_expanded_tiles,
+                    expanded_h,
                 ) {
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
