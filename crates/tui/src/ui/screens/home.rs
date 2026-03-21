@@ -17,8 +17,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     render_dashboard(frame, chunks[0], app);
 
     let grid_area = chunks[1];
-    let tile_w = grid_area.width / tile_grid::COLS;
-    let body_max = (tile_w as usize).saturating_sub(6);
+    let body_max = (grid_area.width as usize).saturating_sub(6);
     let expanded = &app.home_expanded_tiles;
     let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
     let preview_lines = app.settings.preview_lines;
@@ -52,6 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         app.settings.attention_notifications,
         expanded,
         expanded_h,
+        app.home_scroll_offset,
     );
     footer::render(frame, chunks[2], app);
     render_modals(frame, area, app);
@@ -524,10 +524,8 @@ pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
         return Some(chunks[2]);
     }
 
-    // Check individual tile rects (use index_at for expansion-aware hit testing)
+    // Check individual tile rects (use index_at for scroll-aware hit testing)
     let grid_area = chunks[1];
-    let tile_w = grid_area.width / tile_grid::COLS;
-    let cols = tile_grid::COLS as usize;
     let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
     if let Some(i) = tile_grid::index_at(
         grid_area,
@@ -536,8 +534,15 @@ pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
         app.workspaces.len(),
         &app.home_expanded_tiles,
         expanded_h,
+        app.home_scroll_offset,
     ) {
-        let r = tile_grid::tile_rect(grid_area, i, cols, tile_w);
+        let r = tile_grid::tile_rect(
+            grid_area,
+            i,
+            &app.home_expanded_tiles,
+            expanded_h,
+            app.home_scroll_offset,
+        );
         if r.width > 0 && r.height > 0 {
             return Some(r);
         }
@@ -575,10 +580,15 @@ pub fn border_rects(area: Rect, app: &TuiApp) -> Vec<Rect> {
 
     // Individual tile rects from the grid
     let grid_area = chunks[1];
-    let tile_w = grid_area.width / tile_grid::COLS;
-    let cols = tile_grid::COLS as usize;
+    let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
     for i in 0..app.workspaces.len() {
-        let r = tile_grid::tile_rect(grid_area, i, cols, tile_w);
+        let r = tile_grid::tile_rect(
+            grid_area,
+            i,
+            &app.home_expanded_tiles,
+            expanded_h,
+            app.home_scroll_offset,
+        );
         if r.width > 0 && r.height > 0 {
             rects.push(r);
         }

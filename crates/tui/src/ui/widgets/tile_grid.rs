@@ -9,7 +9,6 @@ use ratatui::{
 
 use std::collections::HashSet;
 
-pub const COLS: u16 = 3;
 /// Collapsed tile height — metadata only (branch, path, stats).
 pub const TILE_H: u16 = 7;
 pub const ORANGE: Color = Color::Rgb(255, 165, 0);
@@ -26,11 +25,12 @@ pub struct TileData<'a> {
     pub preview: Vec<Line<'static>>,
 }
 
-/// Renders the workspace tile grid into `area`.
+/// Renders the workspace tiles as a single-column vertical list into `area`.
 ///
-/// Each workspace in `items` is displayed as a fixed-size rounded card.
+/// Each workspace in `items` is displayed as a full-width rounded card.
 /// `selected` highlights the focused tile; `flash_on` drives attention pulse.
-/// `expanded` is the index of the tile that should be shown in expanded mode, if any.
+/// `expanded` contains the indices of tiles shown in expanded mode.
+/// `scroll_offset` is the vertical pixel offset for scrolling.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -40,19 +40,37 @@ pub fn render(
     attention_enabled: bool,
     expanded: &HashSet<usize>,
     expanded_h: u16,
+    scroll_offset: u16,
 ) {
     if items.is_empty() {
         render_empty_state(frame, area);
         return;
     }
 
-    let tile_w = area.width / COLS;
-    let cols = COLS as usize;
+    let mut virtual_y: u16 = 0;
     for (i, td) in items.iter().enumerate() {
         let is_expanded = expanded.contains(&i);
-        let tile = tile_rect_with_expansion(area, i, cols, tile_w, expanded, expanded_h);
-        let min_h: u16 = if is_expanded { expanded_h } else { TILE_H };
-        if tile.width < 8 || tile.height < min_h {
+        let tile_h = if is_expanded { expanded_h } else { TILE_H };
+
+        // Visible range in viewport coordinates
+        let vis_top = virtual_y.saturating_sub(scroll_offset);
+        let vis_bottom = (virtual_y + tile_h).saturating_sub(scroll_offset);
+
+        virtual_y += tile_h;
+
+        // Skip tiles entirely above or below the viewport
+        if vis_bottom == 0 || vis_top >= area.height {
+            continue;
+        }
+
+        let tile = Rect {
+            x: area.x,
+            y: area.y + vis_top,
+            width: area.width,
+            height: vis_bottom.saturating_sub(vis_top).min(area.height - vis_top),
+        };
+
+        if tile.width < 8 || tile.height < TILE_H.min(tile_h) {
             continue;
         }
         render_tile(
@@ -77,6 +95,7 @@ pub fn index_at(
     item_count: usize,
     expanded: &HashSet<usize>,
     expanded_h: u16,
+    scroll_offset: u16,
 ) -> Option<usize> {
     if item_count == 0 {
         return None;
@@ -84,14 +103,14 @@ pub fn index_at(
     if x < area.x || y < area.y || x >= area.right() || y >= area.bottom() {
         return None;
     }
-    let tile_w = area.width / COLS;
-    let cols = COLS as usize;
-    // Check each tile rect since rows can have mixed heights
+    let rel_y = (y - area.y) + scroll_offset;
+    let mut virtual_y: u16 = 0;
     for i in 0..item_count {
-        let r = tile_rect_with_expansion(area, i, cols, tile_w, expanded, expanded_h);
-        if x >= r.x && y >= r.y && x < r.right() && y < r.bottom() {
+        let tile_h = if expanded.contains(&i) { expanded_h } else { TILE_H };
+        if rel_y >= virtual_y && rel_y < virtual_y + tile_h {
             return Some(i);
         }
+        virtual_y += tile_h;
     }
     None
 }
@@ -109,55 +128,39 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
     );
 }
 
-/// Computes the `Rect` for tile at grid position `index` given `cols` columns,
-/// without any expansion.
-pub fn tile_rect(area: Rect, index: usize, cols: usize, tile_w: u16) -> Rect {
-    let empty = HashSet::new();
-    tile_rect_with_expansion(area, index, cols, tile_w, &empty, 0)
+/// Returns the virtual Y offset of the tile at `index` (before scroll).
+pub fn tile_y_offset(index: usize, expanded: &HashSet<usize>, expanded_h: u16) -> u16 {
+    let mut y: u16 = 0;
+    for i in 0..index {
+        y += if expanded.contains(&i) { expanded_h } else { TILE_H };
+    }
+    y
 }
 
-/// Computes the `Rect` for tile at grid position `index`, accounting for
-/// expanded tiles that make their row taller.
-fn tile_rect_with_expansion(
+/// Returns the total virtual height of all tiles.
+pub fn total_height(item_count: usize, expanded: &HashSet<usize>, expanded_h: u16) -> u16 {
+    tile_y_offset(item_count, expanded, expanded_h)
+}
+
+/// Computes the `Rect` for tile at `index` in the visible viewport,
+/// accounting for expansion and scroll offset.
+pub fn tile_rect(
     area: Rect,
     index: usize,
-    cols: usize,
-    tile_w: u16,
     expanded: &HashSet<usize>,
     expanded_h: u16,
+    scroll_offset: u16,
 ) -> Rect {
-    let target_row = index / cols;
-    let col = index % cols;
-
-    // Calculate Y offset by summing row heights
-    let mut y = area.y;
-    for r in 0..target_row {
-        y += row_height(r, cols, expanded, expanded_h);
-    }
-
-    let h = if expanded.contains(&index) {
-        expanded_h
-    } else {
-        TILE_H
-    };
-
+    let virtual_y = tile_y_offset(index, expanded, expanded_h);
+    let tile_h = if expanded.contains(&index) { expanded_h } else { TILE_H };
+    let vis_top = virtual_y.saturating_sub(scroll_offset);
+    let vis_bottom = (virtual_y + tile_h).saturating_sub(scroll_offset);
     Rect {
-        x: area.x + (col as u16 * tile_w),
-        y,
-        width: tile_w.min(area.width.saturating_sub(col as u16 * tile_w)),
-        height: h.min(area.height.saturating_sub(y - area.y)),
+        x: area.x,
+        y: area.y + vis_top,
+        width: area.width,
+        height: vis_bottom.saturating_sub(vis_top).min(area.height.saturating_sub(vis_top)),
     }
-}
-
-/// Returns the height of a given grid row, which is `expanded_h` if
-/// any tile in that row is expanded, otherwise TILE_H.
-fn row_height(row: usize, cols: usize, expanded: &HashSet<usize>, expanded_h: u16) -> u16 {
-    for &exp_idx in expanded {
-        if exp_idx / cols == row {
-            return expanded_h;
-        }
-    }
-    TILE_H
 }
 
 /// Renders a single workspace tile into `tile`.
@@ -452,44 +455,43 @@ mod tests {
 
     #[test]
     fn index_at_first_tile() {
-        assert_eq!(index_at(area(), 1, 1, 6, &no_expand(), 18), Some(0));
+        assert_eq!(index_at(area(), 1, 1, 6, &no_expand(), 18, 0), Some(0));
     }
 
     #[test]
-    fn index_at_second_column() {
-        let a = area();
-        let tile_w = a.width / COLS;
-        assert_eq!(index_at(a, tile_w + 1, 1, 6, &no_expand(), 18), Some(1));
-    }
-
-    #[test]
-    fn index_at_second_row() {
-        assert_eq!(index_at(area(), 1, TILE_H + 1, 6, &no_expand(), 18), Some(3));
+    fn index_at_second_tile() {
+        assert_eq!(index_at(area(), 1, TILE_H + 1, 6, &no_expand(), 18, 0), Some(1));
     }
 
     #[test]
     fn index_at_outside_area() {
-        assert_eq!(index_at(area(), 200, 200, 6, &no_expand(), 18), None);
+        assert_eq!(index_at(area(), 200, 200, 6, &no_expand(), 18, 0), None);
     }
 
     #[test]
     fn index_at_zero_items() {
-        assert_eq!(index_at(area(), 1, 1, 0, &no_expand(), 18), None);
+        assert_eq!(index_at(area(), 1, 1, 0, &no_expand(), 18, 0), None);
     }
 
     #[test]
     fn index_at_beyond_item_count() {
-        // Click where a 7th tile would be, but only 3 items exist
-        assert_eq!(index_at(area(), 1, TILE_H + 1, 3, &no_expand(), 18), None);
+        // Click where a 4th tile would be, but only 3 items exist
+        assert_eq!(index_at(area(), 1, TILE_H * 3 + 1, 3, &no_expand(), 18, 0), None);
     }
 
     #[test]
     fn index_at_offset_area() {
         let a = Rect::new(10, 5, 90, 36);
         // Click before the area
-        assert_eq!(index_at(a, 5, 5, 3, &no_expand(), 18), None);
+        assert_eq!(index_at(a, 5, 5, 3, &no_expand(), 18, 0), None);
         // Click inside the area
-        assert_eq!(index_at(a, 11, 6, 3, &no_expand(), 18), Some(0));
+        assert_eq!(index_at(a, 11, 6, 3, &no_expand(), 18, 0), Some(0));
+    }
+
+    #[test]
+    fn index_at_with_scroll() {
+        // Scroll past the first tile; clicking at y=1 should hit tile 1
+        assert_eq!(index_at(area(), 1, 1, 6, &no_expand(), 18, TILE_H), Some(1));
     }
 
     // --- tile_rect ---
@@ -497,62 +499,71 @@ mod tests {
     #[test]
     fn tile_rect_first() {
         let a = area();
-        let tile_w = a.width / COLS;
-        let r = tile_rect(a, 0, COLS as usize, tile_w);
+        let r = tile_rect(a, 0, &no_expand(), 18, 0);
         assert_eq!(r.x, 0);
         assert_eq!(r.y, 0);
-        assert_eq!(r.width, tile_w);
+        assert_eq!(r.width, a.width);
         assert_eq!(r.height, TILE_H);
     }
 
     #[test]
-    fn tile_rect_second_row_first_col() {
+    fn tile_rect_second() {
         let a = area();
-        let tile_w = a.width / COLS;
-        let r = tile_rect(a, 3, COLS as usize, tile_w);
+        let r = tile_rect(a, 1, &no_expand(), 18, 0);
         assert_eq!(r.x, 0);
         assert_eq!(r.y, TILE_H);
+        assert_eq!(r.width, a.width);
     }
 
     #[test]
     fn tile_rect_with_offset_area() {
         let a = Rect::new(10, 5, 90, 36);
-        let tile_w = a.width / COLS;
-        let r = tile_rect(a, 1, COLS as usize, tile_w);
-        assert_eq!(r.x, 10 + tile_w);
-        assert_eq!(r.y, 5);
+        let r = tile_rect(a, 1, &no_expand(), 18, 0);
+        assert_eq!(r.x, 10);
+        assert_eq!(r.y, 5 + TILE_H);
     }
 
-    // --- tile_rect_with_expansion ---
+    // --- expansion ---
 
     #[test]
     fn expanded_tile_gets_taller_height() {
         let a = area();
-        let tile_w = a.width / COLS;
         let exp = HashSet::from([0]);
-        let r = tile_rect_with_expansion(a, 0, COLS as usize, tile_w, &exp, 18);
+        let r = tile_rect(a, 0, &exp, 18, 0);
         assert_eq!(r.height, 18);
     }
 
     #[test]
-    fn non_expanded_sibling_in_expanded_row_still_short() {
+    fn tile_after_expanded_is_offset() {
         let a = area();
-        let tile_w = a.width / COLS;
-        // Tile 0 is expanded; tile 1 is in same row but not expanded
         let exp = HashSet::from([0]);
-        let r = tile_rect_with_expansion(a, 1, COLS as usize, tile_w, &exp, 18);
-        // It still gets TILE_H height, just at the same y offset
+        let r = tile_rect(a, 1, &exp, 18, 0);
+        assert_eq!(r.y, 18);
         assert_eq!(r.height, TILE_H);
     }
 
+    // --- total_height / tile_y_offset ---
+
     #[test]
-    fn second_row_offset_accounts_for_expanded_first_row() {
-        let a = area();
-        let tile_w = a.width / COLS;
-        // Tile 0 is expanded, so first row is 18 tall
+    fn total_height_no_expansion() {
+        assert_eq!(total_height(3, &no_expand(), 18), TILE_H * 3);
+    }
+
+    #[test]
+    fn total_height_with_expansion() {
+        let exp = HashSet::from([1]);
+        assert_eq!(total_height(3, &exp, 18), TILE_H + 18 + TILE_H);
+    }
+
+    #[test]
+    fn tile_y_offset_first() {
+        assert_eq!(tile_y_offset(0, &no_expand(), 18), 0);
+    }
+
+    #[test]
+    fn tile_y_offset_after_expanded() {
         let exp = HashSet::from([0]);
-        let r = tile_rect_with_expansion(a, 3, COLS as usize, tile_w, &exp, 18);
-        assert_eq!(r.y, 18);
+        assert_eq!(tile_y_offset(1, &exp, 18), 18);
     }
 
     // --- truncate_end ---

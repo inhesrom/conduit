@@ -338,6 +338,10 @@ pub struct TuiApp {
     pub ws_tag_filter: bool,
     /// Indices of expanded tiles on the home screen.
     pub home_expanded_tiles: HashSet<usize>,
+    /// Vertical scroll offset for the home tile list.
+    pub home_scroll_offset: u16,
+    /// Cached grid height from last render, used for scroll calculations.
+    pub last_grid_height: u16,
 }
 
 impl Default for TuiApp {
@@ -392,6 +396,8 @@ impl Default for TuiApp {
             commit_files_cache: HashMap::new(),
             ws_tag_filter: false,
             home_expanded_tiles: HashSet::new(),
+            home_scroll_offset: 0,
+            last_grid_height: 0,
         }
     }
 }
@@ -406,6 +412,7 @@ impl TuiApp {
             self.home_selected = self.workspaces.len() - 1;
         }
         self.reconcile_workspace_tab_state();
+        self.ensure_home_selected_visible();
     }
 
     pub fn selected_workspace_id(&self) -> Option<WorkspaceId> {
@@ -441,23 +448,15 @@ impl TuiApp {
         self.ws_tabs[idx].fullscreen = !self.ws_tabs[idx].fullscreen;
     }
 
-    pub fn move_home_selection(&mut self, dx: isize, dy: isize) {
-        let cols = tile_grid::COLS as usize;
+    pub fn move_home_selection(&mut self, delta: isize) {
         let len = self.workspaces.len();
         if len == 0 {
             self.home_selected = 0;
             return;
         }
-
-        let cur_col = (self.home_selected % cols) as isize;
-        let cur_row = (self.home_selected / cols) as isize;
-        let max_row = ((len - 1) / cols) as isize;
-
-        let new_col = (cur_col + dx).clamp(0, (cols - 1) as isize);
-        let new_row = (cur_row + dy).clamp(0, max_row);
-
-        let new_idx = (new_row as usize) * cols + (new_col as usize);
-        self.home_selected = new_idx.min(len - 1);
+        let new_idx = (self.home_selected as isize + delta).clamp(0, (len - 1) as isize);
+        self.home_selected = new_idx as usize;
+        self.ensure_home_selected_visible();
     }
 
     pub fn toggle_home_expanded_tile(&mut self) {
@@ -469,6 +468,7 @@ impl TuiApp {
         if !self.home_expanded_tiles.remove(&idx) {
             self.home_expanded_tiles.insert(idx);
         }
+        self.ensure_home_selected_visible();
     }
 
     pub fn set_home_selection(&mut self, index: usize) {
@@ -477,6 +477,42 @@ impl TuiApp {
         } else {
             self.home_selected = index.min(self.workspaces.len() - 1);
         }
+        self.ensure_home_selected_visible();
+    }
+
+    /// Adjusts `home_scroll_offset` so the selected tile is visible.
+    pub fn ensure_home_selected_visible(&mut self) {
+        if self.last_grid_height == 0 {
+            return;
+        }
+        let expanded_h = tile_grid::tile_h_expanded(self.settings.preview_lines);
+        let y = tile_grid::tile_y_offset(self.home_selected, &self.home_expanded_tiles, expanded_h);
+        let tile_h = if self.home_expanded_tiles.contains(&self.home_selected) {
+            expanded_h
+        } else {
+            tile_grid::TILE_H
+        };
+        // Scroll up if tile is above viewport
+        if y < self.home_scroll_offset {
+            self.home_scroll_offset = y;
+        }
+        // Scroll down if tile bottom is below viewport
+        if y + tile_h > self.home_scroll_offset + self.last_grid_height {
+            self.home_scroll_offset = (y + tile_h).saturating_sub(self.last_grid_height);
+        }
+    }
+
+    /// Scroll the home tile list by `delta` rows (positive = down).
+    pub fn scroll_home(&mut self, delta: i16) {
+        let expanded_h = tile_grid::tile_h_expanded(self.settings.preview_lines);
+        let total = tile_grid::total_height(
+            self.workspaces.len(),
+            &self.home_expanded_tiles,
+            expanded_h,
+        );
+        let max_offset = total.saturating_sub(self.last_grid_height);
+        let new_offset = (self.home_scroll_offset as i32 + delta as i32).clamp(0, max_offset as i32);
+        self.home_scroll_offset = new_offset as u16;
     }
 
     pub fn active_tab(&self) -> &TerminalTab {
@@ -1945,41 +1981,33 @@ mod tests {
     // ===== Navigation =====
 
     #[test]
-    fn move_home_selection_right() {
+    fn move_home_selection_down() {
         let mut app = app_with_workspaces(6);
         app.home_selected = 0;
-        app.move_home_selection(1, 0);
+        app.move_home_selection(1);
         assert_eq!(app.home_selected, 1);
     }
 
     #[test]
-    fn move_home_selection_left_clamps() {
+    fn move_home_selection_up_clamps() {
         let mut app = app_with_workspaces(6);
         app.home_selected = 0;
-        app.move_home_selection(-1, 0);
+        app.move_home_selection(-1);
         assert_eq!(app.home_selected, 0);
     }
 
     #[test]
-    fn move_home_selection_down() {
-        let mut app = app_with_workspaces(6); // 3 cols, 2 rows
-        app.home_selected = 0;
-        app.move_home_selection(0, 1);
-        assert_eq!(app.home_selected, 3);
-    }
-
-    #[test]
     fn move_home_selection_down_clamps_to_last() {
-        let mut app = app_with_workspaces(4); // 3 cols, 2nd row has 1 item
-        app.home_selected = 2; // last in first row
-        app.move_home_selection(0, 1);
-        assert_eq!(app.home_selected, 3); // clamped to last item
+        let mut app = app_with_workspaces(4);
+        app.home_selected = 3;
+        app.move_home_selection(1);
+        assert_eq!(app.home_selected, 3);
     }
 
     #[test]
     fn move_home_selection_empty() {
         let mut app = TuiApp::default();
-        app.move_home_selection(1, 1);
+        app.move_home_selection(1);
         assert_eq!(app.home_selected, 0);
     }
 

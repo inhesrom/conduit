@@ -14,14 +14,15 @@ use base64::Engine as _;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
 use protocol::{AttentionLevel, Command, Event as CoreEvent, Route, TerminalKind};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
@@ -1113,6 +1114,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
+        let _ = stdout.execute(PopKeyboardEnhancementFlags);
         let _ = stdout.execute(DisableBracketedPaste);
         let _ = stdout.execute(DisableMouseCapture);
         let _ = stdout.execute(crossterm::cursor::Show);
@@ -1125,6 +1127,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableMouseCapture)?;
     stdout.execute(EnableBracketedPaste)?;
+    stdout.execute(PushKeyboardEnhancementFlags(
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+    ))?;
 
     let backend_term = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend_term)?;
@@ -1174,6 +1179,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         .await;
                 }
             }
+        }
+
+        // Update cached grid height for scroll calculations.
+        if let Ok(size) = terminal.size() {
+            let area = Rect::new(0, 0, size.width, size.height);
+            app.last_grid_height = ui::screens::home::grid_rect(area).height;
         }
 
         let mut pending_clipboard_text: Option<String> = None;
@@ -1499,6 +1510,26 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     _ => {}
                                 }
                             } else {
+                                // Shift+Enter: send Enter to the agent terminal
+                                // without leaving the home screen.
+                                if key.code == KeyCode::Enter
+                                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                                {
+                                    if let Some(id) = app.selected_workspace_id() {
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::SendTerminalInput {
+                                                id,
+                                                kind: TerminalKind::Agent,
+                                                tab_id: None,
+                                                data_b64:
+                                                    base64::engine::general_purpose::STANDARD
+                                                        .encode(b"\r"),
+                                            })
+                                            .await;
+                                    }
+                                    continue;
+                                }
                                 match key.code {
                                     KeyCode::Esc => {
                                         app.go_home();
@@ -1523,16 +1554,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         }
                                     }
                                     KeyCode::Down | KeyCode::Char('j') => {
-                                        app.move_home_selection(0, 1)
+                                        app.move_home_selection(1)
                                     }
                                     KeyCode::Up | KeyCode::Char('k') => {
-                                        app.move_home_selection(0, -1)
-                                    }
-                                    KeyCode::Left | KeyCode::Char('h') => {
-                                        app.move_home_selection(-1, 0)
-                                    }
-                                    KeyCode::Right | KeyCode::Char('l') => {
-                                        app.move_home_selection(1, 0)
+                                        app.move_home_selection(-1)
                                     }
                                     KeyCode::Char(' ') => {
                                         app.toggle_home_expanded_tile()
@@ -2278,6 +2303,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     }
 
     disable_raw_mode()?;
+    std::io::stdout().execute(PopKeyboardEnhancementFlags)?;
     std::io::stdout().execute(DisableBracketedPaste)?;
     std::io::stdout().execute(DisableMouseCapture)?;
     std::io::stdout().execute(LeaveAlternateScreen)?;
@@ -2569,6 +2595,7 @@ async fn handle_mouse(
                     app.workspaces.len(),
                     &app.home_expanded_tiles,
                     expanded_h,
+                    app.home_scroll_offset,
                 ) {
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
@@ -2578,6 +2605,12 @@ async fn handle_mouse(
                         let _ = cmd_tx.send(Command::ClearAttention { id }).await;
                     }
                 }
+            }
+            MouseEventKind::ScrollUp => {
+                app.scroll_home(-3);
+            }
+            MouseEventKind::ScrollDown => {
+                app.scroll_home(3);
             }
             _ => {}
         },
