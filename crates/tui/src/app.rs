@@ -832,14 +832,6 @@ impl TuiApp {
         }
     }
 
-    /// Returns the current column count of a workspace's agent terminal parser.
-    pub fn agent_parser_size(&self, id: WorkspaceId) -> Option<(u16, u16)> {
-        let state = self.terminal_state.get(&id)?;
-        let tab = state.tabs.get("agent")?;
-        let (rows, cols) = tab.parser.screen().size();
-        Some((rows, cols))
-    }
-
     pub fn has_terminal_tab(&self, id: WorkspaceId, tab_id: &str) -> bool {
         self.terminal_state
             .get(&id)

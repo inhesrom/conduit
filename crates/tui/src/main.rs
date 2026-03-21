@@ -1127,9 +1127,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableMouseCapture)?;
     stdout.execute(EnableBracketedPaste)?;
-    stdout.execute(PushKeyboardEnhancementFlags(
-        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-    ))?;
+    let keyboard_enhancement_active =
+        crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if keyboard_enhancement_active {
+        let _ = stdout.execute(PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ));
+    }
 
     let backend_term = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend_term)?;
@@ -1181,24 +1185,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        // Update cached grid height for scroll calculations and resize
-        // agent terminal parsers so preview content reflows to tile width.
+        // Update cached grid height for scroll calculations.
         if let Ok(size) = terminal.size() {
             let area = Rect::new(0, 0, size.width, size.height);
-            let grid = ui::screens::home::grid_rect(area);
-            app.last_grid_height = grid.height;
-
-            if matches!(app.route, Route::Home) {
-                let preview_cols = grid.width.saturating_sub(6);
-                let ids: Vec<_> = app.workspaces.iter().map(|w| w.id).collect();
-                for id in ids {
-                    if let Some((rows, cols)) = app.agent_parser_size(id) {
-                        if cols != preview_cols {
-                            app.resize_terminal_parser(id, "agent", preview_cols, rows);
-                        }
-                    }
-                }
-            }
+            app.last_grid_height = ui::screens::home::grid_rect(area).height;
         }
 
         let mut pending_clipboard_text: Option<String> = None;
@@ -2317,7 +2307,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     }
 
     disable_raw_mode()?;
-    std::io::stdout().execute(PopKeyboardEnhancementFlags)?;
+    let _ = std::io::stdout().execute(PopKeyboardEnhancementFlags);
     std::io::stdout().execute(DisableBracketedPaste)?;
     std::io::stdout().execute(DisableMouseCapture)?;
     std::io::stdout().execute(LeaveAlternateScreen)?;
