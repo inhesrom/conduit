@@ -1563,6 +1563,36 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     KeyCode::Up | KeyCode::Char('k') => {
                                         app.move_home_selection(-1)
                                     }
+                                    KeyCode::Left | KeyCode::Char('h') => {
+                                        if let Some(id) = app.selected_workspace_id() {
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::SendTerminalInput {
+                                                    id,
+                                                    kind: TerminalKind::Agent,
+                                                    tab_id: None,
+                                                    data_b64:
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .encode(b"\x1b[A"),
+                                                })
+                                                .await;
+                                        }
+                                    }
+                                    KeyCode::Right | KeyCode::Char('l') => {
+                                        if let Some(id) = app.selected_workspace_id() {
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::SendTerminalInput {
+                                                    id,
+                                                    kind: TerminalKind::Agent,
+                                                    tab_id: None,
+                                                    data_b64:
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .encode(b"\x1b[B"),
+                                                })
+                                                .await;
+                                        }
+                                    }
                                     KeyCode::Char(' ') => {
                                         app.toggle_home_expanded_tile()
                                     }
