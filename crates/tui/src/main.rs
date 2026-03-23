@@ -2559,37 +2559,155 @@ fn cycle_workspace_focus_reverse(focus: app::Focus) -> app::Focus {
     }
 }
 
+/// Computes the xterm modifier parameter for key modifiers.
+/// xterm uses 1 + bitmask where Shift=1, Alt=2, Ctrl=4.
+fn xterm_modifier(mods: KeyModifiers) -> u8 {
+    let mut m: u8 = 0;
+    if mods.contains(KeyModifiers::SHIFT) {
+        m |= 1;
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        m |= 2;
+    }
+    if mods.contains(KeyModifiers::CONTROL) {
+        m |= 4;
+    }
+    1 + m
+}
+
+/// Returns true when modifiers beyond SHIFT are present (ALT, CTRL, or combos).
+/// SHIFT alone on special keys is handled by BackTab or is implicit in the char.
+fn has_extra_modifiers(mods: KeyModifiers) -> bool {
+    mods.intersects(
+        KeyModifiers::ALT
+            .union(KeyModifiers::CONTROL)
+            .union(KeyModifiers::SHIFT),
+    )
+}
+
+/// Encodes a letter-style special key: plain = `\x1b[{letter}`,
+/// modified = `\x1b[1;{mod}{letter}`.
+fn encode_letter_key(letter: u8, mods: KeyModifiers) -> Vec<u8> {
+    if has_extra_modifiers(mods) {
+        format!("\x1b[1;{}{}", xterm_modifier(mods), letter as char).into_bytes()
+    } else {
+        vec![0x1b, b'[', letter]
+    }
+}
+
+/// Encodes a tilde-style special key: plain = `\x1b[{code}~`,
+/// modified = `\x1b[{code};{mod}~`.
+fn encode_tilde_key(code: u16, mods: KeyModifiers) -> Vec<u8> {
+    if has_extra_modifiers(mods) {
+        format!("\x1b[{};{}~", code, xterm_modifier(mods)).into_bytes()
+    } else {
+        format!("\x1b[{}~", code).into_bytes()
+    }
+}
+
 fn key_to_terminal_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+    let mods = key.modifiers;
+    let has_alt = mods.contains(KeyModifiers::ALT);
+
     match key.code {
         KeyCode::Char(c) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if mods.contains(KeyModifiers::CONTROL) {
                 let b = (c as u8) & 0x1f;
-                Some(vec![b])
+                if has_alt {
+                    Some(vec![0x1b, b])
+                } else {
+                    Some(vec![b])
+                }
+            } else if has_alt {
+                let mut bytes = vec![0x1b];
+                bytes.extend(c.to_string().into_bytes());
+                Some(bytes)
             } else {
                 Some(c.to_string().into_bytes())
             }
         }
+        KeyCode::Null => Some(vec![0x00]),
         KeyCode::Esc => Some(vec![0x1b]),
         KeyCode::Enter => {
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                Some(vec![b'\n'])
+            let base = if mods.contains(KeyModifiers::SHIFT) {
+                b'\n'
             } else {
-                Some(vec![b'\r'])
+                b'\r'
+            };
+            if has_alt {
+                Some(vec![0x1b, base])
+            } else {
+                Some(vec![base])
             }
         }
-        KeyCode::Backspace => Some(vec![0x7f]),
-        KeyCode::Tab => Some(vec![b'\t']),
+        KeyCode::Backspace => {
+            if has_alt {
+                Some(vec![0x1b, 0x7f])
+            } else {
+                Some(vec![0x7f])
+            }
+        }
+        KeyCode::Tab => {
+            if has_alt {
+                Some(vec![0x1b, b'\t'])
+            } else {
+                Some(vec![b'\t'])
+            }
+        }
         KeyCode::BackTab => Some(b"\x1b[Z".to_vec()),
-        KeyCode::Left => Some(b"\x1b[D".to_vec()),
-        KeyCode::Right => Some(b"\x1b[C".to_vec()),
-        KeyCode::Up => Some(b"\x1b[A".to_vec()),
-        KeyCode::Down => Some(b"\x1b[B".to_vec()),
-        KeyCode::Home => Some(b"\x1b[H".to_vec()),
-        KeyCode::End => Some(b"\x1b[F".to_vec()),
-        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
-        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
-        KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
-        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::Left => Some(encode_letter_key(b'D', mods)),
+        KeyCode::Right => Some(encode_letter_key(b'C', mods)),
+        KeyCode::Up => Some(encode_letter_key(b'A', mods)),
+        KeyCode::Down => Some(encode_letter_key(b'B', mods)),
+        KeyCode::Home => Some(encode_letter_key(b'H', mods)),
+        KeyCode::End => Some(encode_letter_key(b'F', mods)),
+        KeyCode::PageUp => Some(encode_tilde_key(5, mods)),
+        KeyCode::PageDown => Some(encode_tilde_key(6, mods)),
+        KeyCode::Insert => Some(encode_tilde_key(2, mods)),
+        KeyCode::Delete => Some(encode_tilde_key(3, mods)),
+        KeyCode::F(n) => {
+            // F1-F4 use SS3 encoding (plain) or CSI 1;mod (modified)
+            // F5-F12 use tilde encoding
+            match n {
+                1 => {
+                    if has_extra_modifiers(mods) {
+                        Some(format!("\x1b[1;{}P", xterm_modifier(mods)).into_bytes())
+                    } else {
+                        Some(b"\x1bOP".to_vec())
+                    }
+                }
+                2 => {
+                    if has_extra_modifiers(mods) {
+                        Some(format!("\x1b[1;{}Q", xterm_modifier(mods)).into_bytes())
+                    } else {
+                        Some(b"\x1bOQ".to_vec())
+                    }
+                }
+                3 => {
+                    if has_extra_modifiers(mods) {
+                        Some(format!("\x1b[1;{}R", xterm_modifier(mods)).into_bytes())
+                    } else {
+                        Some(b"\x1bOR".to_vec())
+                    }
+                }
+                4 => {
+                    if has_extra_modifiers(mods) {
+                        Some(format!("\x1b[1;{}S", xterm_modifier(mods)).into_bytes())
+                    } else {
+                        Some(b"\x1bOS".to_vec())
+                    }
+                }
+                5 => Some(encode_tilde_key(15, mods)),
+                6 => Some(encode_tilde_key(17, mods)),
+                7 => Some(encode_tilde_key(18, mods)),
+                8 => Some(encode_tilde_key(19, mods)),
+                9 => Some(encode_tilde_key(20, mods)),
+                10 => Some(encode_tilde_key(21, mods)),
+                11 => Some(encode_tilde_key(23, mods)),
+                12 => Some(encode_tilde_key(24, mods)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
