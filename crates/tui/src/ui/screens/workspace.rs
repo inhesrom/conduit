@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::TuiApp;
 use crate::ui::footer;
 use crate::ui::widgets::tile_grid::ORANGE;
+use crate::ui::widgets::workspace_bar;
 use protocol::{AttentionLevel, Route};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub enum WorkspaceHit {
 
 #[derive(Debug, Clone, Copy)]
 struct WorkspaceLayout {
+    workspace_bar: Rect,
     terminal_pane: Rect,
     git_log: Rect,
     git_branches: Rect,
@@ -30,20 +32,25 @@ struct WorkspaceLayout {
 }
 
 fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> WorkspaceLayout {
-    // Top-level: body + footer
+    // Top-level: workspace bar + body + footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
         .split(area);
 
     if terminal_fullscreen {
         let zero = Rect::new(0, 0, 0, 0);
         return WorkspaceLayout {
-            terminal_pane: chunks[0],
+            workspace_bar: chunks[0],
+            terminal_pane: chunks[1],
             git_log: zero,
             git_branches: zero,
             git_diff: zero,
-            footer: chunks[1],
+            footer: chunks[2],
         };
     }
 
@@ -58,7 +65,7 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
             | crate::app::Focus::WsDiff => [Constraint::Percentage(35), Constraint::Percentage(65)],
             _ => [Constraint::Percentage(55), Constraint::Percentage(45)],
         })
-        .split(chunks[0]);
+        .split(chunks[1]);
     let git_area = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -71,11 +78,12 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
         .split(git_area[0]);
 
     WorkspaceLayout {
+        workspace_bar: chunks[0],
         terminal_pane: body[0],
         git_log: left_split[0],
         git_branches: left_split[1],
         git_diff: git_area[1],
-        footer: chunks[1],
+        footer: chunks[2],
     }
 }
 
@@ -277,6 +285,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             .map(|w| w.attention)
             .unwrap_or(AttentionLevel::None),
     );
+
+    // --- Workspace status bar ---
+    let bar_line = workspace_bar::build_workspace_bar_line(
+        &app.workspaces,
+        ws_id,
+        app.spinner_tick % 2 == 0,
+        app.settings.attention_notifications,
+        l.workspace_bar.width,
+    );
+    frame.render_widget(Paragraph::new(bar_line), l.workspace_bar);
 
     // Build workspace info string for the border line
     let ws_info = ws_info_string(app);
@@ -1659,16 +1677,16 @@ mod tests {
     fn layout_terminal_pane_starts_at_top() {
         let area = Rect::new(0, 0, 120, 40);
         let l = layout(area, Focus::WsTerminal, false);
-        // Terminal pane starts at the top of the body area (row 0)
-        assert_eq!(l.terminal_pane.y, 0);
+        // Terminal pane starts below the 2-line workspace bar (row 2)
+        assert_eq!(l.terminal_pane.y, 2);
     }
 
     #[test]
     fn layout_fullscreen_terminal_fills_body() {
         let area = Rect::new(0, 0, 120, 40);
         let l = layout(area, Focus::WsTerminal, true);
-        // In fullscreen, terminal pane gets all rows except footer (2)
-        assert_eq!(l.terminal_pane.height, 38);
+        // In fullscreen, terminal pane gets all rows except bar (2) and footer (2)
+        assert_eq!(l.terminal_pane.height, 36);
     }
 
     #[test]
