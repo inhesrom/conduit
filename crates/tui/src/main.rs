@@ -1148,6 +1148,19 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
+        // Respawn agent tab as shell after agent exits.
+        if let Some((id, tab_id)) = app.pending_agent_respawn.take() {
+            let _ = backend
+                .cmd_tx
+                .send(Command::StartTerminal {
+                    id,
+                    kind: protocol::TerminalKind::Shell,
+                    tab_id,
+                    cmd: Vec::new(),
+                })
+                .await;
+        }
+
         // Check if deferred git result can now be shown (spinner min duration met).
         if let Some((id, msg)) = app.deferred_git_result.take() {
             if app.finish_git_op(id) {
@@ -1279,26 +1292,80 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                     match app.route {
                         Route::Home => {
                             if app.is_settings_open() {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('S') => app.close_settings(),
-                                    KeyCode::Down | KeyCode::Char('j') => {
-                                        app.settings_selected = (app.settings_selected + 1)
-                                            .min(app.settings_count() - 1);
+                                if app.confirming_delete_agent {
+                                    match key.code {
+                                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                            app.confirm_delete_agent()
+                                        }
+                                        _ => app.cancel_delete_agent(),
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => {
-                                        app.settings_selected =
-                                            app.settings_selected.saturating_sub(1);
+                                } else if app.is_adding_agent() {
+                                    // New agent wizard text input
+                                    match key.code {
+                                        KeyCode::Enter => app.new_agent_advance(),
+                                        KeyCode::Esc => app.cancel_new_agent(),
+                                        KeyCode::Backspace => {
+                                            if let Some((_, _, buf)) =
+                                                &mut app.new_agent_wizard
+                                            {
+                                                buf.pop();
+                                            }
+                                        }
+                                        KeyCode::Char(c) => {
+                                            if let Some((_, _, buf)) =
+                                                &mut app.new_agent_wizard
+                                            {
+                                                buf.push(c);
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                    KeyCode::Enter | KeyCode::Char(' ') => {
-                                        app.toggle_selected_setting()
+                                } else if app.is_editing_setting() {
+                                    match key.code {
+                                        KeyCode::Enter => app.confirm_setting_edit(),
+                                        KeyCode::Esc => app.cancel_setting_edit(),
+                                        KeyCode::Backspace => {
+                                            if let Some(buf) = &mut app.settings_edit_buffer {
+                                                buf.pop();
+                                            }
+                                        }
+                                        KeyCode::Char(c) => {
+                                            if let Some(buf) = &mut app.settings_edit_buffer {
+                                                buf.push(c);
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                    KeyCode::Left | KeyCode::Char('h') => {
-                                        app.adjust_selected_setting(-1)
+                                } else {
+                                    match key.code {
+                                        KeyCode::Esc | KeyCode::Char('S') => {
+                                            app.close_settings()
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            app.settings_selected = (app.settings_selected + 1)
+                                                .min(app.settings_count() - 1);
+                                        }
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.settings_selected =
+                                                app.settings_selected.saturating_sub(1);
+                                        }
+                                        KeyCode::Enter | KeyCode::Char(' ') => {
+                                            app.toggle_selected_setting()
+                                        }
+                                        KeyCode::Left | KeyCode::Char('h') => {
+                                            app.adjust_selected_setting(-1)
+                                        }
+                                        KeyCode::Right | KeyCode::Char('l') => {
+                                            app.adjust_selected_setting(1)
+                                        }
+                                        KeyCode::Char('n') if app.settings_selected == 0 => {
+                                            app.begin_new_agent()
+                                        }
+                                        KeyCode::Char('d') if app.settings_selected == 0 => {
+                                            app.begin_delete_agent()
+                                        }
+                                        _ => {}
                                     }
-                                    KeyCode::Right | KeyCode::Char('l') => {
-                                        app.adjust_selected_setting(1)
-                                    }
-                                    _ => {}
                                 }
                             } else if app.is_confirming_delete() {
                                 match key.code {
@@ -1570,7 +1637,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 &backend.cmd_tx,
                                                 id,
                                                 &app.ws_tabs,
-                                                app.settings.yolo_mode,
+                                                &app.settings,
                                             )
                                             .await;
                                             let _ = backend
@@ -1944,7 +2011,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         id,
                                         kind: TerminalKind::Agent,
                                         tab_id: Some("agent".to_string()),
-                                        cmd: agent_cmd_continue(app.settings.yolo_mode),
+                                        cmd: agent_cmd_continue(&app.settings),
                                     })
                                     .await;
                                 continue;
@@ -2418,14 +2485,19 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
         }
         CoreEvent::TerminalExited {
             id,
-            kind: _,
+            kind,
             code,
             tab_id,
             ..
         } => {
             let msg = format!("\r\n[terminal exited: {:?}]\r\n", code);
-            let tid = tab_id.unwrap_or_else(|| "shell".to_string());
+            let tid = tab_id.clone().unwrap_or_else(|| "shell".to_string());
             app.append_terminal_bytes(id, &tid, msg.as_bytes());
+
+            // Queue agent tab respawn as shell so user can manually run another agent
+            if kind == protocol::TerminalKind::Agent {
+                app.pending_agent_respawn = Some((id, tab_id));
+            }
         }
         CoreEvent::TerminalStarted {
             id,
@@ -2684,7 +2756,7 @@ async fn handle_mouse(
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
                         app.open_workspace(id);
-                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, app.settings.yolo_mode).await;
+                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, &app.settings).await;
                         let _ = cmd_tx.send(Command::RefreshGit { id }).await;
                         let _ = cmd_tx.send(Command::ClearAttention { id }).await;
                     }
@@ -3367,18 +3439,25 @@ fn extract_selected_text_from_buf(
     trimmed.to_string()
 }
 
-fn agent_cmd(yolo: bool) -> Vec<String> {
-    let mut cmd = vec!["claude".to_string()];
-    if yolo {
-        cmd.push("--dangerously-skip-permissions".to_string());
+fn agent_cmd(settings: &app::Settings) -> Vec<String> {
+    let Some(agent) = settings.active_agent() else {
+        return vec!["claude".to_string()];
+    };
+    let mut cmd = vec![agent.command.clone()];
+    if settings.yolo_mode {
+        cmd.extend(agent.yolo_flags.iter().cloned());
     }
     cmd
 }
 
-fn agent_cmd_continue(yolo: bool) -> Vec<String> {
-    let mut cmd = vec!["claude".to_string(), "-c".to_string()];
-    if yolo {
-        cmd.push("--dangerously-skip-permissions".to_string());
+fn agent_cmd_continue(settings: &app::Settings) -> Vec<String> {
+    let Some(agent) = settings.active_agent() else {
+        return vec!["claude".to_string()];
+    };
+    let mut cmd = vec![agent.command.clone()];
+    cmd.extend(agent.continue_flags.iter().cloned());
+    if settings.yolo_mode {
+        cmd.extend(agent.yolo_flags.iter().cloned());
     }
     cmd
 }
@@ -3387,11 +3466,11 @@ async fn start_workspace_tab_terminals(
     cmd_tx: &tokio::sync::mpsc::Sender<Command>,
     id: protocol::WorkspaceId,
     tabs: &[app::TerminalTab],
-    yolo: bool,
+    settings: &app::Settings,
 ) {
     for tab in tabs {
         let cmd = if tab.kind == protocol::TerminalKind::Agent {
-            agent_cmd(yolo)
+            agent_cmd(settings)
         } else {
             Vec::new()
         };

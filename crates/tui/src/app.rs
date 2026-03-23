@@ -323,9 +323,16 @@ pub struct TuiApp {
     pub deferred_git_result: Option<(WorkspaceId, String)>,
     pub settings_open: bool,
     pub settings_selected: usize,
+    pub settings_edit_buffer: Option<String>,
+    /// Multi-step new agent wizard: (step, staging profile, input buffer).
+    /// Steps: 0 = name, 1 = command, 2 = yolo flags.
+    pub new_agent_wizard: Option<(usize, AgentProfile, String)>,
+    pub confirming_delete_agent: bool,
     pub mouse_selection: Option<MouseSelection>,
     /// Set on mouse-up to request clipboard copy on the next frame render.
     pub pending_copy_selection: Option<MouseSelection>,
+    /// When an agent tab exits, queue a shell respawn in the same tab.
+    pub pending_agent_respawn: Option<(protocol::WorkspaceId, Option<String>)>,
     pub ssh_workspace_input: Option<SshWorkspaceInput>,
     pub ssh_history: Vec<SshHistoryEntry>,
     pub ssh_history_picker: Option<SshHistoryPicker>,
@@ -385,8 +392,12 @@ impl Default for TuiApp {
             settings: load_settings(),
             settings_open: false,
             settings_selected: 0,
+            settings_edit_buffer: None,
+            new_agent_wizard: None,
+            confirming_delete_agent: false,
             mouse_selection: None,
             pending_copy_selection: None,
+            pending_agent_respawn: None,
             ssh_workspace_input: None,
             ssh_history: load_ssh_history(),
             ssh_history_picker: None,
@@ -1405,10 +1416,16 @@ impl TuiApp {
     pub fn open_settings(&mut self) {
         self.settings_open = true;
         self.settings_selected = 0;
+        self.settings_edit_buffer = None;
+        self.new_agent_wizard = None;
+        self.confirming_delete_agent = false;
     }
 
     pub fn close_settings(&mut self) {
         self.settings_open = false;
+        self.settings_edit_buffer = None;
+        self.new_agent_wizard = None;
+        self.confirming_delete_agent = false;
     }
 
     pub fn toggle_yolo_mode(&mut self) {
@@ -1417,9 +1434,30 @@ impl TuiApp {
     }
 
     pub fn toggle_selected_setting(&mut self) {
+        if self.settings_edit_buffer.is_some() {
+            return; // already editing
+        }
         match self.settings_selected {
-            0 => self.settings.attention_notifications = !self.settings.attention_notifications,
-            1 => {} // preview_lines uses adjust, not toggle
+            0 => {} // default agent uses h/l to cycle
+            1 | 2 => {
+                // Text fields — Enter/Space starts editing
+                let current = match self.settings_selected {
+                    1 => self
+                        .settings
+                        .active_agent()
+                        .map(|a| a.command.clone())
+                        .unwrap_or_default(),
+                    2 => self
+                        .settings
+                        .active_agent()
+                        .map(|a| a.yolo_flags.join(" "))
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                self.settings_edit_buffer = Some(current);
+            }
+            3 => self.settings.attention_notifications = !self.settings.attention_notifications,
+            4 => {} // preview_lines uses adjust, not toggle
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -1427,7 +1465,25 @@ impl TuiApp {
 
     pub fn adjust_selected_setting(&mut self, delta: i16) {
         match self.settings_selected {
-            1 => {
+            0 => {
+                // Cycle through agent profiles
+                if !self.settings.agents.is_empty() {
+                    let current_idx = self
+                        .settings
+                        .agents
+                        .iter()
+                        .position(|a| a.name == self.settings.default_agent)
+                        .unwrap_or(0);
+                    let len = self.settings.agents.len();
+                    let new_idx = if delta > 0 {
+                        (current_idx + 1) % len
+                    } else {
+                        (current_idx + len - 1) % len
+                    };
+                    self.settings.default_agent = self.settings.agents[new_idx].name.clone();
+                }
+            }
+            4 => {
                 let val = self.settings.preview_lines as i16 + delta;
                 self.settings.preview_lines = val.clamp(4, 30) as u16;
             }
@@ -1437,7 +1493,127 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        2
+        5
+    }
+
+    pub fn is_editing_setting(&self) -> bool {
+        self.settings_edit_buffer.is_some()
+    }
+
+    pub fn confirm_setting_edit(&mut self) {
+        if let Some(buf) = self.settings_edit_buffer.take() {
+            let trimmed = buf.trim().to_string();
+            // Find the active agent index
+            let idx = self
+                .settings
+                .agents
+                .iter()
+                .position(|a| a.name == self.settings.default_agent);
+            if let Some(idx) = idx {
+                match self.settings_selected {
+                    1 => {
+                        if !trimmed.is_empty() {
+                            self.settings.agents[idx].command = trimmed;
+                        }
+                    }
+                    2 => {
+                        self.settings.agents[idx].yolo_flags = trimmed
+                            .split_whitespace()
+                            .map(|s| s.to_string())
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+            let _ = save_settings(&self.settings);
+        }
+    }
+
+    pub fn cancel_setting_edit(&mut self) {
+        self.settings_edit_buffer = None;
+    }
+
+    pub fn begin_new_agent(&mut self) {
+        let profile = AgentProfile {
+            name: String::new(),
+            command: String::new(),
+            yolo_flags: Vec::new(),
+            continue_flags: Vec::new(),
+        };
+        self.new_agent_wizard = Some((0, profile, String::new()));
+    }
+
+    pub fn is_adding_agent(&self) -> bool {
+        self.new_agent_wizard.is_some()
+    }
+
+    pub fn new_agent_advance(&mut self) {
+        if let Some((step, ref mut profile, ref mut buf)) = self.new_agent_wizard {
+            let trimmed = buf.trim().to_string();
+            match step {
+                0 => {
+                    if trimmed.is_empty() {
+                        return; // name is required
+                    }
+                    profile.name = trimmed;
+                    *buf = String::new();
+                    self.new_agent_wizard.as_mut().unwrap().0 = 1;
+                }
+                1 => {
+                    if trimmed.is_empty() {
+                        return; // command is required
+                    }
+                    profile.command = trimmed;
+                    *buf = String::new();
+                    self.new_agent_wizard.as_mut().unwrap().0 = 2;
+                }
+                2 => {
+                    profile.yolo_flags = trimmed
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect();
+                    // Done — commit the new agent
+                    let finished = profile.clone();
+                    self.settings.default_agent = finished.name.clone();
+                    self.settings.agents.push(finished);
+                    self.new_agent_wizard = None;
+                    let _ = save_settings(&self.settings);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn cancel_new_agent(&mut self) {
+        self.new_agent_wizard = None;
+    }
+
+    pub fn begin_delete_agent(&mut self) {
+        // Only allow if there's more than one agent
+        if self.settings.agents.len() > 1 {
+            self.confirming_delete_agent = true;
+        }
+    }
+
+    pub fn confirm_delete_agent(&mut self) {
+        self.confirming_delete_agent = false;
+        if let Some(idx) = self
+            .settings
+            .agents
+            .iter()
+            .position(|a| a.name == self.settings.default_agent)
+        {
+            self.settings.agents.remove(idx);
+            // Switch default to the first remaining agent
+            if let Some(first) = self.settings.agents.first() {
+                self.settings.default_agent = first.name.clone();
+            }
+            let _ = save_settings(&self.settings);
+        }
+    }
+
+    pub fn cancel_delete_agent(&mut self) {
+        self.confirming_delete_agent = false;
     }
 
     pub fn effective_attention(&self, raw: AttentionLevel) -> AttentionLevel {
@@ -1903,6 +2079,16 @@ fn tabs_persist_path() -> Option<PathBuf> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentProfile {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub yolo_flags: Vec<String>,
+    #[serde(default)]
+    pub continue_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_true")]
     pub attention_notifications: bool,
@@ -1910,6 +2096,10 @@ pub struct Settings {
     pub preview_lines: u16,
     #[serde(default)]
     pub yolo_mode: bool,
+    #[serde(default = "default_agents")]
+    pub agents: Vec<AgentProfile>,
+    #[serde(default = "default_default_agent")]
+    pub default_agent: String,
 }
 
 fn default_true() -> bool {
@@ -1920,12 +2110,45 @@ fn default_preview_lines() -> u16 {
     12
 }
 
+fn default_agents() -> Vec<AgentProfile> {
+    vec![
+        AgentProfile {
+            name: "claude".to_string(),
+            command: "claude".to_string(),
+            yolo_flags: vec!["--dangerously-skip-permissions".to_string()],
+            continue_flags: vec!["-c".to_string()],
+        },
+        AgentProfile {
+            name: "codex".to_string(),
+            command: "codex".to_string(),
+            yolo_flags: vec!["--full-auto".to_string()],
+            continue_flags: Vec::new(),
+        },
+    ]
+}
+
+fn default_default_agent() -> String {
+    "claude".to_string()
+}
+
+impl Settings {
+    /// Returns the active agent profile (the default, or first if not found).
+    pub fn active_agent(&self) -> Option<&AgentProfile> {
+        self.agents
+            .iter()
+            .find(|a| a.name == self.default_agent)
+            .or(self.agents.first())
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             attention_notifications: true,
             preview_lines: 12,
             yolo_mode: false,
+            agents: default_agents(),
+            default_agent: default_default_agent(),
         }
     }
 }

@@ -394,7 +394,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
     }
 
     if app.is_settings_open() {
-        let modal = centered_rect(area, 50, 10);
+        let modal = centered_rect(area, 56, 15);
         frame.render_widget(Clear, modal);
 
         let key_style = Style::default()
@@ -404,26 +404,79 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         let cursor_style = Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
+        let edit_style = Style::default().fg(Color::Yellow);
+        let sub_label_style = Style::default().fg(Color::DarkGray);
 
-        let cursor0 = if app.settings_selected == 0 {
-            "> "
-        } else {
-            "  "
+        let cursor_str = |idx: usize| -> &'static str {
+            if app.settings_selected == idx {
+                "> "
+            } else {
+                "  "
+            }
         };
-        let toggle = render_toggle(app.settings.attention_notifications);
+
+        let active_agent = app.settings.active_agent();
+
+        // Row 0: Default agent (cycle with h/l)
+        let agent_name = active_agent.map(|a| a.name.as_str()).unwrap_or("(none)");
         let row0 = Line::from(vec![
-            Span::styled(cursor0, cursor_style),
+            Span::styled(cursor_str(0), cursor_style),
+            Span::raw("Default agent             "),
+            Span::styled(
+                format!("\u{25C2} {} \u{25B8}", agent_name),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]);
+
+        // Row 1: Agent command (editable, shows active agent's command)
+        let cmd_display = active_agent
+            .map(|a| a.command.as_str())
+            .unwrap_or("");
+        let cmd_val = if app.settings_selected == 1 {
+            if let Some(buf) = &app.settings_edit_buffer {
+                Span::styled(format!("{}▏", buf), edit_style)
+            } else {
+                Span::styled(cmd_display.to_string(), Style::default().fg(Color::Cyan))
+            }
+        } else {
+            Span::styled(cmd_display.to_string(), Style::default().fg(Color::Cyan))
+        };
+        let row1 = Line::from(vec![
+            Span::styled(cursor_str(1), cursor_style),
+            Span::styled("  Command                 ", sub_label_style),
+            cmd_val,
+        ]);
+
+        // Row 2: Agent YOLO flags (editable, shows active agent's yolo flags)
+        let yolo_display = active_agent
+            .map(|a| a.yolo_flags.join(" "))
+            .unwrap_or_default();
+        let yolo_val = if app.settings_selected == 2 {
+            if let Some(buf) = &app.settings_edit_buffer {
+                Span::styled(format!("{}▏", buf), edit_style)
+            } else {
+                Span::styled(yolo_display.clone(), Style::default().fg(Color::Cyan))
+            }
+        } else {
+            Span::styled(yolo_display, Style::default().fg(Color::Cyan))
+        };
+        let row2 = Line::from(vec![
+            Span::styled(cursor_str(2), cursor_style),
+            Span::styled("  YOLO flags              ", sub_label_style),
+            yolo_val,
+        ]);
+
+        // Row 3: Attention notifications
+        let toggle = render_toggle(app.settings.attention_notifications);
+        let row3 = Line::from(vec![
+            Span::styled(cursor_str(3), cursor_style),
             Span::raw("Attention notifications   "),
             toggle,
         ]);
 
-        let cursor1 = if app.settings_selected == 1 {
-            "> "
-        } else {
-            "  "
-        };
-        let row1 = Line::from(vec![
-            Span::styled(cursor1, cursor_style),
+        // Row 4: Preview lines
+        let row4 = Line::from(vec![
+            Span::styled(cursor_str(4), cursor_style),
             Span::raw("Preview lines             "),
             Span::styled(
                 format!("\u{25C2} {} \u{25B8}", app.settings.preview_lines),
@@ -431,29 +484,133 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             ),
         ]);
 
-        let hint = Line::from(vec![
-            Span::styled("j/k", key_style),
-            Span::styled(" navigate  ", desc_style),
-            Span::styled("Space", key_style),
-            Span::styled(" toggle  ", desc_style),
-            Span::styled("h/l", key_style),
-            Span::styled(" adjust  ", desc_style),
-            Span::styled("Esc", key_style),
-            Span::styled(" close", desc_style),
-        ]);
-        let body = vec![
-            Line::from(""),
-            row0,
-            row1,
-            Line::from(""),
-            Line::from(""),
-            hint,
-        ];
+        let (title, body) = if app.confirming_delete_agent {
+            let agent_name = app
+                .settings
+                .active_agent()
+                .map(|a| a.name.as_str())
+                .unwrap_or("(unknown)");
+            let warn_style = Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD);
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Delete agent ", desc_style),
+                    Span::styled(agent_name.to_string(), warn_style),
+                    Span::styled("?", desc_style),
+                ]),
+                Line::from(""),
+            ];
+            while lines.len() < 9 {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(vec![
+                Span::styled("y", key_style),
+                Span::styled(" yes  ", desc_style),
+                Span::styled("any other key", key_style),
+                Span::styled(" no", desc_style),
+            ]));
+            (" Delete Agent ", lines)
+        } else if let Some((step, profile, buf)) = &app.new_agent_wizard {
+            let done_style = Style::default().fg(Color::Green);
+            let prompt_style = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            let mut lines = vec![Line::from("")];
+
+            // Show completed steps
+            if *step > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("  Name      ", desc_style),
+                    Span::styled(&profile.name, done_style),
+                ]));
+            }
+            if *step > 1 {
+                lines.push(Line::from(vec![
+                    Span::styled("  Command   ", desc_style),
+                    Span::styled(&profile.command, done_style),
+                ]));
+            }
+
+            // Current step prompt
+            let label = match step {
+                0 => "  Name      ",
+                1 => "  Command   ",
+                _ => "  YOLO flags",
+            };
+            lines.push(Line::from(vec![
+                Span::styled(label, prompt_style),
+                Span::styled(format!("{}▏", buf), edit_style),
+            ]));
+
+            // Pad to fill modal
+            while lines.len() < 9 {
+                lines.push(Line::from(""));
+            }
+
+            let step_label = match step {
+                0 => "name",
+                1 => "command",
+                _ => "YOLO flags (optional)",
+            };
+            lines.push(Line::from(vec![
+                Span::styled("Enter", key_style),
+                Span::styled(
+                    format!(" next ({})  ", step_label),
+                    desc_style,
+                ),
+                Span::styled("Esc", key_style),
+                Span::styled(" cancel", desc_style),
+            ]));
+
+            (" New Agent ", lines)
+        } else {
+            let hint = if app.is_editing_setting() {
+                Line::from(vec![
+                    Span::styled("Enter", key_style),
+                    Span::styled(" confirm  ", desc_style),
+                    Span::styled("Esc", key_style),
+                    Span::styled(" cancel", desc_style),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("j/k", key_style),
+                    Span::styled(" navigate  ", desc_style),
+                    Span::styled("Enter", key_style),
+                    Span::styled(" edit/toggle  ", desc_style),
+                    Span::styled("h/l", key_style),
+                    Span::styled(" adjust  ", desc_style),
+                    Span::styled("n", key_style),
+                    Span::styled(" new  ", desc_style),
+                    Span::styled("d", key_style),
+                    Span::styled(" delete  ", desc_style),
+                    Span::styled("Esc", key_style),
+                    Span::styled(" close", desc_style),
+                ])
+            };
+            (
+                " Settings ",
+                vec![
+                    Line::from(""),
+                    row0,
+                    row1,
+                    row2,
+                    row3,
+                    row4,
+                    Line::from(""),
+                    Line::from(""),
+                    Line::from(""),
+                    hint,
+                ],
+            )
+        };
 
         frame.render_widget(
             Paragraph::new(body).block(
                 Block::default()
-                    .title(" Settings ")
+                    .title(title)
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Cyan)),
