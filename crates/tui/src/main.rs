@@ -1148,6 +1148,20 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
+        // Send any pending CPR (Cursor Position Report) responses back to the
+        // PTY so programs like fzf that query the cursor position don't hang.
+        for (id, tab_id, response) in app.pending_cpr_responses.drain(..) {
+            let _ = backend
+                .cmd_tx
+                .send(Command::SendTerminalInput {
+                    id,
+                    kind: protocol::TerminalKind::Shell,
+                    tab_id: Some(tab_id),
+                    data_b64: base64::engine::general_purpose::STANDARD.encode(response),
+                })
+                .await;
+        }
+
         // Respawn agent tab as shell after agent exits.
         if let Some((id, tab_id)) = app.pending_agent_respawn.take() {
             let _ = backend

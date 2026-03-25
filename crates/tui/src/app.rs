@@ -353,6 +353,8 @@ pub struct TuiApp {
     pub home_scroll_offset: u16,
     /// Cached grid height from last render, used for scroll calculations.
     pub last_grid_height: u16,
+    /// Pending CPR (Cursor Position Report) responses to write back to PTY.
+    pub pending_cpr_responses: Vec<(WorkspaceId, String, Vec<u8>)>,
 }
 
 impl Default for TuiApp {
@@ -415,6 +417,7 @@ impl Default for TuiApp {
             home_expanded_tiles: HashSet::new(),
             home_scroll_offset: 0,
             last_grid_height: 0,
+            pending_cpr_responses: Vec::new(),
         }
     }
 }
@@ -872,6 +875,20 @@ impl TuiApp {
         state.tab_mut(tab_id).append_bytes(bytes);
         if is_new_ws || is_new_tab {
             self.last_resize_sent.remove(&(id, tab_id.to_string()));
+        }
+
+        // Detect DSR (Device Status Report) cursor position queries (\x1b[6n)
+        // in the output and queue a CPR response so programs like fzf don't hang.
+        if bytes.windows(4).any(|w| w == b"\x1b[6n") {
+            if let Some(tab) = state.tabs.get(tab_id) {
+                let (row, col) = tab.parser.screen().cursor_position();
+                let response = format!("\x1b[{};{}R", row + 1, col + 1);
+                self.pending_cpr_responses.push((
+                    id,
+                    tab_id.to_string(),
+                    response.into_bytes(),
+                ));
+            }
         }
     }
 
