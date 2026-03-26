@@ -40,7 +40,6 @@ impl TerminalSession {
     pub async fn send_input(&self, bytes: &[u8]) -> Result<()> {
         let mut writer = self.writer.lock();
         writer.write_all(bytes)?;
-        writer.flush()?;
         Ok(())
     }
 

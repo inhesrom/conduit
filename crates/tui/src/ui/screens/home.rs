@@ -484,6 +484,14 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             ),
         ]);
 
+        // Row 5: Show frame counter
+        let fc_toggle = render_toggle(app.settings.show_frame_counter);
+        let row5 = Line::from(vec![
+            Span::styled(cursor_str(5), cursor_style),
+            Span::raw("Show frame counter        "),
+            fc_toggle,
+        ]);
+
         let (title, body) = if app.confirming_delete_agent {
             let agent_name = app
                 .settings
@@ -599,7 +607,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row2,
                     row3,
                     row4,
-                    Line::from(""),
+                    row5,
                     Line::from(""),
                     Line::from(""),
                     hint,

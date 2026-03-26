@@ -354,7 +354,9 @@ pub struct TuiApp {
     /// Cached grid height from last render, used for scroll calculations.
     pub last_grid_height: u16,
     /// Pending CPR (Cursor Position Report) responses to write back to PTY.
-    pub pending_cpr_responses: Vec<(WorkspaceId, String, Vec<u8>)>,
+    pub pending_cpr_responses: Vec<(WorkspaceId, String, protocol::TerminalKind, Vec<u8>)>,
+    /// Debug frame counter — incremented every render loop iteration.
+    pub debug_frame: u64,
 }
 
 impl Default for TuiApp {
@@ -418,6 +420,7 @@ impl Default for TuiApp {
             home_scroll_offset: 0,
             last_grid_height: 0,
             pending_cpr_responses: Vec::new(),
+            debug_frame: 0,
         }
     }
 }
@@ -865,7 +868,7 @@ impl TuiApp {
         self.workspace_diff.insert(id, (file, diff));
     }
 
-    pub fn append_terminal_bytes(&mut self, id: WorkspaceId, tab_id: &str, bytes: &[u8]) {
+    pub fn append_terminal_bytes(&mut self, id: WorkspaceId, tab_id: &str, kind: protocol::TerminalKind, bytes: &[u8]) {
         let is_new_ws = !self.terminal_state.contains_key(&id);
         let state = self
             .terminal_state
@@ -886,6 +889,7 @@ impl TuiApp {
                 self.pending_cpr_responses.push((
                     id,
                     tab_id.to_string(),
+                    kind,
                     response.into_bytes(),
                 ));
             }
@@ -1483,6 +1487,7 @@ impl TuiApp {
             }
             3 => self.settings.attention_notifications = !self.settings.attention_notifications,
             4 => {} // preview_lines uses adjust, not toggle
+            5 => self.settings.show_frame_counter = !self.settings.show_frame_counter,
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -1518,7 +1523,7 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        5
+        6
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -2125,6 +2130,8 @@ pub struct Settings {
     pub agents: Vec<AgentProfile>,
     #[serde(default = "default_default_agent")]
     pub default_agent: String,
+    #[serde(default)]
+    pub show_frame_counter: bool,
 }
 
 fn default_true() -> bool {
@@ -2174,6 +2181,7 @@ impl Default for Settings {
             yolo_mode: false,
             agents: default_agents(),
             default_agent: default_default_agent(),
+            show_frame_counter: false,
         }
     }
 }

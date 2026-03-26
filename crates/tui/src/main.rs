@@ -1139,8 +1139,21 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     let mut terminal = Terminal::new(backend_term)?;
     let mut app = TuiApp::default();
     let mut last_flash_toggle = Instant::now();
+    let mut frame_interval = tokio::time::interval(Duration::from_millis(16));
+    frame_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     'main: loop {
+        // Drive the loop from async sources — never rely on crossterm's
+        // synchronous poll timeout which can block the thread indefinitely.
+        tokio::select! {
+            _ = frame_interval.tick() => {}
+            evt = backend.evt_rx.recv() => {
+                if let Some(evt) = evt {
+                    apply_event(&mut app, evt);
+                }
+            }
+        }
+
         for _ in 0..128 {
             match backend.evt_rx.try_recv() {
                 Ok(evt) => apply_event(&mut app, evt),
@@ -1150,16 +1163,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
         // Send any pending CPR (Cursor Position Report) responses back to the
         // PTY so programs like fzf that query the cursor position don't hang.
-        for (id, tab_id, response) in app.pending_cpr_responses.drain(..) {
-            let _ = backend
-                .cmd_tx
-                .send(Command::SendTerminalInput {
-                    id,
-                    kind: protocol::TerminalKind::Shell,
-                    tab_id: Some(tab_id),
-                    data_b64: base64::engine::general_purpose::STANDARD.encode(response),
-                })
-                .await;
+        for (id, tab_id, kind, response) in app.pending_cpr_responses.drain(..) {
+            let _ = backend.cmd_tx.try_send(Command::SendTerminalInput {
+                id,
+                kind,
+                tab_id: Some(tab_id),
+                data_b64: base64::engine::general_purpose::STANDARD.encode(response),
+            });
         }
 
         // Respawn agent tab as shell after agent exits.
@@ -1218,6 +1228,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             app.last_grid_height = ui::screens::home::grid_rect(area).height;
         }
 
+        app.debug_frame = app.debug_frame.wrapping_add(1);
         let mut pending_clipboard_text: Option<String> = None;
         terminal.draw(|frame| {
             match app.route {
@@ -1275,9 +1286,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        let mut poll_timeout = Duration::from_millis(16);
-        while event::poll(poll_timeout)? {
-            poll_timeout = Duration::ZERO;
+        while event::poll(Duration::ZERO)? {
             match event::read()? {
                 Event::Key(key) => {
                     if matches!(key.kind, KeyEventKind::Release) {
@@ -2538,14 +2547,14 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
         }
         CoreEvent::TerminalOutput {
             id,
-            kind: _,
+            kind,
             data_b64,
             tab_id,
             ..
         } => {
             if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data_b64) {
                 let tid = tab_id.unwrap_or_else(|| "shell".to_string());
-                app.append_terminal_bytes(id, &tid, &bytes);
+                app.append_terminal_bytes(id, &tid, kind, &bytes);
             }
         }
         CoreEvent::TerminalExited {
@@ -2557,7 +2566,7 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
         } => {
             let msg = format!("\r\n[terminal exited: {:?}]\r\n", code);
             let tid = tab_id.clone().unwrap_or_else(|| "shell".to_string());
-            app.append_terminal_bytes(id, &tid, msg.as_bytes());
+            app.append_terminal_bytes(id, &tid, kind, msg.as_bytes());
 
             // Queue agent tab respawn as shell so user can manually run another agent
             if kind == protocol::TerminalKind::Agent {
@@ -2566,13 +2575,13 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
         }
         CoreEvent::TerminalStarted {
             id,
-            kind: _,
+            kind,
             tab_id,
             ..
         } => {
             let tid = tab_id.unwrap_or_else(|| "shell".to_string());
             app.reset_terminal(id, &tid);
-            app.append_terminal_bytes(id, &tid, b"[terminal started]\r\n");
+            app.append_terminal_bytes(id, &tid, kind, b"[terminal started]\r\n");
         }
         CoreEvent::GitActionResult {
             id,

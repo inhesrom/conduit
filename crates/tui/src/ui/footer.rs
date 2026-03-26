@@ -379,8 +379,15 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
 
 /// Renders the context-sensitive key hint footer into `area`.
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let mut hints = build_footer_hints(app);
+    if app.settings.show_frame_counter {
+        hints.spans.push(Span::styled(
+            format!("  [F:{}]", app.debug_frame),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(build_footer_hints(app))
+        Paragraph::new(hints)
             .block(Block::default().borders(Borders::TOP))
             .style(Style::default().fg(Color::Gray)),
         area,
