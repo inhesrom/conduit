@@ -1142,15 +1142,39 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     let mut frame_interval = tokio::time::interval(Duration::from_millis(16));
     frame_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Read crossterm events on a dedicated OS thread so that synchronous
+    // poll/read can never block the tokio runtime (and thus the render loop).
+    let (ct_tx, mut ct_rx) = mpsc::channel::<Event>(256);
+    std::thread::spawn(move || {
+        loop {
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => match event::read() {
+                    Ok(evt) => {
+                        if ct_tx.blocking_send(evt).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                },
+                Ok(false) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
     'main: loop {
-        // Drive the loop from async sources — never rely on crossterm's
-        // synchronous poll timeout which can block the thread indefinitely.
+        // Drive the loop from async sources — the dedicated thread above
+        // feeds crossterm events into ct_rx without blocking this runtime.
+        let mut pending_ct: Option<Event> = None;
         tokio::select! {
             _ = frame_interval.tick() => {}
             evt = backend.evt_rx.recv() => {
                 if let Some(evt) = evt {
                     apply_event(&mut app, evt);
                 }
+            }
+            ct_evt = ct_rx.recv() => {
+                pending_ct = ct_evt;
             }
         }
 
@@ -1174,15 +1198,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
         // Respawn agent tab as shell after agent exits.
         if let Some((id, tab_id)) = app.pending_agent_respawn.take() {
-            let _ = backend
-                .cmd_tx
-                .send(Command::StartTerminal {
-                    id,
-                    kind: protocol::TerminalKind::Shell,
-                    tab_id,
-                    cmd: Vec::new(),
-                })
-                .await;
+            let _ = backend.cmd_tx.try_send(Command::StartTerminal {
+                id,
+                kind: protocol::TerminalKind::Shell,
+                tab_id,
+                cmd: Vec::new(),
+            });
         }
 
         // Check if deferred git result can now be shown (spinner min duration met).
@@ -1208,16 +1229,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 let kind = app.active_tab_kind();
                 if app.has_terminal_tab(id, &tid) && app.should_send_resize(id, &tid, cols, rows) {
                     app.resize_terminal_parser(id, &tid, cols, rows);
-                    let _ = backend
-                        .cmd_tx
-                        .send(Command::ResizeTerminal {
-                            id,
-                            kind,
-                            tab_id: Some(tid),
-                            cols,
-                            rows,
-                        })
-                        .await;
+                    let _ = backend.cmd_tx.try_send(Command::ResizeTerminal {
+                        id,
+                        kind,
+                        tab_id: Some(tid),
+                        cols,
+                        rows,
+                    });
                 }
             }
         }
@@ -1292,8 +1310,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        while event::poll(Duration::ZERO)? {
-            match event::read()? {
+        for evt in pending_ct.into_iter().chain(std::iter::from_fn(|| ct_rx.try_recv().ok())) {
+            match evt {
                 Event::Key(key) => {
                     if matches!(key.kind, KeyEventKind::Release) {
                         continue;
