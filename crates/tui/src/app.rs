@@ -355,8 +355,10 @@ pub struct TuiApp {
     pub last_grid_height: u16,
     /// Pending CPR (Cursor Position Report) responses to write back to PTY.
     pub pending_cpr_responses: Vec<(WorkspaceId, String, protocol::TerminalKind, Vec<u8>)>,
-    /// Debug frame counter — incremented every render loop iteration.
-    pub debug_frame: u64,
+    /// Debug FPS display — computed once per second.
+    pub debug_fps: u16,
+    pub debug_fps_frame_count: u64,
+    pub debug_fps_last_reset: Option<Instant>,
 }
 
 impl Default for TuiApp {
@@ -420,7 +422,9 @@ impl Default for TuiApp {
             home_scroll_offset: 0,
             last_grid_height: 0,
             pending_cpr_responses: Vec::new(),
-            debug_frame: 0,
+            debug_fps: 0,
+            debug_fps_frame_count: 0,
+            debug_fps_last_reset: None,
         }
     }
 }

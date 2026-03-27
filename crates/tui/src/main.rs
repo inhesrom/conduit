@@ -1228,7 +1228,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             app.last_grid_height = ui::screens::home::grid_rect(area).height;
         }
 
-        app.debug_frame = app.debug_frame.wrapping_add(1);
+        app.debug_fps_frame_count += 1;
+        let fps_reset = app.debug_fps_last_reset.get_or_insert_with(Instant::now);
+        if fps_reset.elapsed() >= Duration::from_secs(1) {
+            app.debug_fps = app.debug_fps_frame_count as u16;
+            app.debug_fps_frame_count = 0;
+            *fps_reset = Instant::now();
+        }
         let mut pending_clipboard_text: Option<String> = None;
         terminal.draw(|frame| {
             match app.route {

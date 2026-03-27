@@ -382,7 +382,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let mut hints = build_footer_hints(app);
     if app.settings.show_frame_counter {
         hints.spans.push(Span::styled(
-            format!("  [F:{}]", app.debug_frame),
+            format!("  [FPS: {}]", app.debug_fps),
             Style::default().fg(Color::DarkGray),
         ));
     }
