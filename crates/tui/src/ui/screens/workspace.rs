@@ -225,8 +225,11 @@ fn compute_tab_ranges(
 
     let mut ranges = Vec::new();
     let mut x = tab_area_start;
-    for &label_w in tab_label_widths {
-        let width = (label_w + 2).min(MAX_TAB_WIDTH); // +2 for notch corner chars
+    for (i, &label_w) in tab_label_widths.iter().enumerate() {
+        if i > 0 {
+            x += 1; // 1-char gap between tabs
+        }
+        let width = label_w.min(MAX_TAB_WIDTH);
         let end = (x + width).min(inner_right);
         if x >= inner_right {
             break;
@@ -744,7 +747,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         }
     }
 
-    // Draw tabs inline on the border line: active = [ label ], inactive = dimmed label
+    // Draw tabs inline on the border line: active = pill/badge, inactive = gray label
     for (i, _tab) in app.ws_tabs.iter().enumerate() {
         if i >= tab_ranges.len() {
             break;
@@ -752,7 +755,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         let (tab_start, tab_end) = tab_ranges[i];
 
         if i == active {
-            // Active tab: [ N: label ]
+            // Active tab: pill/badge with background color
             let is_agent = matches!(
                 app.ws_tabs.get(active).map(|t| &t.kind),
                 Some(protocol::TerminalKind::Agent)
@@ -768,41 +771,33 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     AttentionLevel::Error => Color::Red,
                     _ => ORANGE,
                 };
-                Style::default().fg(color).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(color)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else if tabs_focused {
                 Style::default()
-                    .fg(Color::LightBlue)
+                    .bg(Color::LightBlue)
+                    .fg(Color::Black)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-                    .fg(Color::Blue)
+                    .bg(Color::Blue)
+                    .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
             };
 
-            // Draw [ on the left
-            if tab_start < buf.area().width && border_y < buf.area().height {
-                buf[(tab_start, border_y)]
-                    .set_char('[')
-                    .set_style(active_style);
-            }
-            // Draw ] on the right
-            let bracket_right = tab_end.saturating_sub(1);
-            if bracket_right < buf.area().width && border_y < buf.area().height {
-                buf[(bracket_right, border_y)]
-                    .set_char(']')
-                    .set_style(active_style);
-            }
-            // Draw label between brackets
+            // Draw label as a filled pill
             let label_text = format!(" {}: {} ", i + 1, tab_labels[i]);
-            let avail = bracket_right.saturating_sub(tab_start + 1) as usize;
+            let avail = tab_end.saturating_sub(tab_start) as usize;
             let display: String = if label_text.len() > avail {
                 label_text.chars().take(avail).collect()
             } else {
                 label_text
             };
             for (ci, ch) in display.chars().enumerate() {
-                let x = tab_start + 1 + ci as u16;
-                if x < bracket_right && x < buf.area().width && border_y < buf.area().height {
+                let x = tab_start + ci as u16;
+                if x < tab_end && x < buf.area().width && border_y < buf.area().height {
                     buf[(x, border_y)].set_char(ch).set_style(active_style);
                 }
             }
@@ -815,9 +810,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             } else {
                 label
             };
-            let inactive_style = Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM);
+            let inactive_style = Style::default().fg(Color::Gray);
             for (ci, ch) in display.chars().enumerate() {
                 let x = tab_start + ci as u16;
                 if x < tab_end && x < buf.area().width && border_y < buf.area().height {
