@@ -3156,6 +3156,19 @@ async fn forward_mouse_to_terminal(
         return false;
     }
 
+    // Ctrl+Click opens URLs in the default browser.
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        && mouse.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        let tab_id = app.active_tab_id();
+        let col = mouse.column.saturating_sub(content.x);
+        let row = mouse.row.saturating_sub(content.y);
+        if let Some(url) = app.url_at_terminal_position(id, &tab_id, row, col) {
+            open_url(&url);
+            return true;
+        }
+    }
+
     let tab_id = app.active_tab_id();
     let kind = app.active_tab_kind();
     let Some((mode, encoding, alternate_screen)) = app.terminal_mouse_state(id, &tab_id) else {
@@ -3734,6 +3747,22 @@ fn agent_cmd_continue(settings: &app::Settings) -> Vec<String> {
         cmd.extend(agent.yolo_flags.iter().cloned());
     }
     cmd
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let cmd = "xdg-open";
+
+    let _ = OsCommand::new(cmd)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 async fn start_workspace_tab_terminals(

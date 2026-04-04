@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui::widgets::tile_grid;
 
+fn url_regex() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static URL_RE: OnceLock<regex::Regex> = OnceLock::new();
+    URL_RE.get_or_init(|| regex::Regex::new(r#"https?://[^\s<>"'\)\]\}]+"#).unwrap())
+}
+
 const SSH_HISTORY_MAX: usize = 20;
 
 /// Tracks the state of the SSH workspace creation dialog.
@@ -963,8 +969,22 @@ impl TuiApp {
         let (cursor_row, cursor_col) = screen.cursor_position();
         let show_cursor = !screen.hide_cursor();
         let (rows, cols) = screen.size();
+        let re = url_regex();
+        let row_texts: Vec<String> = screen.rows(0, cols).collect();
+
         let mut lines = Vec::with_capacity(rows as usize);
         for r in 0..rows {
+            // Pre-compute URL column ranges for this row so we can underline them.
+            let mut url_ranges: Vec<(u16, u16)> = Vec::new();
+            if let Some(row_text) = row_texts.get(r as usize) {
+                for m in re.find_iter(row_text) {
+                    let col_start = row_text[..m.start()].chars().count() as u16;
+                    let col_end =
+                        col_start + row_text[m.start()..m.end()].chars().count() as u16;
+                    url_ranges.push((col_start, col_end));
+                }
+            }
+
             let mut spans = Vec::with_capacity(cols as usize);
             for c in 0..cols {
                 let Some(cell) = screen.cell(r, c) else {
@@ -1014,6 +1034,10 @@ impl TuiApp {
                     };
                     style = style.fg(cur_fg).bg(cur_bg);
                 }
+                // Underline URLs so they look clickable.
+                if url_ranges.iter().any(|&(s, e)| c >= s && c < e) {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
                 let text = if cell.has_contents() {
                     cell.contents()
                 } else {
@@ -1024,6 +1048,33 @@ impl TuiApp {
             lines.push(Line::from(spans));
         }
         lines
+    }
+
+    /// Returns the URL at the given terminal position, if any.
+    pub fn url_at_terminal_position(
+        &self,
+        id: WorkspaceId,
+        tab_id: &str,
+        row: u16,
+        col: u16,
+    ) -> Option<String> {
+        let re = url_regex();
+
+        let state = self.terminal_state.get(&id)?;
+        let tab = state.tabs.get(tab_id)?;
+        let screen = tab.parser.screen();
+        let (_rows, cols) = screen.size();
+        let row_text: String = screen.rows(0, cols).nth(row as usize)?;
+
+        for m in re.find_iter(&row_text) {
+            // Map byte offsets to column positions for the match range
+            let col_start = row_text[..m.start()].chars().count() as u16;
+            let col_end = col_start + row_text[m.start()..m.end()].chars().count() as u16;
+            if col >= col_start && col < col_end {
+                return Some(m.as_str().to_string());
+            }
+        }
+        None
     }
 
     /// Parses the agent terminal's last screen row for Claude Code status info.
