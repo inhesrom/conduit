@@ -2034,8 +2034,38 @@ impl TerminalBufferState {
     }
 
     fn rebuild_for_size(&mut self, cols: u16, rows: u16) {
+        // Save mouse protocol state before rebuilding — history trimming
+        // can lose the escape sequences that enabled mouse mode.
+        let old_mouse_mode = self.parser.screen().mouse_protocol_mode();
+        let old_mouse_encoding = self.parser.screen().mouse_protocol_encoding();
+
         let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 8000);
         parser.process(&self.history);
+
+        // Restore mouse state if the replayed history didn't preserve it.
+        if parser.screen().mouse_protocol_mode() != old_mouse_mode {
+            let seq: &[u8] = match old_mouse_mode {
+                vt100::MouseProtocolMode::Press => b"\x1b[?9h",
+                vt100::MouseProtocolMode::PressRelease => b"\x1b[?1000h",
+                vt100::MouseProtocolMode::ButtonMotion => b"\x1b[?1002h",
+                vt100::MouseProtocolMode::AnyMotion => b"\x1b[?1003h",
+                vt100::MouseProtocolMode::None => b"",
+            };
+            if !seq.is_empty() {
+                parser.process(seq);
+            }
+        }
+        if parser.screen().mouse_protocol_encoding() != old_mouse_encoding {
+            let seq: &[u8] = match old_mouse_encoding {
+                vt100::MouseProtocolEncoding::Utf8 => b"\x1b[?1005h",
+                vt100::MouseProtocolEncoding::Sgr => b"\x1b[?1006h",
+                vt100::MouseProtocolEncoding::Default => b"",
+            };
+            if !seq.is_empty() {
+                parser.process(seq);
+            }
+        }
+
         self.parser = parser;
     }
 }
