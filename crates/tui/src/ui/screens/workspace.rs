@@ -118,7 +118,16 @@ pub fn pane_border_style(
     focused: bool,
     attention: AttentionLevel,
     flash_on: bool,
+    passthrough: bool,
 ) -> (Style, BorderType) {
+    if passthrough {
+        return (
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            BorderType::Thick,
+        );
+    }
     match attention {
         AttentionLevel::NeedsInput if flash_on => (
             Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
@@ -655,8 +664,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let terminal_lines = ws_id
         .map(|id| app.terminal_lines(id, &app.active_tab_id()))
         .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
-    let (term_style, term_border_type) =
-        pane_border_style(terminal_focused, attention, app.spinner_tick % 2 == 0);
+    let (term_style, term_border_type) = pane_border_style(
+        terminal_focused,
+        attention,
+        app.spinner_tick % 2 == 0,
+        app.active_tab_passthrough(),
+    );
 
     // Render terminal pane with Borders::ALL — we'll overwrite the top border row
     frame.render_widget(Clear, l.terminal_pane);
@@ -1263,7 +1276,7 @@ mod tests {
 
     #[test]
     fn pane_border_no_attention_unfocused() {
-        let (style, border_type) = pane_border_style(false, AttentionLevel::None, false);
+        let (style, border_type) = pane_border_style(false, AttentionLevel::None, false, false);
         assert_eq!(border_type, BorderType::Plain);
         assert_eq!(style.fg, Some(Color::White));
         assert!(style.add_modifier.contains(Modifier::DIM));
@@ -1271,7 +1284,7 @@ mod tests {
 
     #[test]
     fn pane_border_no_attention_focused() {
-        let (style, border_type) = pane_border_style(true, AttentionLevel::None, false);
+        let (style, border_type) = pane_border_style(true, AttentionLevel::None, false, false);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(Color::LightBlue));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -1279,7 +1292,7 @@ mod tests {
 
     #[test]
     fn pane_border_needs_input_flash_on() {
-        let (style, border_type) = pane_border_style(true, AttentionLevel::NeedsInput, true);
+        let (style, border_type) = pane_border_style(true, AttentionLevel::NeedsInput, true, false);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(ORANGE));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -1288,7 +1301,7 @@ mod tests {
     #[test]
     fn pane_border_needs_input_flash_off() {
         // flash_off reverts to focused style
-        let (style, border_type) = pane_border_style(true, AttentionLevel::NeedsInput, false);
+        let (style, border_type) = pane_border_style(true, AttentionLevel::NeedsInput, false, false);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(Color::LightBlue));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -1296,7 +1309,7 @@ mod tests {
 
     #[test]
     fn pane_border_error_flash_on() {
-        let (style, border_type) = pane_border_style(false, AttentionLevel::Error, true);
+        let (style, border_type) = pane_border_style(false, AttentionLevel::Error, true, false);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(Color::Red));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -1304,7 +1317,7 @@ mod tests {
 
     #[test]
     fn pane_border_error_flash_off_unfocused() {
-        let (style, border_type) = pane_border_style(false, AttentionLevel::Error, false);
+        let (style, border_type) = pane_border_style(false, AttentionLevel::Error, false, false);
         assert_eq!(border_type, BorderType::Plain);
         assert_eq!(style.fg, Some(Color::White));
         assert!(style.add_modifier.contains(Modifier::DIM));
@@ -1313,9 +1326,17 @@ mod tests {
     #[test]
     fn pane_border_notice_no_flash() {
         // Notice level does not trigger attention flash
-        let (style, border_type) = pane_border_style(true, AttentionLevel::Notice, true);
+        let (style, border_type) = pane_border_style(true, AttentionLevel::Notice, true, false);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(Color::LightBlue));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn pane_border_passthrough_overrides_all() {
+        let (style, border_type) = pane_border_style(false, AttentionLevel::None, false, true);
+        assert_eq!(border_type, BorderType::Thick);
+        assert_eq!(style.fg, Some(Color::Yellow));
         assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
