@@ -717,13 +717,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         ws_info.clone()
     };
     let ws_info_width = ws_info_display.len() as u16;
-    let passthrough_badge = " [passthrough]";
-    let passthrough_on = app.active_tab_passthrough();
-    let left_info_width = if passthrough_on {
-        ws_info_width + passthrough_badge.len() as u16 + 1
-    } else {
-        ws_info_width
-    };
 
     // Compute tab label widths and positions
     let tab_label_widths: Vec<u16> = tab_labels
@@ -731,7 +724,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .enumerate()
         .map(|(i, lbl)| format!(" {}: {} ", i + 1, lbl).len() as u16)
         .collect();
-    let tab_ranges = compute_tab_ranges(&pane, left_info_width, &tab_label_widths);
+    let tab_ranges = compute_tab_ranges(&pane, ws_info_width, &tab_label_widths);
 
     let active = app.ws_active_tab;
 
@@ -743,21 +736,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         let x = inner_left + 1 + i as u16; // +1 for a space after the border
         if x < inner_right && x < buf.area().width && border_y < buf.area().height {
             buf[(x, border_y)].set_char(ch).set_style(ws_info_style);
-        }
-    }
-
-    // Show passthrough badge after workspace info when the active tab has passthrough on
-    if app.active_tab_passthrough() {
-        let badge = " [passthrough]";
-        let badge_style = Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD);
-        let badge_start = inner_left + 1 + ws_info_display.len() as u16 + 1;
-        for (i, ch) in badge.chars().enumerate() {
-            let x = badge_start + i as u16;
-            if x < inner_right && x < buf.area().width && border_y < buf.area().height {
-                buf[(x, border_y)].set_char(ch).set_style(badge_style);
-            }
         }
     }
 
@@ -866,6 +844,30 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             }
         }
 
+        // Passthrough indicator: yellow pill just right of the YOLO/Safe Mode toggle.
+        let passthrough_on = app.active_tab_passthrough();
+        let passthrough_badge = " [passthrough] ";
+        let passthrough_len = passthrough_badge.chars().count() as u16;
+        let gap_before_badge = 2u16;
+        let badge_start = toggle_start + toggle_len + gap_before_badge;
+        if passthrough_on {
+            let badge_style = Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD);
+            for (i, ch) in passthrough_badge.chars().enumerate() {
+                let x = badge_start + i as u16;
+                if x < inner_right && x >= inner_left && bottom_y < buf.area().height {
+                    buf[(x, bottom_y)].set_char(ch).set_style(badge_style);
+                }
+            }
+        }
+        let left_content_end = if passthrough_on {
+            badge_start + passthrough_len
+        } else {
+            toggle_start + toggle_len
+        };
+
         // Agent status fields right-aligned
         if let Some(ws_id) = ws_id {
             if let Some(status) = app.agent_status(ws_id) {
@@ -895,7 +897,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
                 let gap = 2u16;
                 let mut cursor = inner_right.saturating_sub(1);
-                let left_limit = toggle_start + toggle_len + gap;
+                let left_limit = left_content_end + gap;
                 for (text, style) in segments.iter().rev() {
                     let len = text.chars().count() as u16;
                     let start = cursor.saturating_sub(len);
@@ -1169,12 +1171,7 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
             let ws_info_width = {
                 let info = ws_info_string(app);
                 let max_w = inner_width / 2;
-                let base = (info.len() as u16).min(max_w);
-                if app.active_tab_passthrough() {
-                    base + " [passthrough]".len() as u16 + 1
-                } else {
-                    base
-                }
+                (info.len() as u16).min(max_w)
             };
             let tab_label_widths: Vec<u16> = app
                 .ws_tabs
@@ -1454,12 +1451,7 @@ mod tests {
         let inner_right = pane.right().saturating_sub(1);
         let inner_width = inner_right.saturating_sub(inner_left);
         let info = ws_info_string(app);
-        let base_w = (info.len() as u16).min(inner_width / 2);
-        let ws_info_width = if app.active_tab_passthrough() {
-            base_w + " [passthrough]".len() as u16 + 1
-        } else {
-            base_w
-        };
+        let ws_info_width = (info.len() as u16).min(inner_width / 2);
         let label_widths: Vec<u16> = app
             .ws_tabs
             .iter()
