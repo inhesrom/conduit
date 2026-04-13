@@ -1367,6 +1367,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         }
                                         _ => {}
                                     }
+                                } else if app.is_editing_keybind() {
+                                    // Keybinding rows capture the next key press
+                                    // directly (Esc cancels, any other press is
+                                    // recorded as the new binding).
+                                    if key.code == KeyCode::Esc {
+                                        app.cancel_setting_edit();
+                                    } else if let Some(binding) =
+                                        keymap::keybind_from_event(key)
+                                    {
+                                        app.apply_captured_keybind(binding);
+                                    }
                                 } else if app.is_editing_setting() {
                                     match key.code {
                                         KeyCode::Enter => app.confirm_setting_edit(),
@@ -2074,6 +2085,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         })
                                         .await;
                                 }
+                                continue;
+                            }
+
+                            // Configurable "scroll terminal to bottom" hotkey
+                            // (resets scrollback). Works from any workspace pane.
+                            if keymap::matches_keybinding(
+                                key,
+                                &app.settings.scroll_to_bottom_key,
+                            ) {
+                                let tab_id = app.active_tab_id();
+                                app.reset_terminal_scrollback(id, &tab_id);
                                 continue;
                             }
 
@@ -3062,6 +3084,10 @@ async fn handle_mouse(
                         }
                         ui::screens::workspace::WorkspaceHit::TerminalPane => {
                             app.focus = app::Focus::WsTerminal;
+                        }
+                        ui::screens::workspace::WorkspaceHit::ScrollToBottom => {
+                            let tab_id = app.active_tab_id();
+                            app.reset_terminal_scrollback(id, &tab_id);
                         }
                         ui::screens::workspace::WorkspaceHit::LogList(idx) => {
                             app.focus = app::Focus::WsLog;

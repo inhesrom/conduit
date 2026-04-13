@@ -17,6 +17,7 @@ pub enum WorkspaceHit {
     WorkspaceBarPill(usize),
     TerminalTab(usize),
     TerminalPane,
+    ScrollToBottom,
     LogList(usize),
     BranchesPane(usize),
     DiffPane,
@@ -916,6 +917,31 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         }
     }
 
+    // --- "Scroll to bottom" indicator on terminal bottom border ---
+    if let Some(ws_id) = ws_id {
+        if app.terminal_scrollback_active(ws_id, &app.active_tab_id()) {
+            let bottom_y = pane.bottom().saturating_sub(1);
+            let inner_right = pane.right().saturating_sub(1);
+            let buf = frame.buffer_mut();
+            let label = format!(
+                " \u{2193} Scroll to bottom ({}) ",
+                app.settings.scroll_to_bottom_key
+            );
+            let label_len = label.chars().count() as u16;
+            let center_x = pane.x + (pane.width.saturating_sub(label_len)) / 2;
+            let style = Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD);
+            for (i, ch) in label.chars().enumerate() {
+                let x = center_x + i as u16;
+                if x > pane.x && x < inner_right && bottom_y < buf.area().height {
+                    buf[(x, bottom_y)].set_char(ch).set_style(style);
+                }
+            }
+        }
+    }
+
     // --- Footer ---
     footer::render(frame, l.footer, app);
 
@@ -1176,6 +1202,26 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
         }
         // Click on border but not on a tab — treat as terminal pane
         return Some(WorkspaceHit::TerminalPane);
+    }
+    // Check if click is on the "scroll to bottom" indicator (terminal bottom border)
+    {
+        let bottom_y = l.terminal_pane.bottom().saturating_sub(1);
+        if y == bottom_y && x >= l.terminal_pane.x && x < l.terminal_pane.right() {
+            let label = format!(
+                " \u{2193} Scroll to bottom ({}) ",
+                app.settings.scroll_to_bottom_key
+            );
+            let label_len = label.chars().count() as u16;
+            let center_x =
+                l.terminal_pane.x + (l.terminal_pane.width.saturating_sub(label_len)) / 2;
+            if x >= center_x && x < center_x + label_len {
+                if let Some(ws_id) = app.active_workspace_id() {
+                    if app.terminal_scrollback_active(ws_id, &app.active_tab_id()) {
+                        return Some(WorkspaceHit::ScrollToBottom);
+                    }
+                }
+            }
+        }
     }
     if point_inside(l.terminal_pane) {
         return Some(WorkspaceHit::TerminalPane);

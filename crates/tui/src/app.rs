@@ -941,6 +941,22 @@ impl TuiApp {
         parser.set_scrollback(next);
     }
 
+    pub fn reset_terminal_scrollback(&mut self, id: WorkspaceId, tab_id: &str) {
+        let state = self
+            .terminal_state
+            .entry(id)
+            .or_insert_with(WorkspaceTerminalState::new);
+        state.tab_mut(tab_id).parser.set_scrollback(0);
+    }
+
+    pub fn terminal_scrollback_active(&self, id: WorkspaceId, tab_id: &str) -> bool {
+        self.terminal_state
+            .get(&id)
+            .and_then(|s| s.tabs.get(tab_id))
+            .map(|t| t.parser.screen().scrollback() > 0)
+            .unwrap_or(false)
+    }
+
     pub fn should_send_resize(
         &mut self,
         id: WorkspaceId,
@@ -1549,6 +1565,9 @@ impl TuiApp {
             7 => {
                 self.settings_edit_buffer = Some(self.settings.next_workspace_key.clone());
             }
+            8 => {
+                self.settings_edit_buffer = Some(self.settings.scroll_to_bottom_key.clone());
+            }
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -1584,7 +1603,7 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        8
+        9
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -1629,6 +1648,11 @@ impl TuiApp {
                         self.settings.next_workspace_key = trimmed;
                     }
                 }
+                8 => {
+                    if !trimmed.is_empty() {
+                        self.settings.scroll_to_bottom_key = trimmed;
+                    }
+                }
                 _ => {}
             }
             let _ = save_settings(&self.settings);
@@ -1637,6 +1661,29 @@ impl TuiApp {
 
     pub fn cancel_setting_edit(&mut self) {
         self.settings_edit_buffer = None;
+    }
+
+    /// True when the currently-edited settings row is a keybinding field
+    /// (captures a raw key press instead of text input).
+    pub fn is_editing_keybind(&self) -> bool {
+        self.settings_edit_buffer.is_some()
+            && matches!(self.settings_selected, 6 | 7 | 8)
+    }
+
+    /// Apply a captured keybinding string to the current keybinding row and
+    /// immediately confirm the edit so the new binding takes effect.
+    pub fn apply_captured_keybind(&mut self, binding: String) {
+        if !self.is_editing_keybind() {
+            return;
+        }
+        match self.settings_selected {
+            6 => self.settings.prev_workspace_key = binding,
+            7 => self.settings.next_workspace_key = binding,
+            8 => self.settings.scroll_to_bottom_key = binding,
+            _ => return,
+        }
+        self.settings_edit_buffer = None;
+        let _ = save_settings(&self.settings);
     }
 
     pub fn begin_new_agent(&mut self) {
@@ -2242,6 +2289,8 @@ pub struct Settings {
     pub prev_workspace_key: String,
     #[serde(default = "default_next_workspace_key")]
     pub next_workspace_key: String,
+    #[serde(default = "default_scroll_to_bottom_key")]
+    pub scroll_to_bottom_key: String,
 }
 
 fn default_true() -> bool {
@@ -2281,6 +2330,10 @@ fn default_next_workspace_key() -> String {
     "ctrl+shift+l".to_string()
 }
 
+fn default_scroll_to_bottom_key() -> String {
+    "ctrl+end".to_string()
+}
+
 impl Settings {
     /// Returns the active agent profile (the default, or first if not found).
     pub fn active_agent(&self) -> Option<&AgentProfile> {
@@ -2302,6 +2355,7 @@ impl Default for Settings {
             show_frame_counter: false,
             prev_workspace_key: default_prev_workspace_key(),
             next_workspace_key: default_next_workspace_key(),
+            scroll_to_bottom_key: default_scroll_to_bottom_key(),
         }
     }
 }
@@ -2712,6 +2766,38 @@ mod tests {
         assert_eq!(app.settings_selected, 0);
         app.close_settings();
         assert!(!app.is_settings_open());
+    }
+
+    #[test]
+    fn scroll_to_bottom_key_captures_and_applies_immediately() {
+        use crate::keymap;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::default();
+        app.open_settings();
+        app.settings_selected = 8;
+        // Enter capture mode for the scroll-to-bottom binding row.
+        app.toggle_selected_setting();
+        assert!(app.is_editing_keybind());
+
+        // Simulate the user pressing Ctrl+Shift+B.
+        let pressed = KeyEvent::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let captured =
+            keymap::keybind_from_event(pressed).expect("key produces a binding");
+        app.apply_captured_keybind(captured.clone());
+
+        // After capture, the setting is persisted in memory and edit mode is exited.
+        assert_eq!(app.settings.scroll_to_bottom_key, captured);
+        assert!(!app.is_editing_keybind());
+
+        // And pressing the same key afterwards matches the new binding live.
+        assert!(keymap::matches_keybinding(
+            pressed,
+            &app.settings.scroll_to_bottom_key
+        ));
     }
 
     #[test]

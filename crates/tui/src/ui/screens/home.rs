@@ -394,7 +394,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
     }
 
     if app.is_settings_open() {
-        let modal = centered_rect(area, 56, 17);
+        let modal = centered_rect(area, 56, 18);
         frame.render_widget(Clear, modal);
 
         let key_style = Style::default()
@@ -492,48 +492,33 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             fc_toggle,
         ]);
 
-        // Row 6: Prev workspace hotkey
-        let prev_val = if app.settings_selected == 6 {
-            if let Some(buf) = &app.settings_edit_buffer {
-                Span::styled(format!("{}▏", buf), edit_style)
+        let keybind_val = |idx: usize, current: &str| -> Span<'static> {
+            if app.settings_selected == idx && app.is_editing_keybind() {
+                Span::styled("Press any key (Esc cancels)…".to_string(), edit_style)
             } else {
-                Span::styled(
-                    app.settings.prev_workspace_key.clone(),
-                    Style::default().fg(Color::Cyan),
-                )
+                Span::styled(current.to_string(), Style::default().fg(Color::Cyan))
             }
-        } else {
-            Span::styled(
-                app.settings.prev_workspace_key.clone(),
-                Style::default().fg(Color::Cyan),
-            )
         };
+
+        // Row 6: Prev workspace hotkey
         let row6 = Line::from(vec![
             Span::styled(cursor_str(6), cursor_style),
             Span::raw("Prev workspace key        "),
-            prev_val,
+            keybind_val(6, &app.settings.prev_workspace_key),
         ]);
 
         // Row 7: Next workspace hotkey
-        let next_val = if app.settings_selected == 7 {
-            if let Some(buf) = &app.settings_edit_buffer {
-                Span::styled(format!("{}▏", buf), edit_style)
-            } else {
-                Span::styled(
-                    app.settings.next_workspace_key.clone(),
-                    Style::default().fg(Color::Cyan),
-                )
-            }
-        } else {
-            Span::styled(
-                app.settings.next_workspace_key.clone(),
-                Style::default().fg(Color::Cyan),
-            )
-        };
         let row7 = Line::from(vec![
             Span::styled(cursor_str(7), cursor_style),
             Span::raw("Next workspace key        "),
-            next_val,
+            keybind_val(7, &app.settings.next_workspace_key),
+        ]);
+
+        // Row 8: Scroll-to-bottom hotkey
+        let row8 = Line::from(vec![
+            Span::styled(cursor_str(8), cursor_style),
+            Span::raw("Scroll to bottom key      "),
+            keybind_val(8, &app.settings.scroll_to_bottom_key),
         ]);
 
         let (title, body) = if app.confirming_delete_agent {
@@ -619,7 +604,14 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
             (" New Agent ", lines)
         } else {
-            let hint = if app.is_editing_setting() {
+            let hint = if app.is_editing_keybind() {
+                Line::from(vec![
+                    Span::styled("Any key", key_style),
+                    Span::styled(" capture  ", desc_style),
+                    Span::styled("Esc", key_style),
+                    Span::styled(" cancel", desc_style),
+                ])
+            } else if app.is_editing_setting() {
                 Line::from(vec![
                     Span::styled("Enter", key_style),
                     Span::styled(" confirm  ", desc_style),
@@ -654,6 +646,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row5,
                     row6,
                     row7,
+                    row8,
                     Line::from(""),
                     hint,
                 ],
