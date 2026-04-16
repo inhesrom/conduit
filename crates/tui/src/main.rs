@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as OsCommand, Stdio};
 use std::time::{Duration, Instant};
 
-use conduit_core::{spawn_core, CoreHandle};
 use anyhow::{anyhow, Context, Result};
 use app::TuiApp;
 use base64::Engine as _;
+use conduit_core::{spawn_core, CoreHandle};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -310,8 +310,9 @@ fn self_update(force: bool) -> Result<()> {
 
     let target = detect_release_target(&os_name, &arch_name)?;
 
-    let url =
-        format!("https://github.com/inhesrom/conduit/releases/download/{tag}/conduit-{target}.tar.gz");
+    let url = format!(
+        "https://github.com/inhesrom/conduit/releases/download/{tag}/conduit-{target}.tar.gz"
+    );
 
     // Download to a temp directory
     let tmp_dir = std::env::temp_dir().join(format!("conduit-update-{}", std::process::id()));
@@ -345,7 +346,9 @@ fn self_update(force: bool) -> Result<()> {
         std::env::current_exe().context("cannot determine current executable path")?;
     let new_binary = tmp_dir.join("conduit");
     if !new_binary.exists() {
-        return Err(anyhow!("extracted archive does not contain 'conduit' binary"));
+        return Err(anyhow!(
+            "extracted archive does not contain 'conduit' binary"
+        ));
     }
     let downloaded_version = read_conduit_version(&new_binary).with_context(|| {
         format!(
@@ -1145,20 +1148,18 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     // Read crossterm events on a dedicated OS thread so that synchronous
     // poll/read can never block the tokio runtime (and thus the render loop).
     let (ct_tx, mut ct_rx) = mpsc::channel::<Event>(256);
-    std::thread::spawn(move || {
-        loop {
-            match event::poll(Duration::from_millis(100)) {
-                Ok(true) => match event::read() {
-                    Ok(evt) => {
-                        if ct_tx.blocking_send(evt).is_err() {
-                            break;
-                        }
+    std::thread::spawn(move || loop {
+        match event::poll(Duration::from_millis(100)) {
+            Ok(true) => match event::read() {
+                Ok(evt) => {
+                    if ct_tx.blocking_send(evt).is_err() {
+                        break;
                     }
-                    Err(_) => break,
-                },
-                Ok(false) => {}
+                }
                 Err(_) => break,
-            }
+            },
+            Ok(false) => {}
+            Err(_) => break,
         }
     });
 
@@ -1310,7 +1311,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        for evt in pending_ct.into_iter().chain(std::iter::from_fn(|| ct_rx.try_recv().ok())) {
+        for evt in pending_ct
+            .into_iter()
+            .chain(std::iter::from_fn(|| ct_rx.try_recv().ok()))
+        {
             match evt {
                 Event::Key(key) => {
                     if matches!(key.kind, KeyEventKind::Release) {
@@ -1352,16 +1356,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         KeyCode::Enter => app.new_agent_advance(),
                                         KeyCode::Esc => app.cancel_new_agent(),
                                         KeyCode::Backspace => {
-                                            if let Some((_, _, buf)) =
-                                                &mut app.new_agent_wizard
-                                            {
+                                            if let Some((_, _, buf)) = &mut app.new_agent_wizard {
                                                 buf.pop();
                                             }
                                         }
                                         KeyCode::Char(c) => {
-                                            if let Some((_, _, buf)) =
-                                                &mut app.new_agent_wizard
-                                            {
+                                            if let Some((_, _, buf)) = &mut app.new_agent_wizard {
                                                 buf.push(c);
                                             }
                                         }
@@ -1373,9 +1373,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     // recorded as the new binding).
                                     if key.code == KeyCode::Esc {
                                         app.cancel_setting_edit();
-                                    } else if let Some(binding) =
-                                        keymap::keybind_from_event(key)
-                                    {
+                                    } else if let Some(binding) = keymap::keybind_from_event(key) {
                                         app.apply_captured_keybind(binding);
                                     }
                                 } else if app.is_editing_setting() {
@@ -1396,9 +1394,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                 } else {
                                     match key.code {
-                                        KeyCode::Esc | KeyCode::Char('S') => {
-                                            app.close_settings()
-                                        }
+                                        KeyCode::Esc | KeyCode::Char('S') => app.close_settings(),
                                         KeyCode::Down | KeyCode::Char('j') => {
                                             app.settings_selected = (app.settings_selected + 1)
                                                 .min(app.settings_count() - 1);
@@ -1656,9 +1652,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Esc
-                                    | KeyCode::Enter
-                                    | KeyCode::Char('M') => {
+                                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('M') => {
                                         app.end_move_workspace();
                                     }
                                     _ => {}
@@ -1676,9 +1670,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 id,
                                                 kind: TerminalKind::Agent,
                                                 tab_id: None,
-                                                data_b64:
-                                                    base64::engine::general_purpose::STANDARD
-                                                        .encode(b"\r"),
+                                                data_b64: base64::engine::general_purpose::STANDARD
+                                                    .encode(b"\r"),
                                             })
                                             .await;
                                     }
@@ -1711,9 +1704,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     KeyCode::Down | KeyCode::Char('j') => {
                                         app.move_home_selection(1)
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => {
-                                        app.move_home_selection(-1)
-                                    }
+                                    KeyCode::Up | KeyCode::Char('k') => app.move_home_selection(-1),
                                     KeyCode::Left | KeyCode::Char('h') => {
                                         if let Some(id) = app.selected_workspace_id() {
                                             let _ = backend
@@ -1744,9 +1735,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Char(' ') => {
-                                        app.toggle_home_expanded_tile()
-                                    }
+                                    KeyCode::Char(' ') => app.toggle_home_expanded_tile(),
                                     KeyCode::Char('n') => {
                                         let cwd = std::env::current_dir()
                                             .unwrap_or_else(|_| PathBuf::from("."))
@@ -2017,9 +2006,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            // Ctrl+G toggles terminal passthrough mode.
-                            if key.code == KeyCode::Char('g')
-                                && key.modifiers.contains(KeyModifiers::CONTROL)
+                            // Configurable hotkey for terminal passthrough mode.
+                            if keymap::matches_keybinding(key, &app.settings.passthrough_key)
                                 && matches!(app.focus, app::Focus::WsTerminal)
                             {
                                 app.toggle_active_tab_passthrough();
@@ -2029,14 +2017,19 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             // Workspace switching hotkeys (work from any focus,
                             // including passthrough).
                             if app.workspaces.len() > 1 {
-                                let switch_delta =
-                                    if keymap::matches_keybinding(key, &app.settings.prev_workspace_key) {
-                                        Some(-1i32)
-                                    } else if keymap::matches_keybinding(key, &app.settings.next_workspace_key) {
-                                        Some(1i32)
-                                    } else {
-                                        None
-                                    };
+                                let switch_delta = if keymap::matches_keybinding(
+                                    key,
+                                    &app.settings.prev_workspace_key,
+                                ) {
+                                    Some(-1i32)
+                                } else if keymap::matches_keybinding(
+                                    key,
+                                    &app.settings.next_workspace_key,
+                                ) {
+                                    Some(1i32)
+                                } else {
+                                    None
+                                };
                                 if let Some(delta) = switch_delta {
                                     let cur = app
                                         .workspaces
@@ -2044,7 +2037,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         .position(|w| Some(w.id) == app.active_workspace_id())
                                         .unwrap_or(0);
                                     let len = app.workspaces.len();
-                                    let next_idx = ((cur as i32 + delta).rem_euclid(len as i32)) as usize;
+                                    let next_idx =
+                                        ((cur as i32 + delta).rem_euclid(len as i32)) as usize;
                                     if let Some(target) = app.workspaces.get(next_idx) {
                                         let target_id = target.id;
                                         app.open_workspace(target_id);
@@ -2090,10 +2084,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
                             // Configurable "scroll terminal to bottom" hotkey
                             // (resets scrollback). Works from any workspace pane.
-                            if keymap::matches_keybinding(
-                                key,
-                                &app.settings.scroll_to_bottom_key,
-                            ) {
+                            if keymap::matches_keybinding(key, &app.settings.scroll_to_bottom_key) {
                                 let tab_id = app.active_tab_id();
                                 app.reset_terminal_scrollback(id, &tab_id);
                                 continue;
@@ -2143,8 +2134,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             if matches!(app.focus, app::Focus::WsBar) {
                                 match key.code {
                                     KeyCode::Left | KeyCode::Char('h') => {
-                                        app.ws_bar_selected =
-                                            app.ws_bar_selected.saturating_sub(1);
+                                        app.ws_bar_selected = app.ws_bar_selected.saturating_sub(1);
                                     }
                                     KeyCode::Right | KeyCode::Char('l') => {
                                         app.ws_bar_selected = (app.ws_bar_selected + 1)
@@ -2155,9 +2145,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             app.workspaces.get(app.ws_bar_selected)
                                         {
                                             let target_id = target.id;
-                                            if Some(target_id)
-                                                != app.active_workspace_id()
-                                            {
+                                            if Some(target_id) != app.active_workspace_id() {
                                                 app.open_workspace(target_id);
                                                 start_workspace_tab_terminals(
                                                     &backend.cmd_tx,
@@ -2168,15 +2156,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                                 let _ = backend
                                                     .cmd_tx
-                                                    .send(Command::RefreshGit {
-                                                        id: target_id,
-                                                    })
+                                                    .send(Command::RefreshGit { id: target_id })
                                                     .await;
                                                 let _ = backend
                                                     .cmd_tx
-                                                    .send(Command::ClearAttention {
-                                                        id: target_id,
-                                                    })
+                                                    .send(Command::ClearAttention { id: target_id })
                                                     .await;
                                             } else {
                                                 app.focus = app::Focus::WsTerminal;
@@ -2662,10 +2646,7 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
             }
         }
         CoreEvent::TerminalStarted {
-            id,
-            kind,
-            tab_id,
-            ..
+            id, kind, tab_id, ..
         } => {
             let tid = tab_id.unwrap_or_else(|| "shell".to_string());
             app.reset_terminal(id, &tid);
@@ -2994,12 +2975,13 @@ async fn handle_mouse(
     match app.route {
         Route::Home => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.mouse_selection =
-                    if let Some(r) = ui::screens::home::pane_rect_at(area, app, mouse.column, mouse.row) {
-                        Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
-                    } else {
-                        Some(app::MouseSelection::at(mouse.column, mouse.row))
-                    };
+                app.mouse_selection = if let Some(r) =
+                    ui::screens::home::pane_rect_at(area, app, mouse.column, mouse.row)
+                {
+                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
+                } else {
+                    Some(app::MouseSelection::at(mouse.column, mouse.row))
+                };
                 if app.is_confirming_delete() {
                     let rect = ui::screens::home::delete_modal_rect(area);
                     if point_in_rect(rect, mouse.column, mouse.row) {
@@ -3025,7 +3007,8 @@ async fn handle_mouse(
                 }
 
                 let grid = ui::screens::home::grid_rect(area);
-                let expanded_h = ui::widgets::tile_grid::tile_h_expanded(app.settings.preview_lines);
+                let expanded_h =
+                    ui::widgets::tile_grid::tile_h_expanded(app.settings.preview_lines);
                 if let Some(idx) = ui::widgets::tile_grid::index_at(
                     grid,
                     mouse.column,
@@ -3038,7 +3021,8 @@ async fn handle_mouse(
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
                         app.open_workspace(id);
-                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, &app.settings).await;
+                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, &app.settings)
+                            .await;
                         let _ = cmd_tx.send(Command::RefreshGit { id }).await;
                         let _ = cmd_tx.send(Command::ClearAttention { id }).await;
                     }
@@ -3054,12 +3038,13 @@ async fn handle_mouse(
         },
         Route::Workspace { id } => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.mouse_selection =
-                    if let Some(r) = ui::screens::workspace::pane_rect_at(area, app, mouse.column, mouse.row) {
-                        Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
-                    } else {
-                        Some(app::MouseSelection::at(mouse.column, mouse.row))
-                    };
+                app.mouse_selection = if let Some(r) =
+                    ui::screens::workspace::pane_rect_at(area, app, mouse.column, mouse.row)
+                {
+                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
+                } else {
+                    Some(app::MouseSelection::at(mouse.column, mouse.row))
+                };
                 if let Some(hit) =
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
@@ -3070,11 +3055,17 @@ async fn handle_mouse(
                                 if Some(target_id) != app.active_workspace_id() {
                                     app.open_workspace(target_id);
                                     start_workspace_tab_terminals(
-                                        cmd_tx, target_id, &app.ws_tabs, &app.settings,
+                                        cmd_tx,
+                                        target_id,
+                                        &app.ws_tabs,
+                                        &app.settings,
                                     )
                                     .await;
-                                    let _ = cmd_tx.send(Command::RefreshGit { id: target_id }).await;
-                                    let _ = cmd_tx.send(Command::ClearAttention { id: target_id }).await;
+                                    let _ =
+                                        cmd_tx.send(Command::RefreshGit { id: target_id }).await;
+                                    let _ = cmd_tx
+                                        .send(Command::ClearAttention { id: target_id })
+                                        .await;
                                 }
                             }
                         }
@@ -3094,13 +3085,11 @@ async fn handle_mouse(
                             app.ws_selected_commit = idx;
                             match app.log_item_at(idx) {
                                 app::LogItem::UncommittedHeader => {
-                                    app.ws_uncommitted_expanded =
-                                        !app.ws_uncommitted_expanded;
+                                    app.ws_uncommitted_expanded = !app.ws_uncommitted_expanded;
                                 }
                                 app::LogItem::ChangedFile(_) => {
                                     if let Some(file) = app.selected_log_file() {
-                                        let _ =
-                                            cmd_tx.send(Command::LoadDiff { id, file }).await;
+                                        let _ = cmd_tx.send(Command::LoadDiff { id, file }).await;
                                     }
                                 }
                                 app::LogItem::Commit(ci) => {
@@ -3111,10 +3100,7 @@ async fn handle_mouse(
                                         if let Some(hash) = app.selected_commit_hash() {
                                             if !app.commit_files_cache.contains_key(&hash) {
                                                 let _ = cmd_tx
-                                                    .send(Command::LoadCommitFiles {
-                                                        id,
-                                                        hash,
-                                                    })
+                                                    .send(Command::LoadCommitFiles { id, hash })
                                                     .await;
                                             }
                                         }
@@ -3123,11 +3109,7 @@ async fn handle_mouse(
                                 app::LogItem::CommitFile(_, _) => {
                                     if let Some((hash, file)) = app.selected_commit_file() {
                                         let _ = cmd_tx
-                                            .send(Command::LoadCommitFileDiff {
-                                                id,
-                                                hash,
-                                                file,
-                                            })
+                                            .send(Command::LoadCommitFileDiff { id, hash, file })
                                             .await;
                                     }
                                 }
@@ -3501,7 +3483,10 @@ mod tests {
 
     #[test]
     fn parses_version_output() {
-        assert_eq!(parse_conduit_version_output("conduit 0.3.21\n"), Some("0.3.21"));
+        assert_eq!(
+            parse_conduit_version_output("conduit 0.3.21\n"),
+            Some("0.3.21")
+        );
         assert_eq!(
             parse_conduit_version_output("\nconduit v0.3.21\n"),
             Some("0.3.21")

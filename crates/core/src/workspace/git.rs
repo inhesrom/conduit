@@ -713,11 +713,7 @@ pub async fn checkout_remote_branch(
     Ok(())
 }
 
-pub async fn delete_local_branch(
-    repo: &Path,
-    branch: &str,
-    ssh: Option<&SshTarget>,
-) -> Result<()> {
+pub async fn delete_local_branch(repo: &Path, branch: &str, ssh: Option<&SshTarget>) -> Result<()> {
     let out = ssh::build_command(ssh, repo, "git", &["branch", "-D", branch])
         .output()
         .await?;

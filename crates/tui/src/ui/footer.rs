@@ -176,7 +176,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
             Focus::WsTerminal => vec![
                 desc("(keys sent to terminal)"),
                 gap(),
-                key("Ctrl+G"),
+                key(&app.settings.passthrough_key),
                 desc(" passthrough"),
                 gap(),
                 key("F"),
@@ -476,11 +476,13 @@ mod tests {
 
     #[test]
     fn workspace_terminal_focus_hints() {
-        let (app, _id) = app_with_workspace();
+        let (mut app, _id) = app_with_workspace();
+        app.settings.passthrough_key = "ctrl+shift+p".to_string();
         // open_workspace sets focus to WsTerminal
         assert_eq!(app.focus, Focus::WsTerminal);
         let line = build_footer_hints(&app);
         assert!(hints_contain(&line, "passthrough"));
+        assert!(hints_contain(&line, "ctrl+shift+p"));
     }
 
     #[test]

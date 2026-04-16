@@ -289,8 +289,14 @@ pub enum BranchSubPane {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteBranchTarget {
-    Local { branch: String },
-    Remote { remote: String, branch: String, full_name: String },
+    Local {
+        branch: String,
+    },
+    Remote {
+        remote: String,
+        branch: String,
+        full_name: String,
+    },
 }
 
 pub struct TuiApp {
@@ -464,11 +470,7 @@ impl TuiApp {
         self.route = Route::Workspace { id };
         self.focus = Focus::WsTerminal;
         self.load_tabs_for_workspace(id);
-        self.ws_bar_selected = self
-            .workspaces
-            .iter()
-            .position(|w| w.id == id)
-            .unwrap_or(0);
+        self.ws_bar_selected = self.workspaces.iter().position(|w| w.id == id).unwrap_or(0);
     }
 
     pub fn go_home(&mut self) {
@@ -581,13 +583,11 @@ impl TuiApp {
     /// Scroll the home tile list by `delta` rows (positive = down).
     pub fn scroll_home(&mut self, delta: i16) {
         let expanded_h = tile_grid::tile_h_expanded(self.settings.preview_lines);
-        let total = tile_grid::total_height(
-            self.workspaces.len(),
-            &self.home_expanded_tiles,
-            expanded_h,
-        );
+        let total =
+            tile_grid::total_height(self.workspaces.len(), &self.home_expanded_tiles, expanded_h);
         let max_offset = total.saturating_sub(self.last_grid_height);
-        let new_offset = (self.home_scroll_offset as i32 + delta as i32).clamp(0, max_offset as i32);
+        let new_offset =
+            (self.home_scroll_offset as i32 + delta as i32).clamp(0, max_offset as i32);
         self.home_scroll_offset = new_offset as u16;
     }
 
@@ -878,7 +878,13 @@ impl TuiApp {
         self.workspace_diff.insert(id, (file, diff));
     }
 
-    pub fn append_terminal_bytes(&mut self, id: WorkspaceId, tab_id: &str, kind: protocol::TerminalKind, bytes: &[u8]) {
+    pub fn append_terminal_bytes(
+        &mut self,
+        id: WorkspaceId,
+        tab_id: &str,
+        kind: protocol::TerminalKind,
+        bytes: &[u8],
+    ) {
         let is_new_ws = !self.terminal_state.contains_key(&id);
         let state = self
             .terminal_state
@@ -995,8 +1001,7 @@ impl TuiApp {
             if let Some(row_text) = row_texts.get(r as usize) {
                 for m in re.find_iter(row_text) {
                     let col_start = row_text[..m.start()].chars().count() as u16;
-                    let col_end =
-                        col_start + row_text[m.start()..m.end()].chars().count() as u16;
+                    let col_end = col_start + row_text[m.start()..m.end()].chars().count() as u16;
                     url_ranges.push((col_start, col_end));
                 }
             }
@@ -1233,12 +1238,7 @@ impl TuiApp {
         Line::from(spans)
     }
 
-    fn styled_screen_row(
-        &self,
-        screen: &vt100::Screen,
-        row: u16,
-        use_cols: u16,
-    ) -> Line<'static> {
+    fn styled_screen_row(&self, screen: &vt100::Screen, row: u16, use_cols: u16) -> Line<'static> {
         let mut spans = Vec::new();
         for c in 0..use_cols {
             let Some(cell) = screen.cell(row, c) else {
@@ -1566,6 +1566,9 @@ impl TuiApp {
                 self.settings_edit_buffer = Some(self.settings.next_workspace_key.clone());
             }
             8 => {
+                self.settings_edit_buffer = Some(self.settings.passthrough_key.clone());
+            }
+            9 => {
                 self.settings_edit_buffer = Some(self.settings.scroll_to_bottom_key.clone());
             }
             _ => {}
@@ -1603,7 +1606,7 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        9
+        10
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -1629,10 +1632,8 @@ impl TuiApp {
                                 }
                             }
                             2 => {
-                                self.settings.agents[idx].yolo_flags = trimmed
-                                    .split_whitespace()
-                                    .map(|s| s.to_string())
-                                    .collect();
+                                self.settings.agents[idx].yolo_flags =
+                                    trimmed.split_whitespace().map(|s| s.to_string()).collect();
                             }
                             _ => {}
                         }
@@ -1650,6 +1651,11 @@ impl TuiApp {
                 }
                 8 => {
                     if !trimmed.is_empty() {
+                        self.settings.passthrough_key = trimmed;
+                    }
+                }
+                9 => {
+                    if !trimmed.is_empty() {
                         self.settings.scroll_to_bottom_key = trimmed;
                     }
                 }
@@ -1666,8 +1672,7 @@ impl TuiApp {
     /// True when the currently-edited settings row is a keybinding field
     /// (captures a raw key press instead of text input).
     pub fn is_editing_keybind(&self) -> bool {
-        self.settings_edit_buffer.is_some()
-            && matches!(self.settings_selected, 6 | 7 | 8)
+        self.settings_edit_buffer.is_some() && matches!(self.settings_selected, 6 | 7 | 8 | 9)
     }
 
     /// Apply a captured keybinding string to the current keybinding row and
@@ -1679,7 +1684,8 @@ impl TuiApp {
         match self.settings_selected {
             6 => self.settings.prev_workspace_key = binding,
             7 => self.settings.next_workspace_key = binding,
-            8 => self.settings.scroll_to_bottom_key = binding,
+            8 => self.settings.passthrough_key = binding,
+            9 => self.settings.scroll_to_bottom_key = binding,
             _ => return,
         }
         self.settings_edit_buffer = None;
@@ -1721,10 +1727,8 @@ impl TuiApp {
                     self.new_agent_wizard.as_mut().unwrap().0 = 2;
                 }
                 2 => {
-                    profile.yolo_flags = trimmed
-                        .split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect();
+                    profile.yolo_flags =
+                        trimmed.split_whitespace().map(|s| s.to_string()).collect();
                     // Done — commit the new agent
                     let finished = profile.clone();
                     self.settings.default_agent = finished.name.clone();
@@ -2289,6 +2293,8 @@ pub struct Settings {
     pub prev_workspace_key: String,
     #[serde(default = "default_next_workspace_key")]
     pub next_workspace_key: String,
+    #[serde(default = "default_passthrough_key")]
+    pub passthrough_key: String,
     #[serde(default = "default_scroll_to_bottom_key")]
     pub scroll_to_bottom_key: String,
 }
@@ -2330,6 +2336,10 @@ fn default_next_workspace_key() -> String {
     "ctrl+shift+l".to_string()
 }
 
+fn default_passthrough_key() -> String {
+    "ctrl+g".to_string()
+}
+
 fn default_scroll_to_bottom_key() -> String {
     "ctrl+end".to_string()
 }
@@ -2355,6 +2365,7 @@ impl Default for Settings {
             show_frame_counter: false,
             prev_workspace_key: default_prev_workspace_key(),
             next_workspace_key: default_next_workspace_key(),
+            passthrough_key: default_passthrough_key(),
             scroll_to_bottom_key: default_scroll_to_bottom_key(),
         }
     }
@@ -2775,7 +2786,7 @@ mod tests {
 
         let mut app = TuiApp::default();
         app.open_settings();
-        app.settings_selected = 8;
+        app.settings_selected = 9;
         // Enter capture mode for the scroll-to-bottom binding row.
         app.toggle_selected_setting();
         assert!(app.is_editing_keybind());
@@ -2785,8 +2796,7 @@ mod tests {
             KeyCode::Char('b'),
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         );
-        let captured =
-            keymap::keybind_from_event(pressed).expect("key produces a binding");
+        let captured = keymap::keybind_from_event(pressed).expect("key produces a binding");
         app.apply_captured_keybind(captured.clone());
 
         // After capture, the setting is persisted in memory and edit mode is exited.
@@ -2797,6 +2807,32 @@ mod tests {
         assert!(keymap::matches_keybinding(
             pressed,
             &app.settings.scroll_to_bottom_key
+        ));
+    }
+
+    #[test]
+    fn passthrough_key_captures_and_applies_immediately() {
+        use crate::keymap;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::default();
+        app.open_settings();
+        app.settings_selected = 8;
+        app.toggle_selected_setting();
+        assert!(app.is_editing_keybind());
+
+        let pressed = KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let captured = keymap::keybind_from_event(pressed).expect("key produces a binding");
+        app.apply_captured_keybind(captured.clone());
+
+        assert_eq!(app.settings.passthrough_key, captured);
+        assert!(!app.is_editing_keybind());
+        assert!(keymap::matches_keybinding(
+            pressed,
+            &app.settings.passthrough_key
         ));
     }
 

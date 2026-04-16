@@ -3,7 +3,9 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    },
     Frame,
 };
 
@@ -50,7 +52,10 @@ pub fn render(
     let total_h = total_height(items.len(), expanded, expanded_h);
     let needs_scrollbar = total_h > area.height;
     let tile_area = if needs_scrollbar {
-        Rect { width: area.width.saturating_sub(1), ..area }
+        Rect {
+            width: area.width.saturating_sub(1),
+            ..area
+        }
     } else {
         area
     };
@@ -75,7 +80,9 @@ pub fn render(
             x: tile_area.x,
             y: tile_area.y + vis_top,
             width: tile_area.width,
-            height: vis_bottom.saturating_sub(vis_top).min(tile_area.height - vis_top),
+            height: vis_bottom
+                .saturating_sub(vis_top)
+                .min(tile_area.height - vis_top),
         };
 
         if tile.width < 8 || tile.height < TILE_H.min(tile_h) {
@@ -96,8 +103,8 @@ pub fn render(
     // Scrollbar
     if needs_scrollbar {
         let max_offset = total_h.saturating_sub(area.height);
-        let mut scrollbar_state = ScrollbarState::new(max_offset as usize)
-            .position(scroll_offset as usize);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_offset as usize).position(scroll_offset as usize);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -130,7 +137,11 @@ pub fn index_at(
     let rel_y = (y - area.y) + scroll_offset;
     let mut virtual_y: u16 = 0;
     for i in 0..item_count {
-        let tile_h = if expanded.contains(&i) { expanded_h } else { TILE_H };
+        let tile_h = if expanded.contains(&i) {
+            expanded_h
+        } else {
+            TILE_H
+        };
         if rel_y >= virtual_y && rel_y < virtual_y + tile_h {
             return Some(i);
         }
@@ -156,7 +167,11 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
 pub fn tile_y_offset(index: usize, expanded: &HashSet<usize>, expanded_h: u16) -> u16 {
     let mut y: u16 = 0;
     for i in 0..index {
-        y += if expanded.contains(&i) { expanded_h } else { TILE_H };
+        y += if expanded.contains(&i) {
+            expanded_h
+        } else {
+            TILE_H
+        };
     }
     y
 }
@@ -176,14 +191,20 @@ pub fn tile_rect(
     scroll_offset: u16,
 ) -> Rect {
     let virtual_y = tile_y_offset(index, expanded, expanded_h);
-    let tile_h = if expanded.contains(&index) { expanded_h } else { TILE_H };
+    let tile_h = if expanded.contains(&index) {
+        expanded_h
+    } else {
+        TILE_H
+    };
     let vis_top = virtual_y.saturating_sub(scroll_offset);
     let vis_bottom = (virtual_y + tile_h).saturating_sub(scroll_offset);
     Rect {
         x: area.x,
         y: area.y + vis_top,
         width: area.width,
-        height: vis_bottom.saturating_sub(vis_top).min(area.height.saturating_sub(vis_top)),
+        height: vis_bottom
+            .saturating_sub(vis_top)
+            .min(area.height.saturating_sub(vis_top)),
     }
 }
 
@@ -317,10 +338,7 @@ fn build_body_lines(
     ];
 
     if is_expanded {
-        lines.push(Line::from(Span::styled(
-            "╶".repeat(body_max),
-            dim_style(),
-        )));
+        lines.push(Line::from(Span::styled("╶".repeat(body_max), dim_style())));
 
         let preview_slots = interior_rows.saturating_sub(4); // 3 info + 1 divider
         if preview.is_empty() {
@@ -484,7 +502,10 @@ mod tests {
 
     #[test]
     fn index_at_second_tile() {
-        assert_eq!(index_at(area(), 1, TILE_H + 1, 6, &no_expand(), 18, 0), Some(1));
+        assert_eq!(
+            index_at(area(), 1, TILE_H + 1, 6, &no_expand(), 18, 0),
+            Some(1)
+        );
     }
 
     #[test]
@@ -500,7 +521,10 @@ mod tests {
     #[test]
     fn index_at_beyond_item_count() {
         // Click where a 4th tile would be, but only 3 items exist
-        assert_eq!(index_at(area(), 1, TILE_H * 3 + 1, 3, &no_expand(), 18, 0), None);
+        assert_eq!(
+            index_at(area(), 1, TILE_H * 3 + 1, 3, &no_expand(), 18, 0),
+            None
+        );
     }
 
     #[test]

@@ -906,10 +906,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     }
                     for (i, ch) in text.chars().enumerate() {
                         let x = start + i as u16;
-                        if x < cursor
-                            && x >= inner_left
-                            && bottom_y < buf.area().height
-                        {
+                        if x < cursor && x >= inner_left && bottom_y < buf.area().height {
                             buf[(x, bottom_y)].set_char(ch).set_style(*style);
                         }
                     }
@@ -1344,7 +1341,8 @@ mod tests {
     #[test]
     fn pane_border_needs_input_flash_off() {
         // flash_off reverts to focused style
-        let (style, border_type) = pane_border_style(true, AttentionLevel::NeedsInput, false, false);
+        let (style, border_type) =
+            pane_border_style(true, AttentionLevel::NeedsInput, false, false);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(Color::LightBlue));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -1826,8 +1824,16 @@ mod tests {
         let (mut app, id) = app_with_workspace();
         app.set_workspace_git(id, make_git_state());
         let info = ws_info_string(&app);
-        assert!(info.contains("test"), "should contain workspace name: {}", info);
-        assert!(info.contains("main"), "should contain branch name: {}", info);
+        assert!(
+            info.contains("test"),
+            "should contain workspace name: {}",
+            info
+        );
+        assert!(
+            info.contains("main"),
+            "should contain branch name: {}",
+            info
+        );
     }
 
     #[test]
@@ -1880,7 +1886,11 @@ mod tests {
             .map(|(i, tab)| format!(" {}: {} ", i + 1, tab.label).len() as u16)
             .collect();
         let ranges = compute_tab_ranges(&pane, ws_info_width, &label_widths);
-        assert!(ranges.len() >= 3, "expected 3 tab ranges, got {}", ranges.len());
+        assert!(
+            ranges.len() >= 3,
+            "expected 3 tab ranges, got {}",
+            ranges.len()
+        );
         let third_tab_x = ranges[2].0 + 1;
         let result = hit_test(area, &app, third_tab_x, l.terminal_pane.y);
         assert!(

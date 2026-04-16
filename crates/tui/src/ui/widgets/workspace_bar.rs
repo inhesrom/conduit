@@ -68,10 +68,7 @@ pub fn build_workspace_bar_line(
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, pill) in pills.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         }
         pill.push_spans(&mut spans, flash_on);
     }
@@ -97,7 +94,11 @@ impl PillData {
     }
 
     fn dot(&self) -> &'static str {
-        if self.agent_running { " ●" } else { "" }
+        if self.agent_running {
+            " ●"
+        } else {
+            ""
+        }
     }
 
     /// Total display width of this pill: " {icon}{name}{dot} "
@@ -120,11 +121,19 @@ impl PillData {
         match self.attention {
             AttentionLevel::NeedsInput => {
                 let s = Style::default().fg(ORANGE);
-                if flash_on { s.add_modifier(Modifier::BOLD) } else { s }
+                if flash_on {
+                    s.add_modifier(Modifier::BOLD)
+                } else {
+                    s
+                }
             }
             AttentionLevel::Error => {
                 let s = Style::default().fg(Color::Red);
-                if flash_on { s.add_modifier(Modifier::BOLD) } else { s }
+                if flash_on {
+                    s.add_modifier(Modifier::BOLD)
+                } else {
+                    s
+                }
             }
             _ => Style::default().fg(Color::DarkGray),
         }
@@ -159,7 +168,8 @@ fn truncate_pills(pills: &mut [PillData], max_width: usize, total_dividers: usiz
     let min_name_len = 3; // "ab…"
 
     loop {
-        let current: usize = pills.iter().map(|p| p.display_width()).sum::<usize>() + total_dividers;
+        let current: usize =
+            pills.iter().map(|p| p.display_width()).sum::<usize>() + total_dividers;
         if current <= max_width {
             break;
         }
@@ -209,11 +219,7 @@ fn truncate_pills(pills: &mut [PillData], max_width: usize, total_dividers: usiz
 }
 
 /// Fallback when even truncation can't fit: show only the active pill + " +N".
-fn build_overflow_line(
-    pills: &[PillData],
-    flash_on: bool,
-    _max_width: usize,
-) -> Line<'static> {
+fn build_overflow_line(pills: &[PillData], flash_on: bool, _max_width: usize) -> Line<'static> {
     let mut spans = Vec::new();
     let others = pills.len().saturating_sub(1);
 
@@ -245,12 +251,7 @@ fn build_overflow_line(
 
 /// Returns the workspace index for the pill at position (x, y) within the bar rect.
 /// Used for mouse hit testing.
-pub fn pill_index_at(
-    bar: Rect,
-    workspaces: &[WorkspaceSummary],
-    x: u16,
-    y: u16,
-) -> Option<usize> {
+pub fn pill_index_at(bar: Rect, workspaces: &[WorkspaceSummary], x: u16, y: u16) -> Option<usize> {
     if workspaces.is_empty() || y < bar.y || y >= bar.bottom() || x < bar.x || x >= bar.right() {
         return None;
     }

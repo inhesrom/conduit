@@ -429,9 +429,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         ]);
 
         // Row 1: Agent command (editable, shows active agent's command)
-        let cmd_display = active_agent
-            .map(|a| a.command.as_str())
-            .unwrap_or("");
+        let cmd_display = active_agent.map(|a| a.command.as_str()).unwrap_or("");
         let cmd_val = if app.settings_selected == 1 {
             if let Some(buf) = &app.settings_edit_buffer {
                 Span::styled(format!("{}▏", buf), edit_style)
@@ -514,11 +512,18 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             keybind_val(7, &app.settings.next_workspace_key),
         ]);
 
-        // Row 8: Scroll-to-bottom hotkey
+        // Row 8: Terminal passthrough hotkey
         let row8 = Line::from(vec![
             Span::styled(cursor_str(8), cursor_style),
+            Span::raw("Passthrough key           "),
+            keybind_val(8, &app.settings.passthrough_key),
+        ]);
+
+        // Row 9: Scroll-to-bottom hotkey
+        let row9 = Line::from(vec![
+            Span::styled(cursor_str(9), cursor_style),
             Span::raw("Scroll to bottom key      "),
-            keybind_val(8, &app.settings.scroll_to_bottom_key),
+            keybind_val(9, &app.settings.scroll_to_bottom_key),
         ]);
 
         let (title, body) = if app.confirming_delete_agent {
@@ -527,9 +532,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 .active_agent()
                 .map(|a| a.name.as_str())
                 .unwrap_or("(unknown)");
-            let warn_style = Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD);
+            let warn_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
             let mut lines = vec![
                 Line::from(""),
                 Line::from(""),
@@ -594,10 +597,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             };
             lines.push(Line::from(vec![
                 Span::styled("Enter", key_style),
-                Span::styled(
-                    format!(" next ({})  ", step_label),
-                    desc_style,
-                ),
+                Span::styled(format!(" next ({})  ", step_label), desc_style),
                 Span::styled("Esc", key_style),
                 Span::styled(" cancel", desc_style),
             ]));
@@ -647,6 +647,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row6,
                     row7,
                     row8,
+                    row9,
                     Line::from(""),
                     hint,
                 ],
