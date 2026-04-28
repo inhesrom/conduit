@@ -1,5 +1,6 @@
 mod app;
 mod keymap;
+mod terminal_core;
 mod ui;
 
 use std::io::Write as _;
@@ -2006,16 +2007,35 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            // Configurable hotkey for terminal passthrough mode.
+                            // Configurable hotkey for terminal command mode.
                             if keymap::matches_keybinding(key, &app.settings.passthrough_key)
                                 && matches!(app.focus, app::Focus::WsTerminal)
                             {
-                                app.toggle_active_tab_passthrough();
+                                app.toggle_terminal_command_mode();
                                 continue;
                             }
 
-                            // Workspace switching hotkeys (work from any focus,
-                            // including passthrough).
+                            // In normal terminal mode, the focused terminal owns keys.
+                            if matches!(app.focus, app::Focus::WsTerminal)
+                                && !app.terminal_command_mode()
+                            {
+                                if let Some(bytes) = key_to_terminal_bytes(key) {
+                                    let _ = backend
+                                        .cmd_tx
+                                        .send(Command::SendTerminalInput {
+                                            id,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
+                                            data_b64: base64::engine::general_purpose::STANDARD
+                                                .encode(bytes),
+                                        })
+                                        .await;
+                                }
+                                continue;
+                            }
+
+                            // Workspace switching hotkeys work in Conduit command mode
+                            // or from non-terminal panes.
                             if app.workspaces.len() > 1 {
                                 let switch_delta = if keymap::matches_keybinding(
                                     key,
@@ -2060,26 +2080,6 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     continue;
                                 }
-                            }
-
-                            // In passthrough mode, forward everything (including Esc/Tab)
-                            // to the terminal.
-                            if app.active_tab_passthrough()
-                                && matches!(app.focus, app::Focus::WsTerminal)
-                            {
-                                if let Some(bytes) = key_to_terminal_bytes(key) {
-                                    let _ = backend
-                                        .cmd_tx
-                                        .send(Command::SendTerminalInput {
-                                            id,
-                                            kind: app.active_tab_kind(),
-                                            tab_id: Some(app.active_tab_id()),
-                                            data_b64: base64::engine::general_purpose::STANDARD
-                                                .encode(bytes),
-                                        })
-                                        .await;
-                                }
-                                continue;
                             }
 
                             // Configurable "scroll terminal to bottom" hotkey
@@ -2170,25 +2170,6 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     _ => {}
                                 }
                                 continue;
-                            }
-
-                            if matches!(app.focus, app::Focus::WsTerminal)
-                                && key.code != KeyCode::Tab
-                                && key.code != KeyCode::BackTab
-                            {
-                                if let Some(bytes) = key_to_terminal_bytes(key) {
-                                    let _ = backend
-                                        .cmd_tx
-                                        .send(Command::SendTerminalInput {
-                                            id,
-                                            kind: app.active_tab_kind(),
-                                            tab_id: Some(app.active_tab_id()),
-                                            data_b64: base64::engine::general_purpose::STANDARD
-                                                .encode(bytes),
-                                        })
-                                        .await;
-                                    continue;
-                                }
                             }
 
                             match key.code {
@@ -2564,7 +2545,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                     };
                 }
                 Event::Paste(text) => {
-                    if matches!(app.focus, app::Focus::WsTerminal) {
+                    if matches!(app.focus, app::Focus::WsTerminal) && !app.terminal_command_mode() {
                         if let Route::Workspace { id } = app.route {
                             // Wrap pasted text in bracketed paste sequences so the
                             // inner shell/editor knows it is a paste (prevents
@@ -2951,6 +2932,20 @@ async fn handle_mouse(
         return;
     }
 
+    if terminal_pane_owns_mouse(app, area, mouse.column, mouse.row)
+        && matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Drag(MouseButton::Left)
+                | MouseEventKind::Up(MouseButton::Left)
+        )
+    {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            app.focus = app::Focus::WsTerminal;
+        }
+        return;
+    }
+
     // Handle drag selection (works across all routes/panes)
     match mouse.kind {
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -3173,6 +3168,19 @@ fn point_in_rect(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.right() && y < r.bottom()
 }
 
+fn terminal_pane_owns_mouse(app: &TuiApp, area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
+    if app.terminal_command_mode() {
+        return false;
+    }
+    if !matches!(app.route, Route::Workspace { .. }) {
+        return false;
+    }
+    matches!(
+        ui::screens::workspace::hit_test(area, app, x, y),
+        Some(ui::screens::workspace::WorkspaceHit::TerminalPane)
+    )
+}
+
 async fn forward_mouse_to_terminal(
     app: &mut TuiApp,
     cmd_tx: &tokio::sync::mpsc::Sender<Command>,
@@ -3194,6 +3202,10 @@ async fn forward_mouse_to_terminal(
     let content =
         ui::screens::workspace::terminal_content_rect(area, app.focus, app.terminal_fullscreen());
     if !point_in_rect(content, mouse.column, mouse.row) {
+        return false;
+    }
+
+    if app.terminal_command_mode() {
         return false;
     }
 

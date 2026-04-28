@@ -173,11 +173,11 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 key("Esc"),
                 desc(" home"),
             ],
-            Focus::WsTerminal => vec![
-                desc("(keys sent to terminal)"),
+            Focus::WsTerminal if app.terminal_command_mode() => vec![
+                desc("(command mode)"),
                 gap(),
                 key(&app.settings.passthrough_key),
-                desc(" passthrough"),
+                desc(" terminal"),
                 gap(),
                 key("F"),
                 desc(" fullscreen"),
@@ -193,6 +193,12 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 gap(),
                 key("Esc"),
                 desc(" unfocus"),
+            ],
+            Focus::WsTerminal => vec![
+                desc("(keys sent to terminal)"),
+                gap(),
+                key(&app.settings.passthrough_key),
+                desc(" command mode"),
             ],
             Focus::WsBranches => vec![
                 key("j/k"),
@@ -481,7 +487,7 @@ mod tests {
         // open_workspace sets focus to WsTerminal
         assert_eq!(app.focus, Focus::WsTerminal);
         let line = build_footer_hints(&app);
-        assert!(hints_contain(&line, "passthrough"));
+        assert!(hints_contain(&line, "command mode"));
         assert!(hints_contain(&line, "ctrl+shift+p"));
     }
 

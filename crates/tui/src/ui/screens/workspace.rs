@@ -119,9 +119,9 @@ pub fn pane_border_style(
     focused: bool,
     attention: AttentionLevel,
     flash_on: bool,
-    passthrough: bool,
+    command_mode: bool,
 ) -> (Style, BorderType) {
-    if passthrough {
+    if command_mode {
         return (
             Style::default()
                 .fg(Color::Yellow)
@@ -147,11 +147,11 @@ pub fn pane_border_style(
 pub fn build_terminal_title_line(
     attention: AttentionLevel,
     flash_on: bool,
-    passthrough: bool,
+    command_mode: bool,
 ) -> Line<'static> {
-    let raw_badge = if passthrough {
+    let raw_badge = if command_mode {
         Some(Span::styled(
-            " [passthrough]",
+            " [command]",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -669,7 +669,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         terminal_focused,
         attention,
         app.spinner_tick % 2 == 0,
-        app.active_tab_passthrough(),
+        app.terminal_command_mode(),
     );
 
     // Render terminal pane with Borders::ALL — we'll overwrite the top border row
@@ -844,26 +844,26 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             }
         }
 
-        // Passthrough indicator: yellow pill just right of the YOLO/Safe Mode toggle.
-        let passthrough_on = app.active_tab_passthrough();
-        let passthrough_badge = " [passthrough] ";
-        let passthrough_len = passthrough_badge.chars().count() as u16;
+        // Command-mode indicator: yellow pill just right of the YOLO/Safe Mode toggle.
+        let command_mode_on = app.terminal_command_mode();
+        let command_badge = " [command] ";
+        let command_len = command_badge.chars().count() as u16;
         let gap_before_badge = 2u16;
         let badge_start = toggle_start + toggle_len + gap_before_badge;
-        if passthrough_on {
+        if command_mode_on {
             let badge_style = Style::default()
                 .fg(Color::Black)
                 .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD);
-            for (i, ch) in passthrough_badge.chars().enumerate() {
+            for (i, ch) in command_badge.chars().enumerate() {
                 let x = badge_start + i as u16;
                 if x < inner_right && x >= inner_left && bottom_y < buf.area().height {
                     buf[(x, bottom_y)].set_char(ch).set_style(badge_style);
                 }
             }
         }
-        let left_content_end = if passthrough_on {
-            badge_start + passthrough_len
+        let left_content_end = if command_mode_on {
+            badge_start + command_len
         } else {
             toggle_start + toggle_len
         };
@@ -1374,7 +1374,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_border_passthrough_overrides_all() {
+    fn pane_border_command_mode_overrides_all() {
         let (style, border_type) = pane_border_style(false, AttentionLevel::None, false, true);
         assert_eq!(border_type, BorderType::Thick);
         assert_eq!(style.fg, Some(Color::Yellow));
@@ -1867,7 +1867,6 @@ mod tests {
             id: "shell-2".into(),
             label: "shell".into(),
             kind: protocol::TerminalKind::Shell,
-            passthrough: false,
             fullscreen: false,
         });
         let area = Rect::new(0, 0, 120, 40);

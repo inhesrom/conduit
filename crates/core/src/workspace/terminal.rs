@@ -91,6 +91,10 @@ pub async fn start_terminal(
     for arg in effective_cmd.iter().skip(1) {
         builder.arg(arg);
     }
+    builder.env("TERM", "xterm-256color");
+    builder.env("COLORTERM", "truecolor");
+    builder.env_remove("TERM_PROGRAM");
+    builder.env_remove("TERM_PROGRAM_VERSION");
     if ssh_target.is_none() {
         builder.cwd(cwd);
     }

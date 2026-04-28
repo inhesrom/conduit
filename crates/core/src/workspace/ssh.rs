@@ -166,7 +166,8 @@ else exec sh -c {quoted}; fi"
 
 fn remote_terminal_shell_command(cwd: &Path) -> String {
     format!(
-        "cd {} && if [ -n \"${{SHELL:-}}\" ]; then exec \"$SHELL\" -l; \
+        "cd {} && export TERM=xterm-256color COLORTERM=truecolor && \
+if [ -n \"${{SHELL:-}}\" ]; then exec \"$SHELL\" -l; \
 elif command -v bash >/dev/null 2>&1; then exec bash -l; \
 elif command -v zsh >/dev/null 2>&1; then exec zsh -l; \
 elif command -v fish >/dev/null 2>&1; then exec fish -l; \
@@ -275,6 +276,7 @@ mod tests {
         // Should contain the shell fallback wrapper at the end.
         let last = args.last().unwrap();
         assert!(last.starts_with("cd "));
+        assert!(last.contains("export TERM=xterm-256color COLORTERM=truecolor"));
         assert!(last.contains("exec \"$SHELL\" -l"));
         assert!(last.contains("exec bash -l"));
         assert!(last.contains("/home/user/project"));
@@ -321,6 +323,7 @@ mod tests {
     fn remote_terminal_command_has_fallback_shells() {
         let cmd = remote_terminal_shell_command(Path::new("/tmp/repo"));
         assert!(cmd.starts_with("cd "));
+        assert!(cmd.contains("export TERM=xterm-256color COLORTERM=truecolor"));
         assert!(cmd.contains("exec \"$SHELL\" -l"));
         assert!(cmd.contains("exec bash -l"));
         assert!(cmd.contains("exec zsh -l"));

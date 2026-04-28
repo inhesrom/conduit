@@ -394,7 +394,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
     }
 
     if app.is_settings_open() {
-        let modal = centered_rect(area, 56, 18);
+        let modal = centered_rect(area, 56, 19);
         frame.render_widget(Clear, modal);
 
         let key_style = Style::default()
@@ -512,10 +512,10 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             keybind_val(7, &app.settings.next_workspace_key),
         ]);
 
-        // Row 8: Terminal passthrough hotkey
+        // Row 8: Terminal command-mode hotkey
         let row8 = Line::from(vec![
             Span::styled(cursor_str(8), cursor_style),
-            Span::raw("Passthrough key           "),
+            Span::raw("Command mode key         "),
             keybind_val(8, &app.settings.passthrough_key),
         ]);
 
@@ -524,6 +524,17 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             Span::styled(cursor_str(9), cursor_style),
             Span::raw("Scroll to bottom key      "),
             keybind_val(9, &app.settings.scroll_to_bottom_key),
+        ]);
+
+        // Row 10: Terminal parser core
+        let row10 = Line::from(vec![
+            Span::styled(cursor_str(10), cursor_style),
+            Span::raw("Terminal core            "),
+            Span::styled(
+                format!("\u{25C2} {} \u{25B8}", app.settings.terminal_core.label()),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(" experimental", desc_style),
         ]);
 
         let (title, body) = if app.confirming_delete_agent {
@@ -648,6 +659,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row7,
                     row8,
                     row9,
+                    row10,
                     Line::from(""),
                     hint,
                 ],

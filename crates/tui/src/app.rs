@@ -7,12 +7,10 @@ use protocol::{
     AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, Route, TerminalKind, WorkspaceId,
     WorkspaceSummary,
 };
-use ratatui::{
-    style::{Color as TuiColor, Modifier, Style},
-    text::{Line, Span},
-};
+use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 
+use crate::terminal_core::{TerminalCoreKind, WorkspaceTerminalState};
 use crate::ui::widgets::tile_grid;
 
 fn url_regex() -> &'static regex::Regex {
@@ -330,6 +328,9 @@ pub struct TuiApp {
     pub commit_input: Option<String>,
     pub create_branch_input: Option<String>,
     pub settings: Settings,
+    /// When true, Conduit owns keyboard and mouse input for workspace commands.
+    /// When false, the focused terminal receives normal input directly.
+    pub terminal_command_mode: bool,
     /// Workspace IDs with an in-flight git network operation (pull/push/fetch).
     /// Stores the start time so we can enforce a minimum spinner display duration.
     pub git_op_in_progress: HashMap<WorkspaceId, Instant>,
@@ -411,6 +412,7 @@ impl Default for TuiApp {
             git_op_in_progress: HashMap::new(),
             deferred_git_result: None,
             settings: load_settings(),
+            terminal_command_mode: false,
             settings_open: false,
             settings_selected: 0,
             settings_edit_buffer: None,
@@ -603,13 +605,12 @@ impl TuiApp {
         self.active_tab().kind
     }
 
-    pub fn active_tab_passthrough(&self) -> bool {
-        self.active_tab().passthrough
+    pub fn terminal_command_mode(&self) -> bool {
+        self.terminal_command_mode
     }
 
-    pub fn toggle_active_tab_passthrough(&mut self) {
-        let idx = self.ws_active_tab.min(self.ws_tabs.len().saturating_sub(1));
-        self.ws_tabs[idx].passthrough = !self.ws_tabs[idx].passthrough;
+    pub fn toggle_terminal_command_mode(&mut self) {
+        self.terminal_command_mode = !self.terminal_command_mode;
     }
 
     pub fn move_terminal_tab(&mut self, delta: isize) {
@@ -885,39 +886,31 @@ impl TuiApp {
         kind: protocol::TerminalKind,
         bytes: &[u8],
     ) {
+        let core_kind = self.settings.terminal_core;
         let is_new_ws = !self.terminal_state.contains_key(&id);
         let state = self
             .terminal_state
             .entry(id)
-            .or_insert_with(WorkspaceTerminalState::new);
+            .or_insert_with(|| WorkspaceTerminalState::new(core_kind));
         let is_new_tab = !state.tabs.contains_key(tab_id);
-        state.tab_mut(tab_id).append_bytes(bytes);
+        let responses = state.tab_mut(tab_id, core_kind).append_bytes(bytes);
         if is_new_ws || is_new_tab {
             self.last_resize_sent.remove(&(id, tab_id.to_string()));
         }
 
-        // Detect DSR (Device Status Report) cursor position queries (\x1b[6n)
-        // in the output and queue a CPR response so programs like fzf don't hang.
-        if bytes.windows(4).any(|w| w == b"\x1b[6n") {
-            if let Some(tab) = state.tabs.get(tab_id) {
-                let (row, col) = tab.parser.screen().cursor_position();
-                let response = format!("\x1b[{};{}R", row + 1, col + 1);
-                self.pending_cpr_responses.push((
-                    id,
-                    tab_id.to_string(),
-                    kind,
-                    response.into_bytes(),
-                ));
-            }
+        for response in responses {
+            self.pending_cpr_responses
+                .push((id, tab_id.to_string(), kind, response));
         }
     }
 
     pub fn reset_terminal(&mut self, id: WorkspaceId, tab_id: &str) {
+        let core_kind = self.settings.terminal_core;
         let state = self
             .terminal_state
             .entry(id)
-            .or_insert_with(WorkspaceTerminalState::new);
-        state.tab_mut(tab_id).reset();
+            .or_insert_with(|| WorkspaceTerminalState::new(core_kind));
+        state.tab_mut(tab_id, core_kind).reset();
         self.last_resize_sent.remove(&(id, tab_id.to_string()));
     }
 
@@ -937,29 +930,28 @@ impl TuiApp {
     }
 
     pub fn scroll_terminal_scrollback(&mut self, id: WorkspaceId, tab_id: &str, delta: isize) {
+        let core_kind = self.settings.terminal_core;
         let state = self
             .terminal_state
             .entry(id)
-            .or_insert_with(WorkspaceTerminalState::new);
-        let parser = &mut state.tab_mut(tab_id).parser;
-        let current = parser.screen().scrollback() as isize;
-        let next = (current + delta).max(0) as usize;
-        parser.set_scrollback(next);
+            .or_insert_with(|| WorkspaceTerminalState::new(core_kind));
+        state.tab_mut(tab_id, core_kind).scroll_scrollback(delta);
     }
 
     pub fn reset_terminal_scrollback(&mut self, id: WorkspaceId, tab_id: &str) {
+        let core_kind = self.settings.terminal_core;
         let state = self
             .terminal_state
             .entry(id)
-            .or_insert_with(WorkspaceTerminalState::new);
-        state.tab_mut(tab_id).parser.set_scrollback(0);
+            .or_insert_with(|| WorkspaceTerminalState::new(core_kind));
+        state.tab_mut(tab_id, core_kind).reset_scrollback();
     }
 
     pub fn terminal_scrollback_active(&self, id: WorkspaceId, tab_id: &str) -> bool {
         self.terminal_state
             .get(&id)
             .and_then(|s| s.tabs.get(tab_id))
-            .map(|t| t.parser.screen().scrollback() > 0)
+            .map(|t| t.scrollback_active())
             .unwrap_or(false)
     }
 
@@ -986,89 +978,7 @@ impl TuiApp {
         let Some(tab) = state.tabs.get(tab_id) else {
             return vec![Line::from("No terminal output yet.")];
         };
-        let parser = &tab.parser;
-        let screen = parser.screen();
-        let (cursor_row, cursor_col) = screen.cursor_position();
-        let show_cursor = !screen.hide_cursor();
-        let (rows, cols) = screen.size();
-        let re = url_regex();
-        let row_texts: Vec<String> = screen.rows(0, cols).collect();
-
-        let mut lines = Vec::with_capacity(rows as usize);
-        for r in 0..rows {
-            // Pre-compute URL column ranges for this row so we can underline them.
-            let mut url_ranges: Vec<(u16, u16)> = Vec::new();
-            if let Some(row_text) = row_texts.get(r as usize) {
-                for m in re.find_iter(row_text) {
-                    let col_start = row_text[..m.start()].chars().count() as u16;
-                    let col_end = col_start + row_text[m.start()..m.end()].chars().count() as u16;
-                    url_ranges.push((col_start, col_end));
-                }
-            }
-
-            let mut spans = Vec::with_capacity(cols as usize);
-            for c in 0..cols {
-                let Some(cell) = screen.cell(r, c) else {
-                    continue;
-                };
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-                let mut style = Style::default();
-                let fg = map_color(cell.fgcolor());
-                let bg = map_color(cell.bgcolor());
-                style = style.fg(fg).bg(bg);
-                if cell.bold() {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
-                if cell.italic() {
-                    style = style.add_modifier(Modifier::ITALIC);
-                }
-                if cell.underline() {
-                    style = style.add_modifier(Modifier::UNDERLINED);
-                }
-                if cell.inverse() {
-                    // When colors are Reset (terminal default), we must use explicit
-                    // colors so that swapping them produces a visible inversion.
-                    let inv_fg = if bg == TuiColor::Reset {
-                        TuiColor::Black
-                    } else {
-                        bg
-                    };
-                    let inv_bg = if fg == TuiColor::Reset {
-                        TuiColor::White
-                    } else {
-                        fg
-                    };
-                    style = style.fg(inv_fg).bg(inv_bg);
-                }
-                if show_cursor && r == cursor_row && c == cursor_col {
-                    let cur_fg = if fg == TuiColor::Reset {
-                        TuiColor::Black
-                    } else {
-                        bg
-                    };
-                    let cur_bg = if fg == TuiColor::Reset {
-                        TuiColor::White
-                    } else {
-                        fg
-                    };
-                    style = style.fg(cur_fg).bg(cur_bg);
-                }
-                // Underline URLs so they look clickable.
-                if url_ranges.iter().any(|&(s, e)| c >= s && c < e) {
-                    style = style.add_modifier(Modifier::UNDERLINED);
-                }
-                let text = if cell.has_contents() {
-                    cell.contents()
-                } else {
-                    " ".to_string()
-                };
-                spans.push(Span::styled(text, style));
-            }
-            lines.push(Line::from(spans));
-        }
-        lines
+        tab.lines(url_regex())
     }
 
     /// Returns the URL at the given terminal position, if any.
@@ -1083,9 +993,7 @@ impl TuiApp {
 
         let state = self.terminal_state.get(&id)?;
         let tab = state.tabs.get(tab_id)?;
-        let screen = tab.parser.screen();
-        let (_rows, cols) = screen.size();
-        let row_text: String = screen.rows(0, cols).nth(row as usize)?;
+        let row_text = tab.plain_row(row)?;
 
         for m in re.find_iter(&row_text) {
             // Map byte offsets to column positions for the match range
@@ -1103,25 +1011,13 @@ impl TuiApp {
     pub fn agent_status(&self, id: WorkspaceId) -> Option<AgentStatus> {
         let state = self.terminal_state.get(&id)?;
         let tab = state.tabs.get("agent")?;
-        let screen = tab.parser.screen();
 
         // Detect Claude Code via terminal title
-        if !screen.title().contains("claude") {
+        if !tab.title().to_ascii_lowercase().contains("claude") {
             return None;
         }
 
-        let (rows, cols) = screen.size();
-        let last_row = rows.saturating_sub(1);
-        let mut text = String::new();
-        for c in 0..cols {
-            if let Some(cell) = screen.cell(last_row, c) {
-                if cell.has_contents() {
-                    text.push_str(&cell.contents());
-                } else {
-                    text.push(' ');
-                }
-            }
-        }
+        let text = tab.last_row_text();
 
         let model = ["Opus", "Sonnet", "Haiku"]
             .iter()
@@ -1165,91 +1061,7 @@ impl TuiApp {
         let Some(tab) = state.tabs.get("agent") else {
             return Vec::new();
         };
-        let screen = tab.parser.screen();
-        let (rows, cols) = screen.size();
-        let use_cols = cols.min(max_cols);
-        let scrollback_count = screen.scrollback_count();
-
-        let needed = num_lines as usize;
-        let mut collected: Vec<Line<'static>> = Vec::new();
-
-        // Phase 1: visible screen rows, bottom-to-top (most recent first)
-        for r in (0..rows).rev() {
-            if collected.len() >= needed {
-                break;
-            }
-            let mut has_content = false;
-            for c in 0..use_cols {
-                if let Some(cell) = screen.cell(r, c) {
-                    if cell.has_contents() && !cell.contents().trim().is_empty() {
-                        has_content = true;
-                        break;
-                    }
-                }
-            }
-            if has_content {
-                collected.push(self.styled_screen_row(screen, r, use_cols));
-            }
-        }
-
-        // Phase 2: scrollback rows (offset 0 = most recently scrolled off)
-        if collected.len() < needed {
-            for offset in 0..scrollback_count {
-                if collected.len() >= needed {
-                    break;
-                }
-                let mut has_content = false;
-                for c in 0..use_cols {
-                    if let Some(cell) = screen.scrollback_cell(offset, c) {
-                        if cell.has_contents() && !cell.contents().trim().is_empty() {
-                            has_content = true;
-                            break;
-                        }
-                    }
-                }
-                if has_content {
-                    collected.push(self.styled_scrollback_row(screen, offset, use_cols));
-                }
-            }
-        }
-
-        // Both phases collected most-recent-first; reverse to chronological
-        collected.truncate(needed);
-        collected.reverse();
-        collected
-    }
-
-    fn styled_scrollback_row(
-        &self,
-        screen: &vt100::Screen,
-        offset: usize,
-        use_cols: u16,
-    ) -> Line<'static> {
-        let mut spans = Vec::new();
-        for c in 0..use_cols {
-            let Some(cell) = screen.scrollback_cell(offset, c) else {
-                continue;
-            };
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            spans.push(styled_span_from_cell(cell));
-        }
-        Line::from(spans)
-    }
-
-    fn styled_screen_row(&self, screen: &vt100::Screen, row: u16, use_cols: u16) -> Line<'static> {
-        let mut spans = Vec::new();
-        for c in 0..use_cols {
-            let Some(cell) = screen.cell(row, c) else {
-                continue;
-            };
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            spans.push(styled_span_from_cell(cell));
-        }
-        Line::from(spans)
+        tab.preview_lines(max_cols, num_lines)
     }
 
     pub fn terminal_mouse_state(
@@ -1259,12 +1071,7 @@ impl TuiApp {
     ) -> Option<(vt100::MouseProtocolMode, vt100::MouseProtocolEncoding, bool)> {
         let state = self.terminal_state.get(&id)?;
         let tab = state.tabs.get(tab_id)?;
-        let screen = tab.parser.screen();
-        Some((
-            screen.mouse_protocol_mode(),
-            screen.mouse_protocol_encoding(),
-            screen.alternate_screen(),
-        ))
+        Some(tab.mouse_state())
     }
 
     pub fn tag_map(&self) -> HashMap<String, Vec<String>> {
@@ -1571,6 +1378,7 @@ impl TuiApp {
             9 => {
                 self.settings_edit_buffer = Some(self.settings.scroll_to_bottom_key.clone());
             }
+            10 => {}
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -1600,13 +1408,18 @@ impl TuiApp {
                 let val = self.settings.preview_lines as i16 + delta;
                 self.settings.preview_lines = val.clamp(4, 30) as u16;
             }
+            10 => {
+                let next = self.settings.terminal_core.cycle(delta);
+                self.set_terminal_core(next);
+                return;
+            }
             _ => {}
         }
         let _ = save_settings(&self.settings);
     }
 
     pub fn settings_count(&self) -> usize {
-        10
+        11
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -1689,6 +1502,18 @@ impl TuiApp {
             _ => return,
         }
         self.settings_edit_buffer = None;
+        let _ = save_settings(&self.settings);
+    }
+
+    pub fn set_terminal_core(&mut self, kind: TerminalCoreKind) {
+        if self.settings.terminal_core == kind {
+            return;
+        }
+        self.settings.terminal_core = kind;
+        for state in self.terminal_state.values_mut() {
+            state.ensure_core_kind(kind);
+        }
+        self.last_resize_sent.clear();
         let _ = save_settings(&self.settings);
     }
 
@@ -2001,7 +1826,6 @@ impl WorkspaceTabsState {
                     id: t.id.clone(),
                     label: t.label.clone(),
                     kind: t.kind,
-                    passthrough: false,
                     fullscreen: false,
                 })
                 .collect(),
@@ -2036,98 +1860,11 @@ pub struct AgentStatus {
     pub context_pct: Option<String>,
 }
 
-pub struct WorkspaceTerminalState {
-    pub tabs: HashMap<String, TerminalBufferState>,
-}
-
-impl WorkspaceTerminalState {
-    fn new() -> Self {
-        let mut tabs = HashMap::new();
-        tabs.insert("agent".to_string(), TerminalBufferState::new());
-        tabs.insert("shell".to_string(), TerminalBufferState::new());
-        Self { tabs }
-    }
-
-    fn tab_mut(&mut self, tab_id: &str) -> &mut TerminalBufferState {
-        self.tabs
-            .entry(tab_id.to_string())
-            .or_insert_with(TerminalBufferState::new)
-    }
-}
-
-const MAX_TERMINAL_HISTORY_BYTES: usize = 2 * 1024 * 1024;
-
-pub struct TerminalBufferState {
-    pub parser: vt100::Parser,
-    pub history: Vec<u8>,
-}
-
-impl TerminalBufferState {
-    fn new() -> Self {
-        Self {
-            parser: make_parser(),
-            history: Vec::new(),
-        }
-    }
-
-    fn append_bytes(&mut self, bytes: &[u8]) {
-        self.history.extend_from_slice(bytes);
-        if self.history.len() > MAX_TERMINAL_HISTORY_BYTES {
-            let trim = self.history.len() - MAX_TERMINAL_HISTORY_BYTES;
-            self.history.drain(..trim);
-        }
-        self.parser.process(bytes);
-    }
-
-    fn reset(&mut self) {
-        self.parser = make_parser();
-        self.history.clear();
-    }
-
-    fn rebuild_for_size(&mut self, cols: u16, rows: u16) {
-        // Save mouse protocol state before rebuilding — history trimming
-        // can lose the escape sequences that enabled mouse mode.
-        let old_mouse_mode = self.parser.screen().mouse_protocol_mode();
-        let old_mouse_encoding = self.parser.screen().mouse_protocol_encoding();
-
-        let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 8000);
-        parser.process(&self.history);
-
-        // Restore mouse state if the replayed history didn't preserve it.
-        if parser.screen().mouse_protocol_mode() != old_mouse_mode {
-            let seq: &[u8] = match old_mouse_mode {
-                vt100::MouseProtocolMode::Press => b"\x1b[?9h",
-                vt100::MouseProtocolMode::PressRelease => b"\x1b[?1000h",
-                vt100::MouseProtocolMode::ButtonMotion => b"\x1b[?1002h",
-                vt100::MouseProtocolMode::AnyMotion => b"\x1b[?1003h",
-                vt100::MouseProtocolMode::None => b"",
-            };
-            if !seq.is_empty() {
-                parser.process(seq);
-            }
-        }
-        if parser.screen().mouse_protocol_encoding() != old_mouse_encoding {
-            let seq: &[u8] = match old_mouse_encoding {
-                vt100::MouseProtocolEncoding::Utf8 => b"\x1b[?1005h",
-                vt100::MouseProtocolEncoding::Sgr => b"\x1b[?1006h",
-                vt100::MouseProtocolEncoding::Default => b"",
-            };
-            if !seq.is_empty() {
-                parser.process(seq);
-            }
-        }
-
-        self.parser = parser;
-    }
-}
-
 #[derive(Clone)]
 pub struct TerminalTab {
     pub id: String,
     pub label: String,
     pub kind: TerminalKind,
-    /// When true, Esc and Tab are forwarded to the terminal instead of being intercepted.
-    pub passthrough: bool,
     /// When true, git panes are hidden and the terminal fills the workspace.
     pub fullscreen: bool,
 }
@@ -2170,7 +1907,6 @@ impl TerminalTab {
             id: "agent".to_string(),
             label: "agent".to_string(),
             kind: TerminalKind::Agent,
-            passthrough: false,
             fullscreen: false,
         }
     }
@@ -2180,44 +1916,9 @@ impl TerminalTab {
             id,
             label,
             kind: TerminalKind::Shell,
-            passthrough: false,
             fullscreen: false,
         }
     }
-}
-
-fn make_parser() -> vt100::Parser {
-    vt100::Parser::new(24, 120, 8000)
-}
-
-fn map_color(color: vt100::Color) -> TuiColor {
-    match color {
-        vt100::Color::Default => TuiColor::Reset,
-        vt100::Color::Idx(i) => TuiColor::Indexed(i),
-        vt100::Color::Rgb(r, g, b) => TuiColor::Rgb(r, g, b),
-    }
-}
-
-/// Converts a vt100 cell into a styled ratatui Span (no cursor rendering).
-fn styled_span_from_cell(cell: &vt100::Cell) -> Span<'static> {
-    let fg = map_color(cell.fgcolor());
-    let bg = map_color(cell.bgcolor());
-    let mut style = Style::default().fg(fg).bg(bg);
-    if cell.bold() {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    if cell.italic() {
-        style = style.add_modifier(Modifier::ITALIC);
-    }
-    if cell.underline() {
-        style = style.add_modifier(Modifier::UNDERLINED);
-    }
-    let text = if cell.has_contents() {
-        cell.contents()
-    } else {
-        " ".to_string()
-    };
-    Span::styled(text, style)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2297,6 +1998,8 @@ pub struct Settings {
     pub passthrough_key: String,
     #[serde(default = "default_scroll_to_bottom_key")]
     pub scroll_to_bottom_key: String,
+    #[serde(default = "default_terminal_core")]
+    pub terminal_core: TerminalCoreKind,
 }
 
 fn default_true() -> bool {
@@ -2344,6 +2047,10 @@ fn default_scroll_to_bottom_key() -> String {
     "ctrl+end".to_string()
 }
 
+fn default_terminal_core() -> TerminalCoreKind {
+    TerminalCoreKind::Alacritty
+}
+
 impl Settings {
     /// Returns the active agent profile (the default, or first if not found).
     pub fn active_agent(&self) -> Option<&AgentProfile> {
@@ -2367,6 +2074,7 @@ impl Default for Settings {
             next_workspace_key: default_next_workspace_key(),
             passthrough_key: default_passthrough_key(),
             scroll_to_bottom_key: default_scroll_to_bottom_key(),
+            terminal_core: default_terminal_core(),
         }
     }
 }
@@ -2619,7 +2327,6 @@ mod tests {
             id: "agent".into(),
             label: "agent".into(),
             kind: TerminalKind::Agent,
-            passthrough: false,
             fullscreen: false,
         }];
         app.ws_active_tab = 0;
@@ -2648,14 +2355,14 @@ mod tests {
     }
 
     #[test]
-    fn toggle_passthrough() {
+    fn toggle_terminal_command_mode() {
         let mut app = TuiApp::default();
         app.ws_active_tab = 1; // shell tab
-        assert!(!app.active_tab_passthrough());
-        app.toggle_active_tab_passthrough();
-        assert!(app.active_tab_passthrough());
-        app.toggle_active_tab_passthrough();
-        assert!(!app.active_tab_passthrough());
+        assert!(!app.terminal_command_mode());
+        app.toggle_terminal_command_mode();
+        assert!(app.terminal_command_mode());
+        app.toggle_terminal_command_mode();
+        assert!(!app.terminal_command_mode());
     }
 
     // ===== Git log navigation =====
@@ -2811,7 +2518,7 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_key_captures_and_applies_immediately() {
+    fn command_mode_key_captures_and_applies_immediately() {
         use crate::keymap;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
