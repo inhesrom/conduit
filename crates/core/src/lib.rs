@@ -3,6 +3,7 @@ pub mod events;
 pub mod state;
 pub mod workspace;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,7 +13,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
-use protocol::{AttentionLevel, Command, Event, GitState, SshTarget, WorkspaceSummary};
+use protocol::{AttentionLevel, Command, Event, GitState, SavedCommand, SshTarget, WorkspaceSummary};
 use state::{AppState, Workspace};
 use uuid::Uuid;
 
@@ -29,6 +30,7 @@ use workspace::git::{
     git_pull, git_push, git_stash, git_stash_pull_pop, list_commit_files, refresh_git, stage_all,
     stage_file, unstage_all, unstage_file,
 };
+use workspace::process_info;
 use workspace::ssh;
 use workspace::terminal::{start_terminal, TerminalOutput};
 
@@ -53,6 +55,8 @@ pub fn spawn_core() -> CoreHandle {
         let mut git_tick = tokio::time::interval(Duration::from_secs(2));
         let mut git_refresh_in_flight = false;
         let (git_result_tx, mut git_result_rx) = mpsc::channel::<GitRefreshResult>(64);
+        let mut fg_tick = tokio::time::interval(Duration::from_secs(1));
+        let mut last_fg: HashMap<(Uuid, String), Option<SavedCommand>> = HashMap::new();
 
         loop {
             tokio::select! {
@@ -849,6 +853,43 @@ pub fn spawn_core() -> CoreHandle {
                             items: workspace_summaries(&state),
                         });
                     }
+                }
+                _ = fg_tick.tick() => {
+                    let mut current_keys: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
+                    for (id, ws) in &state.workspaces {
+                        if ws.ssh.is_some() {
+                            continue;
+                        }
+                        for (tab_id, sess) in &ws.terminals.shells {
+                            let key = (*id, tab_id.clone());
+                            current_keys.insert(key.clone());
+                            let new_cmd = if !sess.is_alive() {
+                                None
+                            } else {
+                                let pgid = sess.foreground_pgid();
+                                let shell_pid = sess.shell_pid().map(|p| p as i32);
+                                match (pgid, shell_pid) {
+                                    (Some(pg), Some(sp)) if pg > 0 && pg != sp => {
+                                        process_info::lookup(pg).map(|fi| SavedCommand {
+                                            argv: fi.argv,
+                                            cwd: fi.cwd.to_string_lossy().into_owned(),
+                                        })
+                                    }
+                                    _ => None,
+                                }
+                            };
+                            let prev = last_fg.get(&key).cloned().unwrap_or(None);
+                            if prev != new_cmd {
+                                last_fg.insert(key.clone(), new_cmd.clone());
+                                let _ = evt_tx_task.send(Event::ShellForegroundChanged {
+                                    id: *id,
+                                    tab_id: tab_id.clone(),
+                                    command: new_cmd,
+                                });
+                            }
+                        }
+                    }
+                    last_fg.retain(|key, _| current_keys.contains(key));
                 }
             }
         }

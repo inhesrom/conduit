@@ -10,8 +10,8 @@ use alacritty_terminal::{
         point_to_viewport, Config as AlacrittyConfig, Term as AlacrittyTerm,
     },
     vte::ansi::{
-        Color as AlacrittyColor, CursorShape as AlacrittyCursorShape,
-        NamedColor as AlacrittyNamedColor, Processor as AlacrittyProcessor, Rgb as AlacrittyRgb,
+        Color as AlacrittyColor, NamedColor as AlacrittyNamedColor,
+        Processor as AlacrittyProcessor, Rgb as AlacrittyRgb,
     },
 };
 use ratatui::{
@@ -386,7 +386,10 @@ impl Vt100Terminal {
     fn lines(&self, url_re: &Regex) -> Vec<Line<'static>> {
         let screen = self.parser.screen();
         let (cursor_row, cursor_col) = screen.cursor_position();
-        let show_cursor = !screen.hide_cursor();
+        // Always render the cursor — many TUIs hide the OS cursor with \e[?25l
+        // and don't draw a visible caret of their own, leaving users unable
+        // to see where they're typing.
+        let show_cursor = true;
         let (rows, cols) = screen.size();
         let row_texts: Vec<String> = screen.rows(0, cols).collect();
 
@@ -669,12 +672,12 @@ impl AlacrittyTerminal {
             target.text = alacritty_cell_text(cell);
         }
 
-        if !matches!(content.cursor.shape, AlacrittyCursorShape::Hidden) {
-            if let Some(cursor) = point_to_viewport(content.display_offset, content.cursor.point) {
-                if cursor.line < rows && cursor.column.0 < cols {
-                    let cell = &mut cells[cursor.line][cursor.column.0];
-                    cell.style = toggle_reverse_video(cell.style);
-                }
+        // Always render the cursor — many TUIs hide the OS cursor with \e[?25l
+        // and don't draw a visible caret of their own.
+        if let Some(cursor) = point_to_viewport(content.display_offset, content.cursor.point) {
+            if cursor.line < rows && cursor.column.0 < cols {
+                let cell = &mut cells[cursor.line][cursor.column.0];
+                cell.style = toggle_reverse_video(cell.style);
             }
         }
 

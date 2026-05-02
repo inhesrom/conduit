@@ -1139,6 +1139,58 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             modal_rect,
         );
     }
+
+    // --- Resurrect-command overlay ---
+    if let Some(cmd) = app.pending_resurrect_command() {
+        let preview = crate::resurrect::preview_line(cmd);
+        let max_inner_w = area.width.saturating_sub(6) as usize;
+        let desired_w = preview.chars().count().saturating_add(6).max(40);
+        let modal_w = (desired_w.min(max_inner_w.max(40)) as u16).min(area.width.saturating_sub(2));
+        let modal_h = 7u16;
+        let modal_rect = Rect::new(
+            area.x + (area.width.saturating_sub(modal_w)) / 2,
+            area.y + (area.height.saturating_sub(modal_h)) / 2,
+            modal_w,
+            modal_h,
+        );
+        let body = vec![
+            Line::from(Span::styled(
+                "Last running:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(format!("  {preview}")),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "[Enter]",
+                    Style::default()
+                        .fg(Color::LightBlue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" to re-run    "),
+                Span::styled(
+                    "[Esc]",
+                    Style::default()
+                        .fg(Color::Gray)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" for shell"),
+            ]),
+        ];
+        frame.render_widget(Clear, modal_rect);
+        frame.render_widget(
+            Paragraph::new(body)
+                .block(
+                    Block::default()
+                        .title("Resume command")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))
+                        .border_type(BorderType::Thick),
+                )
+                .wrap(Wrap { trim: false }),
+            modal_rect,
+        );
+    }
 }
 
 pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit> {
@@ -1868,6 +1920,8 @@ mod tests {
             label: "shell".into(),
             kind: protocol::TerminalKind::Shell,
             fullscreen: false,
+            last_command: None,
+            overlay_dismissed: false,
         });
         let area = Rect::new(0, 0, 120, 40);
         let l = layout(area, app.focus, app.terminal_fullscreen());

@@ -31,6 +31,12 @@ pub enum TerminalKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedCommand {
+    pub argv: Vec<String>,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     pub id: WorkspaceId,
     pub name: String,
@@ -281,6 +287,11 @@ pub enum Event {
         action: String,
         success: bool,
         message: String,
+    },
+    ShellForegroundChanged {
+        id: WorkspaceId,
+        tab_id: String,
+        command: Option<SavedCommand>,
     },
     Error {
         message: String,
@@ -610,6 +621,19 @@ mod tests {
                 success: true,
                 message: "ok".into(),
             },
+            Event::ShellForegroundChanged {
+                id,
+                tab_id: "t".into(),
+                command: None,
+            },
+            Event::ShellForegroundChanged {
+                id,
+                tab_id: "t".into(),
+                command: Some(SavedCommand {
+                    argv: vec!["python".into(), "script.py".into()],
+                    cwd: "/repo/src".into(),
+                }),
+            },
             Event::Error {
                 message: "oops".into(),
             },
@@ -617,5 +641,17 @@ mod tests {
         for evt in &events {
             round_trip(evt);
         }
+    }
+
+    #[test]
+    fn saved_command_round_trip() {
+        round_trip(&SavedCommand {
+            argv: vec!["python".into(), "tests.py".into(), "--flag".into()],
+            cwd: "/home/me/work".into(),
+        });
+        round_trip(&SavedCommand {
+            argv: vec![],
+            cwd: "".into(),
+        });
     }
 }

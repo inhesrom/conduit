@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use protocol::{
-    AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, Route, TerminalKind, WorkspaceId,
-    WorkspaceSummary,
+    AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, Route, SavedCommand, TerminalKind,
+    WorkspaceId, WorkspaceSummary,
 };
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
@@ -603,6 +603,112 @@ impl TuiApp {
 
     pub fn active_tab_kind(&self) -> TerminalKind {
         self.active_tab().kind
+    }
+
+    pub fn apply_foreground_change(
+        &mut self,
+        id: WorkspaceId,
+        tab_id: String,
+        command: Option<SavedCommand>,
+    ) {
+        let mut changed = false;
+        if let Some(state) = self.workspace_tabs.get_mut(&id) {
+            if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
+                let was_some = tab.last_command.is_some();
+                let now_some = command.is_some();
+                if tab.last_command != command {
+                    tab.last_command = command.clone();
+                    changed = true;
+                }
+                if !was_some && now_some {
+                    tab.overlay_dismissed = false;
+                }
+            }
+        }
+        if Some(id) == self.active_workspace_id() {
+            if let Some(tab) = self.ws_tabs.iter_mut().find(|t| t.id == tab_id) {
+                let was_some = tab.last_command.is_some();
+                let now_some = command.is_some();
+                if tab.last_command != command {
+                    tab.last_command = command.clone();
+                    changed = true;
+                }
+                if !was_some && now_some {
+                    tab.overlay_dismissed = false;
+                }
+            }
+        }
+        if changed {
+            if let Some(path) = self.workspace_path(id) {
+                if let Some(state) = self.workspace_tabs.get(&id) {
+                    self.saved_tabs_by_path
+                        .insert(path, PersistedWorkspaceTabs::from_state(state));
+                    let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
+                }
+            }
+        }
+    }
+
+    pub fn pending_resurrect_command(&self) -> Option<&SavedCommand> {
+        let tab = self.ws_tabs.get(self.ws_active_tab)?;
+        if tab.kind != TerminalKind::Shell {
+            return None;
+        }
+        if tab.overlay_dismissed {
+            return None;
+        }
+        tab.last_command.as_ref()
+    }
+
+    pub fn dismiss_resurrect_overlay(&mut self) {
+        let Some(id) = self.active_workspace_id() else {
+            return;
+        };
+        let idx = self.ws_active_tab;
+        let Some(tab_id) = self.ws_tabs.get(idx).map(|t| t.id.clone()) else {
+            return;
+        };
+        if let Some(tab) = self.ws_tabs.get_mut(idx) {
+            tab.overlay_dismissed = true;
+            tab.last_command = None;
+        }
+        if let Some(state) = self.workspace_tabs.get_mut(&id) {
+            if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.last_command = None;
+                tab.overlay_dismissed = true;
+            }
+        }
+        if let Some(path) = self.workspace_path(id) {
+            if let Some(state) = self.workspace_tabs.get(&id) {
+                self.saved_tabs_by_path
+                    .insert(path, PersistedWorkspaceTabs::from_state(state));
+                let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
+            }
+        }
+    }
+
+    pub fn take_resurrect_command(&mut self) -> Option<SavedCommand> {
+        let id = self.active_workspace_id()?;
+        let idx = self.ws_active_tab;
+        let tab_id = self.ws_tabs.get(idx)?.id.clone();
+        let cmd = self.ws_tabs.get_mut(idx).and_then(|t| {
+            t.overlay_dismissed = true;
+            t.last_command.take()
+        })?;
+        if let Some(state) = self.workspace_tabs.get_mut(&id) {
+            if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.last_command = None;
+                tab.overlay_dismissed = true;
+            }
+        }
+        if let Some(path) = self.workspace_path(id) {
+            if let Some(state) = self.workspace_tabs.get(&id) {
+                self.saved_tabs_by_path
+                    .insert(path, PersistedWorkspaceTabs::from_state(state));
+                let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
+            }
+        }
+        Some(cmd)
     }
 
     pub fn terminal_command_mode(&self) -> bool {
@@ -1827,6 +1933,8 @@ impl WorkspaceTabsState {
                     label: t.label.clone(),
                     kind: t.kind,
                     fullscreen: false,
+                    last_command: t.last_command.clone(),
+                    overlay_dismissed: false,
                 })
                 .collect(),
             active: saved.active,
@@ -1867,6 +1975,8 @@ pub struct TerminalTab {
     pub kind: TerminalKind,
     /// When true, git panes are hidden and the terminal fills the workspace.
     pub fullscreen: bool,
+    pub last_command: Option<SavedCommand>,
+    pub overlay_dismissed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1886,6 +1996,7 @@ impl PersistedWorkspaceTabs {
                     id: t.id.clone(),
                     label: t.label.clone(),
                     kind: t.kind,
+                    last_command: t.last_command.clone(),
                 })
                 .collect(),
             active: state.active,
@@ -1899,6 +2010,8 @@ pub struct PersistedTab {
     pub id: String,
     pub label: String,
     pub kind: TerminalKind,
+    #[serde(default)]
+    pub last_command: Option<SavedCommand>,
 }
 
 impl TerminalTab {
@@ -1908,6 +2021,8 @@ impl TerminalTab {
             label: "agent".to_string(),
             kind: TerminalKind::Agent,
             fullscreen: false,
+            last_command: None,
+            overlay_dismissed: false,
         }
     }
 
@@ -1917,6 +2032,8 @@ impl TerminalTab {
             label,
             kind: TerminalKind::Shell,
             fullscreen: false,
+            last_command: None,
+            overlay_dismissed: false,
         }
     }
 }
@@ -2328,6 +2445,8 @@ mod tests {
             label: "agent".into(),
             kind: TerminalKind::Agent,
             fullscreen: false,
+            last_command: None,
+            overlay_dismissed: false,
         }];
         app.ws_active_tab = 0;
         assert!(!app.can_close_active_tab());

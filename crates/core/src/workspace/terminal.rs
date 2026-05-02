@@ -58,6 +58,14 @@ impl TerminalSession {
         self.child.lock().kill()?;
         Ok(())
     }
+
+    pub fn shell_pid(&self) -> Option<u32> {
+        self.child.lock().process_id()
+    }
+
+    pub fn foreground_pgid(&self) -> Option<libc::pid_t> {
+        self.master.lock().process_group_leader()
+    }
 }
 
 pub async fn start_terminal(

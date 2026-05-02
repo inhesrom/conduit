@@ -1,5 +1,6 @@
 mod app;
 mod keymap;
+mod resurrect;
 mod terminal_core;
 mod ui;
 
@@ -2015,6 +2016,37 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
+                            // Resurrect-command overlay intercepts Enter/Esc when shown.
+                            if matches!(app.focus, app::Focus::WsTerminal)
+                                && !app.terminal_command_mode()
+                                && app.pending_resurrect_command().is_some()
+                            {
+                                match key.code {
+                                    KeyCode::Enter => {
+                                        if let Some(cmd) = app.take_resurrect_command() {
+                                            let payload = resurrect::resurrect_input(&cmd);
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::SendTerminalInput {
+                                                    id,
+                                                    kind: app.active_tab_kind(),
+                                                    tab_id: Some(app.active_tab_id()),
+                                                    data_b64:
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .encode(payload),
+                                                })
+                                                .await;
+                                        }
+                                        continue;
+                                    }
+                                    KeyCode::Esc => {
+                                        app.dismiss_resurrect_overlay();
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             // In normal terminal mode, the focused terminal owns keys.
                             if matches!(app.focus, app::Focus::WsTerminal)
                                 && !app.terminal_command_mode()
@@ -2654,6 +2686,13 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
             if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {
                 ws.attention = level;
             }
+        }
+        CoreEvent::ShellForegroundChanged {
+            id,
+            tab_id,
+            command,
+        } => {
+            app.apply_foreground_change(id, tab_id, command);
         }
         CoreEvent::Error { message } => {
             app.git_action_message = Some((message, Instant::now()));
