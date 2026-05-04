@@ -202,11 +202,17 @@ pub enum Command {
         id: WorkspaceId,
         file: String,
     },
+    GitDiscardAll {
+        id: WorkspaceId,
+    },
     GitStash {
         id: WorkspaceId,
         message: Option<String>,
     },
     GitStashPullPop {
+        id: WorkspaceId,
+    },
+    GitStashAll {
         id: WorkspaceId,
     },
     StartTerminal {
@@ -536,12 +542,14 @@ mod tests {
                 id,
                 file: "f".into(),
             },
+            Command::GitDiscardAll { id },
             Command::GitStash {
                 id,
                 message: Some("msg".into()),
             },
             Command::GitStash { id, message: None },
             Command::GitStashPullPop { id },
+            Command::GitStashAll { id },
             Command::StartTerminal {
                 id,
                 kind: TerminalKind::Agent,

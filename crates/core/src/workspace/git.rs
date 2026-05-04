@@ -875,6 +875,45 @@ pub async fn discard_file(
     Ok(())
 }
 
+pub async fn discard_all(repo: &Path, ssh: Option<&SshTarget>) -> Result<()> {
+    // Tolerate unborn HEAD (no commits yet) — skip reset if HEAD doesn't resolve.
+    let head_check = ssh::build_command(ssh, repo, "git", &["rev-parse", "--verify", "HEAD"])
+        .output()
+        .await?;
+    if head_check.status.success() {
+        let out = ssh::build_command(ssh, repo, "git", &["reset", "--hard", "HEAD"])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "git reset --hard failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+    // -fd removes untracked files+dirs but preserves ignored files and nested git repos.
+    let out = ssh::build_command(ssh, repo, "git", &["clean", "-fd"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!("git clean failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(())
+}
+
+pub async fn git_stash_all(repo: &Path, ssh: Option<&SshTarget>) -> Result<()> {
+    let out = ssh::build_command(ssh, repo, "git", &["stash", "push", "--include-untracked"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git stash --include-untracked failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
 pub async fn git_stash(repo: &Path, message: Option<&str>, ssh: Option<&SshTarget>) -> Result<()> {
     let out = if let Some(msg) = message.filter(|m| !m.trim().is_empty()) {
         ssh::build_command(ssh, repo, "git", &["stash", "push", "-m", msg])

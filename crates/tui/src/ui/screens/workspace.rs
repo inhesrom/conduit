@@ -1049,6 +1049,31 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
     }
 
+    // --- Discard-all confirmation modal ---
+    if app.confirm_discard_all.is_some() {
+        let modal_w = 64u16.min(area.width.saturating_sub(4));
+        let modal_h = 5u16;
+        let modal_rect = Rect::new(
+            area.x + (area.width.saturating_sub(modal_w)) / 2,
+            area.y + (area.height.saturating_sub(modal_h)) / 2,
+            modal_w,
+            modal_h,
+        );
+        frame.render_widget(Clear, modal_rect);
+        frame.render_widget(
+            Paragraph::new("Discard ALL uncommitted changes? Cannot be undone.")
+                .block(
+                    Block::default()
+                        .title("Confirm (y/Enter = yes, n/Esc = cancel)")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                        .border_type(BorderType::Thick),
+                )
+                .wrap(Wrap { trim: false }),
+            modal_rect,
+        );
+    }
+
     // --- Stash-pull-pop confirmation modal ---
     if app.confirm_stash_pull_pop.is_some() {
         let modal_w = 64u16.min(area.width.saturating_sub(4));

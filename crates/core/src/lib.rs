@@ -31,9 +31,9 @@ struct GitRefreshResult {
 use workspace::attention::AttentionDetector;
 use workspace::git::{
     checkout_branch, checkout_remote_branch, commit, create_branch, delete_local_branch,
-    delete_remote_branch, diff_commit, diff_commit_file, diff_file, discard_file, git_fetch,
-    git_pull, git_push, git_stash, git_stash_pull_pop, list_commit_files, refresh_git, stage_all,
-    stage_file, unstage_all, unstage_file,
+    delete_remote_branch, diff_commit, diff_commit_file, diff_file, discard_all, discard_file,
+    git_fetch, git_pull, git_push, git_stash, git_stash_all, git_stash_pull_pop, list_commit_files,
+    refresh_git, stage_all, stage_file, unstage_all, unstage_file,
 };
 use workspace::process_info;
 use workspace::ssh;
@@ -598,6 +598,46 @@ pub fn spawn_core() -> CoreHandle {
                             };
                             let _ = evt_tx.send(Event::GitActionResult {
                                 id, action: "pull".to_string(), success, message: msg,
+                            });
+                            let _ = git_tx.send(GitRefreshResult {
+                                id, result: refresh_git(&path, ssh.as_ref()).await,
+                            }).await;
+                        });
+                    }
+                }
+                Command::GitDiscardAll { id } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt_tx = evt_tx_task.clone();
+                        let git_tx = git_result_tx.clone();
+                        tokio::spawn(async move {
+                            let (success, msg) = match discard_all(&path, ssh.as_ref()).await {
+                                Ok(()) => (true, "Discarded all uncommitted changes".to_string()),
+                                Err(e) => (false, e.to_string()),
+                            };
+                            let _ = evt_tx.send(Event::GitActionResult {
+                                id, action: "discard_all".to_string(), success, message: msg,
+                            });
+                            let _ = git_tx.send(GitRefreshResult {
+                                id, result: refresh_git(&path, ssh.as_ref()).await,
+                            }).await;
+                        });
+                    }
+                }
+                Command::GitStashAll { id } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt_tx = evt_tx_task.clone();
+                        let git_tx = git_result_tx.clone();
+                        tokio::spawn(async move {
+                            let (success, msg) = match git_stash_all(&path, ssh.as_ref()).await {
+                                Ok(()) => (true, "Stashed all (incl. untracked)".to_string()),
+                                Err(e) => (false, e.to_string()),
+                            };
+                            let _ = evt_tx.send(Event::GitActionResult {
+                                id, action: "stash".to_string(), success, message: msg,
                             });
                             let _ = git_tx.send(GitRefreshResult {
                                 id, result: refresh_git(&path, ssh.as_ref()).await,

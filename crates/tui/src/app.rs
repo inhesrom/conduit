@@ -352,6 +352,7 @@ pub struct TuiApp {
     pub ssh_history: Vec<SshHistoryEntry>,
     pub ssh_history_picker: Option<SshHistoryPicker>,
     pub confirm_discard_file: Option<String>,
+    pub confirm_discard_all: Option<WorkspaceId>,
     pub stash_input: Option<String>,
     pub confirm_stash_pull_pop: Option<WorkspaceId>,
     pub confirm_delete_branch: Option<DeleteBranchTarget>,
@@ -425,6 +426,7 @@ impl Default for TuiApp {
             ssh_history: load_ssh_history(),
             ssh_history_picker: None,
             confirm_discard_file: None,
+            confirm_discard_all: None,
             stash_input: None,
             confirm_stash_pull_pop: None,
             confirm_delete_branch: None,
@@ -1353,6 +1355,22 @@ impl TuiApp {
 
     pub fn take_discard_file(&mut self) -> Option<String> {
         self.confirm_discard_file.take()
+    }
+
+    pub fn is_confirming_discard_all(&self) -> bool {
+        self.confirm_discard_all.is_some()
+    }
+
+    pub fn begin_discard_all(&mut self, id: WorkspaceId) {
+        self.confirm_discard_all = Some(id);
+    }
+
+    pub fn cancel_discard_all(&mut self) {
+        self.confirm_discard_all = None;
+    }
+
+    pub fn take_discard_all(&mut self) -> Option<WorkspaceId> {
+        self.confirm_discard_all.take()
     }
 
     pub fn is_confirming_stash_pull_pop(&self) -> bool {
@@ -2783,6 +2801,23 @@ mod tests {
         let file = app.take_discard_file();
         assert!(file.is_some());
         assert!(!app.is_confirming_discard());
+    }
+
+    #[test]
+    fn discard_all_flow() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        assert!(!app.is_confirming_discard_all());
+        app.begin_discard_all(id);
+        assert!(app.is_confirming_discard_all());
+        app.cancel_discard_all();
+        assert!(!app.is_confirming_discard_all());
+        app.begin_discard_all(id);
+        let taken = app.take_discard_all();
+        assert_eq!(taken, Some(id));
+        assert!(!app.is_confirming_discard_all());
     }
 
     #[test]

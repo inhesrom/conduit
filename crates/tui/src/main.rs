@@ -1916,6 +1916,25 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
+                            if app.is_confirming_discard_all() {
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                        if let Some(ws_id) = app.take_discard_all() {
+                                            app.begin_git_op(ws_id);
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::GitDiscardAll { id: ws_id })
+                                                .await;
+                                        }
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Esc => {
+                                        app.cancel_discard_all();
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
                             if app.is_confirming_stash_pull_pop() {
                                 match key.code {
                                     KeyCode::Char('y') | KeyCode::Enter => {
@@ -2407,11 +2426,41 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 {
                                     app.begin_discard();
                                 }
+                                KeyCode::Char('D')
+                                    if matches!(app.focus, app::Focus::WsLog)
+                                        && app.log_item_is_file_context() =>
+                                {
+                                    let has_changes = app
+                                        .workspace_git
+                                        .get(&id)
+                                        .map(|g| !g.changed.is_empty())
+                                        .unwrap_or(false);
+                                    if has_changes {
+                                        app.begin_discard_all(id);
+                                    }
+                                }
                                 KeyCode::Char('s')
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
                                     app.stash_input = Some(String::new());
+                                }
+                                KeyCode::Char('S')
+                                    if matches!(app.focus, app::Focus::WsLog)
+                                        && app.log_item_is_file_context() =>
+                                {
+                                    let has_changes = app
+                                        .workspace_git
+                                        .get(&id)
+                                        .map(|g| !g.changed.is_empty())
+                                        .unwrap_or(false);
+                                    if has_changes {
+                                        app.begin_git_op(id);
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::GitStashAll { id })
+                                            .await;
+                                    }
                                 }
                                 KeyCode::Char('t') if matches!(app.focus, app::Focus::WsLog) => {
                                     app.ws_tag_filter = !app.ws_tag_filter;
