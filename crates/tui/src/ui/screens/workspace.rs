@@ -620,10 +620,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         }
 
         // --- Diff Pane ---
-        let diff_text = ws_id
-            .and_then(|id| app.workspace_diff.get(&id))
-            .map(|(_, d)| d.clone())
-            .unwrap_or_else(|| "Select a file and press Enter to load diff.".to_string());
+        // Validate that the cached diff matches the current selection — otherwise an
+        // out-of-order async completion or a non-file selection would display stale data.
+        let expected_key: Option<String> = match app.log_item_at(app.ws_selected_commit) {
+            crate::app::LogItem::ChangedFile(_) => app.selected_log_file(),
+            crate::app::LogItem::CommitFile(_, _) => app
+                .selected_commit_file()
+                .map(|(hash, file)| format!("{hash}:{file}")),
+            _ => None,
+        };
+        let diff_text = match (ws_id, expected_key.as_deref()) {
+            (Some(id), Some(key)) => match app.workspace_diff.get(&id) {
+                Some((cached_file, diff)) if cached_file == key => diff.clone(),
+                _ => "Loading diff…".to_string(),
+            },
+            _ => "Select a file to view diff.".to_string(),
+        };
         let diff_lines = diff_text
             .lines()
             .map(|line| {
