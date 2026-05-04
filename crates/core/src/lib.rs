@@ -1,9 +1,10 @@
 pub mod commands;
 pub mod events;
+mod foreground_commands;
 pub mod state;
 pub mod workspace;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,9 +14,13 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
-use protocol::{AttentionLevel, Command, Event, GitState, SavedCommand, SshTarget, WorkspaceSummary};
+use protocol::{
+    AttentionLevel, Command, Event, GitState, SavedCommand, SshTarget, WorkspaceSummary,
+};
 use state::{AppState, Workspace};
 use uuid::Uuid;
+
+use foreground_commands::{ForegroundCommandKey, ForegroundCommandStore};
 
 /// Result of a background git refresh for one workspace.
 struct GitRefreshResult {
@@ -57,6 +62,13 @@ pub fn spawn_core() -> CoreHandle {
         let (git_result_tx, mut git_result_rx) = mpsc::channel::<GitRefreshResult>(64);
         let mut fg_tick = tokio::time::interval(Duration::from_secs(1));
         let mut last_fg: HashMap<(Uuid, String), Option<SavedCommand>> = HashMap::new();
+        let foreground_commands_path = foreground_commands_persist_file();
+        let mut foreground_commands = foreground_commands_path
+            .as_deref()
+            .map(ForegroundCommandStore::load)
+            .unwrap_or_default();
+        let mut pending_resurrections: HashSet<ForegroundCommandKey> =
+            foreground_commands.keys().collect();
 
         loop {
             tokio::select! {
@@ -93,7 +105,17 @@ pub fn spawn_core() -> CoreHandle {
                     });
                 }
                 Command::RemoveWorkspace { id } => {
-                    state.workspaces.remove(&id);
+                    if let Some(ws) = state.workspaces.remove(&id) {
+                        let removed_path = ws.path.to_string_lossy().into_owned();
+                        let changed = foreground_commands.remove_workspace(&ws.path);
+                        pending_resurrections.retain(|key| key.workspace_path != removed_path);
+                        if changed {
+                            save_foreground_commands(
+                                &foreground_commands_path,
+                                &foreground_commands,
+                            );
+                        }
+                    }
                     state.ordered_ids.retain(|wid| *wid != id);
                 }
                 Command::RenameWorkspace { id, name } => {
@@ -599,6 +621,13 @@ pub fn spawn_core() -> CoreHandle {
                         };
 
                         let tid = normalize_tab_id(kind, tab_id);
+                        let resurrection_key = if matches!(kind, protocol::TerminalKind::Shell)
+                            && ssh_target.is_none()
+                        {
+                            Some(ForegroundCommandKey::new(&cwd, tid.clone()))
+                        } else {
+                            None
+                        };
                         let already_running = match kind {
                             protocol::TerminalKind::Agent => ws
                                 .terminals
@@ -615,6 +644,16 @@ pub fn spawn_core() -> CoreHandle {
                         };
                         if already_running {
                             ws.last_activity = Instant::now();
+                            if let Some(key) = &resurrection_key {
+                                emit_pending_shell_resurrection(
+                                    &evt_tx_task,
+                                    id,
+                                    &tid,
+                                    key,
+                                    &foreground_commands,
+                                    &pending_resurrections,
+                                );
+                            }
                         } else {
                             match kind {
                                 protocol::TerminalKind::Agent => {
@@ -645,6 +684,16 @@ pub fn spawn_core() -> CoreHandle {
                                         kind,
                                         tab_id: Some(tid.clone()),
                                     });
+                                    if let Some(key) = &resurrection_key {
+                                        emit_pending_shell_resurrection(
+                                            &evt_tx_task,
+                                            id,
+                                            &tid,
+                                            key,
+                                            &foreground_commands,
+                                            &pending_resurrections,
+                                        );
+                                    }
 
                                     let evt_tx_outputs = evt_tx_task.clone();
                                     let cmd_tx_outputs = cmd_tx_internal.clone();
@@ -748,6 +797,13 @@ pub fn spawn_core() -> CoreHandle {
                 Command::StopTerminal { id, kind, tab_id } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
                         let tid = normalize_tab_id(kind, tab_id);
+                        let resurrection_key = if matches!(kind, protocol::TerminalKind::Shell)
+                            && ws.ssh.is_none()
+                        {
+                            Some(ForegroundCommandKey::new(&ws.path, tid.clone()))
+                        } else {
+                            None
+                        };
                         let stopped = match kind {
                             protocol::TerminalKind::Agent => ws.terminals.agent.take(),
                             protocol::TerminalKind::Shell => ws.terminals.shells.remove(&tid),
@@ -757,8 +813,25 @@ pub fn spawn_core() -> CoreHandle {
                             let _ = evt_tx_task.send(Event::TerminalExited {
                                 id,
                                 kind,
-                                tab_id: Some(tid),
+                                tab_id: Some(tid.clone()),
                                 code: None,
+                            });
+                        }
+                        if let Some(key) = resurrection_key {
+                            if clear_shell_resurrection_state(
+                                &mut foreground_commands,
+                                &mut pending_resurrections,
+                                &key,
+                            ) {
+                                save_foreground_commands(
+                                    &foreground_commands_path,
+                                    &foreground_commands,
+                                );
+                            }
+                            let _ = evt_tx_task.send(Event::ShellResurrectionChanged {
+                                id,
+                                tab_id: tid,
+                                command: None,
                             });
                         }
                     }
@@ -811,6 +884,28 @@ pub fn spawn_core() -> CoreHandle {
                         }
                     }
                 }
+                Command::ClearShellResurrection { id, tab_id } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        if ws.ssh.is_none() {
+                            let key = ForegroundCommandKey::new(&ws.path, tab_id.clone());
+                            if clear_shell_resurrection_state(
+                                &mut foreground_commands,
+                                &mut pending_resurrections,
+                                &key,
+                            ) {
+                                save_foreground_commands(
+                                    &foreground_commands_path,
+                                    &foreground_commands,
+                                );
+                            }
+                            let _ = evt_tx_task.send(Event::ShellResurrectionChanged {
+                                id,
+                                tab_id,
+                                command: None,
+                            });
+                        }
+                    }
+                }
             }
 
             save_workspaces(&state);
@@ -855,14 +950,18 @@ pub fn spawn_core() -> CoreHandle {
                     }
                 }
                 _ = fg_tick.tick() => {
-                    let mut current_keys: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
+                    let mut current_keys: HashSet<(Uuid, String)> = HashSet::new();
                     for (id, ws) in &state.workspaces {
                         if ws.ssh.is_some() {
+                            // SSH resurrection is intentionally unsupported for v1:
+                            // argv/cwd capture relies on the local PTY process table.
                             continue;
                         }
                         for (tab_id, sess) in &ws.terminals.shells {
                             let key = (*id, tab_id.clone());
                             current_keys.insert(key.clone());
+                            let resurrection_key =
+                                ForegroundCommandKey::new(&ws.path, tab_id.clone());
                             let new_cmd = if !sess.is_alive() {
                                 None
                             } else {
@@ -879,6 +978,25 @@ pub fn spawn_core() -> CoreHandle {
                                 }
                             };
                             let prev = last_fg.get(&key).cloned().unwrap_or(None);
+                            let observation = apply_foreground_observation(
+                                &mut foreground_commands,
+                                &mut pending_resurrections,
+                                &resurrection_key,
+                                new_cmd.clone(),
+                            );
+                            if observation.persisted_changed {
+                                save_foreground_commands(
+                                    &foreground_commands_path,
+                                    &foreground_commands,
+                                );
+                            }
+                            if observation.cleared_pending {
+                                let _ = evt_tx_task.send(Event::ShellResurrectionChanged {
+                                    id: *id,
+                                    tab_id: tab_id.clone(),
+                                    command: None,
+                                });
+                            }
                             if prev != new_cmd {
                                 last_fg.insert(key.clone(), new_cmd.clone());
                                 let _ = evt_tx_task.send(Event::ShellForegroundChanged {
@@ -896,6 +1014,78 @@ pub fn spawn_core() -> CoreHandle {
     });
 
     CoreHandle { cmd_tx, evt_tx }
+}
+
+struct ForegroundObservation {
+    persisted_changed: bool,
+    cleared_pending: bool,
+}
+
+fn apply_foreground_observation(
+    store: &mut ForegroundCommandStore,
+    pending_resurrections: &mut HashSet<ForegroundCommandKey>,
+    key: &ForegroundCommandKey,
+    command: Option<SavedCommand>,
+) -> ForegroundObservation {
+    match command {
+        Some(command) => {
+            let cleared_pending = pending_resurrections.remove(key);
+            let persisted_changed = store.set_key(key.clone(), command);
+            ForegroundObservation {
+                persisted_changed,
+                cleared_pending,
+            }
+        }
+        None => {
+            if pending_resurrections.contains(key) {
+                ForegroundObservation {
+                    persisted_changed: false,
+                    cleared_pending: false,
+                }
+            } else {
+                ForegroundObservation {
+                    persisted_changed: store.remove_key(key),
+                    cleared_pending: false,
+                }
+            }
+        }
+    }
+}
+
+fn clear_shell_resurrection_state(
+    store: &mut ForegroundCommandStore,
+    pending_resurrections: &mut HashSet<ForegroundCommandKey>,
+    key: &ForegroundCommandKey,
+) -> bool {
+    let removed_pending = pending_resurrections.remove(key);
+    let removed_store = store.remove_key(key);
+    removed_pending || removed_store
+}
+
+fn emit_pending_shell_resurrection(
+    evt_tx: &broadcast::Sender<Event>,
+    id: Uuid,
+    tab_id: &str,
+    key: &ForegroundCommandKey,
+    store: &ForegroundCommandStore,
+    pending_resurrections: &HashSet<ForegroundCommandKey>,
+) {
+    if !pending_resurrections.contains(key) {
+        return;
+    }
+    if let Some(command) = store.get_key(key).cloned() {
+        let _ = evt_tx.send(Event::ShellResurrectionChanged {
+            id,
+            tab_id: tab_id.to_string(),
+            command: Some(command),
+        });
+    }
+}
+
+fn save_foreground_commands(path: &Option<PathBuf>, store: &ForegroundCommandStore) {
+    if let Some(path) = path {
+        let _ = store.save(path);
+    }
 }
 
 fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
@@ -965,6 +1155,27 @@ fn persist_file() -> Option<PathBuf> {
         "workspaces.json".to_string()
     };
     Some(base.join(file))
+}
+
+fn foreground_commands_persist_file() -> Option<PathBuf> {
+    let base = config_dir()?.join("conduit");
+    let file = if let Ok(session) = std::env::var("CONDUIT_SESSION_NAME") {
+        let safe = sanitize_session_name(&session);
+        format!("foreground_commands.{safe}.json")
+    } else {
+        "foreground_commands.json".to_string()
+    };
+    Some(base.join(file))
+}
+
+fn config_dir() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        Some(PathBuf::from(xdg))
+    } else {
+        std::env::var("HOME")
+            .ok()
+            .map(|home| PathBuf::from(home).join(".config"))
+    }
 }
 
 fn sanitize_session_name(input: &str) -> String {
@@ -1044,6 +1255,13 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
 mod tests {
     use super::*;
 
+    fn saved_command(argv: &[&str], cwd: &str) -> SavedCommand {
+        SavedCommand {
+            argv: argv.iter().map(|s| (*s).to_string()).collect(),
+            cwd: cwd.to_string(),
+        }
+    }
+
     #[test]
     fn sanitize_alphanumeric_passthrough() {
         assert_eq!(sanitize_session_name("hello123"), "hello123");
@@ -1077,6 +1295,51 @@ mod tests {
     #[test]
     fn sanitize_trims_whitespace() {
         assert_eq!(sanitize_session_name("  hello  "), "hello");
+    }
+
+    #[test]
+    fn startup_loaded_foreground_command_survives_fresh_idle_shell_until_clear() {
+        let workspace = PathBuf::from("/tmp/conduit-test-workspace");
+        let key = ForegroundCommandKey::new(&workspace, "shell");
+        let command = saved_command(&["sleep", "300"], "/tmp/conduit-test-workspace");
+        let mut store = ForegroundCommandStore::default();
+        store.set_key(key.clone(), command.clone());
+        let mut pending: HashSet<ForegroundCommandKey> = store.keys().collect();
+
+        let observation = apply_foreground_observation(&mut store, &mut pending, &key, None);
+
+        assert!(!observation.persisted_changed);
+        assert!(!observation.cleared_pending);
+        assert_eq!(store.get_key(&key), Some(&command));
+        assert!(pending.contains(&key));
+
+        assert!(clear_shell_resurrection_state(
+            &mut store,
+            &mut pending,
+            &key
+        ));
+        assert!(store.get_key(&key).is_none());
+        assert!(!pending.contains(&key));
+    }
+
+    #[test]
+    fn foreground_observation_removes_non_pending_command_on_idle() {
+        let workspace = PathBuf::from("/tmp/conduit-test-workspace");
+        let key = ForegroundCommandKey::new(&workspace, "shell");
+        let command = saved_command(&["cargo", "test"], "/tmp/conduit-test-workspace");
+        let mut store = ForegroundCommandStore::default();
+        let mut pending = HashSet::new();
+
+        let observation =
+            apply_foreground_observation(&mut store, &mut pending, &key, Some(command));
+        assert!(observation.persisted_changed);
+        assert!(!observation.cleared_pending);
+        assert!(store.get_key(&key).is_some());
+
+        let observation = apply_foreground_observation(&mut store, &mut pending, &key, None);
+        assert!(observation.persisted_changed);
+        assert!(!observation.cleared_pending);
+        assert!(store.get_key(&key).is_none());
     }
 
     // ── normalize_tab_id tests ──────────────────────────────────────────

@@ -2017,20 +2017,31 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             // Resurrect-command overlay intercepts Enter/Esc when shown.
+                            // Any other keystroke also auto-dismisses the overlay (the user
+                            // is clearly already interacting with the shell), then falls
+                            // through to deliver the keystroke to the PTY normally.
                             if matches!(app.focus, app::Focus::WsTerminal)
                                 && !app.terminal_command_mode()
                                 && app.pending_resurrect_command().is_some()
                             {
                                 match key.code {
                                     KeyCode::Enter => {
+                                        let tab_id = app.active_tab_id();
                                         if let Some(cmd) = app.take_resurrect_command() {
                                             let payload = resurrect::resurrect_input(&cmd);
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::ClearShellResurrection {
+                                                    id,
+                                                    tab_id: tab_id.clone(),
+                                                })
+                                                .await;
                                             let _ = backend
                                                 .cmd_tx
                                                 .send(Command::SendTerminalInput {
                                                     id,
                                                     kind: app.active_tab_kind(),
-                                                    tab_id: Some(app.active_tab_id()),
+                                                    tab_id: Some(tab_id),
                                                     data_b64:
                                                         base64::engine::general_purpose::STANDARD
                                                             .encode(payload),
@@ -2040,10 +2051,23 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         continue;
                                     }
                                     KeyCode::Esc => {
+                                        let tab_id = app.active_tab_id();
                                         app.dismiss_resurrect_overlay();
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::ClearShellResurrection { id, tab_id })
+                                            .await;
                                         continue;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        let tab_id = app.active_tab_id();
+                                        app.dismiss_resurrect_overlay();
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::ClearShellResurrection { id, tab_id })
+                                            .await;
+                                        // fall through — let the keystroke reach the PTY
+                                    }
                                 }
                             }
 
@@ -2693,6 +2717,13 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
             command,
         } => {
             app.apply_foreground_change(id, tab_id, command);
+        }
+        CoreEvent::ShellResurrectionChanged {
+            id,
+            tab_id,
+            command,
+        } => {
+            app.apply_shell_resurrection_change(id, tab_id, command);
         }
         CoreEvent::Error { message } => {
             app.git_action_message = Some((message, Instant::now()));

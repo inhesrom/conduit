@@ -237,6 +237,10 @@ pub enum Command {
         cols: u16,
         rows: u16,
     },
+    ClearShellResurrection {
+        id: WorkspaceId,
+        tab_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +293,11 @@ pub enum Event {
         message: String,
     },
     ShellForegroundChanged {
+        id: WorkspaceId,
+        tab_id: String,
+        command: Option<SavedCommand>,
+    },
+    ShellResurrectionChanged {
         id: WorkspaceId,
         tab_id: String,
         command: Option<SavedCommand>,
@@ -563,6 +572,10 @@ mod tests {
                 cols: 80,
                 rows: 24,
             },
+            Command::ClearShellResurrection {
+                id,
+                tab_id: "shell".into(),
+            },
         ];
         for cmd in &commands {
             round_trip(cmd);
@@ -632,6 +645,19 @@ mod tests {
                 command: Some(SavedCommand {
                     argv: vec!["python".into(), "script.py".into()],
                     cwd: "/repo/src".into(),
+                }),
+            },
+            Event::ShellResurrectionChanged {
+                id,
+                tab_id: "t".into(),
+                command: None,
+            },
+            Event::ShellResurrectionChanged {
+                id,
+                tab_id: "t".into(),
+                command: Some(SavedCommand {
+                    argv: vec!["cargo".into(), "test".into()],
+                    cwd: "/repo".into(),
                 }),
             },
             Event::Error {

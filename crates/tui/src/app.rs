@@ -607,44 +607,49 @@ impl TuiApp {
 
     pub fn apply_foreground_change(
         &mut self,
+        _id: WorkspaceId,
+        _tab_id: String,
+        _command: Option<SavedCommand>,
+    ) {
+        // Live foreground changes are informational; resurrection overlays are
+        // driven only by ShellResurrectionChanged after daemon startup.
+    }
+
+    pub fn apply_shell_resurrection_change(
+        &mut self,
         id: WorkspaceId,
         tab_id: String,
         command: Option<SavedCommand>,
     ) {
-        let mut changed = false;
+        let has_command = command.is_some();
+        if has_command && !self.workspace_tabs.contains_key(&id) {
+            let state = self
+                .workspace_path(id)
+                .and_then(|p| self.saved_tabs_by_path.get(&p).cloned())
+                .map(|saved| WorkspaceTabsState::from_saved(&saved))
+                .unwrap_or_else(WorkspaceTabsState::default_state);
+            self.workspace_tabs
+                .insert(id, sanitize_workspace_tabs(state));
+        }
         if let Some(state) = self.workspace_tabs.get_mut(&id) {
+            if has_command && state.tabs.iter().all(|t| t.id != tab_id) {
+                state
+                    .tabs
+                    .push(TerminalTab::shell(tab_id.clone(), tab_id.clone()));
+            }
             if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
-                let was_some = tab.last_command.is_some();
-                let now_some = command.is_some();
-                if tab.last_command != command {
-                    tab.last_command = command.clone();
-                    changed = true;
-                }
-                if !was_some && now_some {
-                    tab.overlay_dismissed = false;
-                }
+                tab.last_command = command.clone();
+                tab.overlay_dismissed = false;
             }
         }
         if Some(id) == self.active_workspace_id() {
-            if let Some(tab) = self.ws_tabs.iter_mut().find(|t| t.id == tab_id) {
-                let was_some = tab.last_command.is_some();
-                let now_some = command.is_some();
-                if tab.last_command != command {
-                    tab.last_command = command.clone();
-                    changed = true;
-                }
-                if !was_some && now_some {
-                    tab.overlay_dismissed = false;
-                }
+            if has_command && self.ws_tabs.iter().all(|t| t.id != tab_id) {
+                self.ws_tabs
+                    .push(TerminalTab::shell(tab_id.clone(), tab_id.clone()));
             }
-        }
-        if changed {
-            if let Some(path) = self.workspace_path(id) {
-                if let Some(state) = self.workspace_tabs.get(&id) {
-                    self.saved_tabs_by_path
-                        .insert(path, PersistedWorkspaceTabs::from_state(state));
-                    let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
-                }
+            if let Some(tab) = self.ws_tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.last_command = command;
+                tab.overlay_dismissed = false;
             }
         }
     }
@@ -678,13 +683,6 @@ impl TuiApp {
                 tab.overlay_dismissed = true;
             }
         }
-        if let Some(path) = self.workspace_path(id) {
-            if let Some(state) = self.workspace_tabs.get(&id) {
-                self.saved_tabs_by_path
-                    .insert(path, PersistedWorkspaceTabs::from_state(state));
-                let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
-            }
-        }
     }
 
     pub fn take_resurrect_command(&mut self) -> Option<SavedCommand> {
@@ -699,13 +697,6 @@ impl TuiApp {
             if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
                 tab.last_command = None;
                 tab.overlay_dismissed = true;
-            }
-        }
-        if let Some(path) = self.workspace_path(id) {
-            if let Some(state) = self.workspace_tabs.get(&id) {
-                self.saved_tabs_by_path
-                    .insert(path, PersistedWorkspaceTabs::from_state(state));
-                let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
             }
         }
         Some(cmd)
@@ -1878,8 +1869,9 @@ impl TuiApp {
             active: self.ws_active_tab,
             next_shell_tab: self.ws_next_shell_tab,
         });
+        let path_opt = self.workspace_path(id);
         self.workspace_tabs.insert(id, state.clone());
-        if let Some(path) = self.workspace_path(id) {
+        if let Some(path) = path_opt {
             self.saved_tabs_by_path
                 .insert(path, PersistedWorkspaceTabs::from_state(&state));
             let _ = save_saved_tabs_by_path(&self.saved_tabs_by_path);
@@ -1933,7 +1925,7 @@ impl WorkspaceTabsState {
                     label: t.label.clone(),
                     kind: t.kind,
                     fullscreen: false,
-                    last_command: t.last_command.clone(),
+                    last_command: None,
                     overlay_dismissed: false,
                 })
                 .collect(),
@@ -1996,7 +1988,6 @@ impl PersistedWorkspaceTabs {
                     id: t.id.clone(),
                     label: t.label.clone(),
                     kind: t.kind,
-                    last_command: t.last_command.clone(),
                 })
                 .collect(),
             active: state.active,
@@ -2010,8 +2001,6 @@ pub struct PersistedTab {
     pub id: String,
     pub label: String,
     pub kind: TerminalKind,
-    #[serde(default)]
-    pub last_command: Option<SavedCommand>,
 }
 
 impl TerminalTab {
@@ -2348,6 +2337,28 @@ mod tests {
         app
     }
 
+    fn app_with_clean_open_workspace() -> (TuiApp, WorkspaceId) {
+        let mut app = TuiApp::default();
+        app.saved_tabs_by_path.clear();
+        let ws = make_ws("resurrection");
+        let id = ws.id;
+        app.set_workspaces(vec![ws]);
+        app.open_workspace(id);
+        app.ws_active_tab = app
+            .ws_tabs
+            .iter()
+            .position(|tab| tab.kind == TerminalKind::Shell)
+            .expect("shell tab");
+        (app, id)
+    }
+
+    fn saved_command(argv: &[&str], cwd: &str) -> SavedCommand {
+        SavedCommand {
+            argv: argv.iter().map(|s| (*s).to_string()).collect(),
+            cwd: cwd.to_string(),
+        }
+    }
+
     // ===== Navigation =====
 
     #[test]
@@ -2482,6 +2493,61 @@ mod tests {
         assert!(app.terminal_command_mode());
         app.toggle_terminal_command_mode();
         assert!(!app.terminal_command_mode());
+    }
+
+    #[test]
+    fn shell_resurrection_changed_shows_overlay_for_active_shell() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        let cmd = saved_command(&["sleep", "300"], "/tmp/resurrection");
+
+        app.apply_shell_resurrection_change(id, app.active_tab_id(), Some(cmd.clone()));
+
+        assert_eq!(app.pending_resurrect_command(), Some(&cmd));
+    }
+
+    #[test]
+    fn take_resurrect_command_clears_overlay() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        let tab_id = app.active_tab_id();
+        let cmd = saved_command(&["cargo", "test"], "/tmp/resurrection");
+        app.apply_shell_resurrection_change(id, tab_id, Some(cmd.clone()));
+
+        assert_eq!(app.take_resurrect_command(), Some(cmd));
+        assert!(app.pending_resurrect_command().is_none());
+    }
+
+    #[test]
+    fn dismiss_resurrect_overlay_clears_overlay() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        let tab_id = app.active_tab_id();
+        let cmd = saved_command(&["vim"], "/tmp/resurrection");
+        app.apply_shell_resurrection_change(id, tab_id, Some(cmd));
+
+        app.dismiss_resurrect_overlay();
+
+        assert!(app.pending_resurrect_command().is_none());
+    }
+
+    #[test]
+    fn shell_resurrection_changed_none_clears_overlay() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        let tab_id = app.active_tab_id();
+        let cmd = saved_command(&["sleep", "300"], "/tmp/resurrection");
+        app.apply_shell_resurrection_change(id, tab_id.clone(), Some(cmd));
+
+        app.apply_shell_resurrection_change(id, tab_id, None);
+
+        assert!(app.pending_resurrect_command().is_none());
+    }
+
+    #[test]
+    fn live_foreground_change_does_not_show_resurrection_overlay() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        let cmd = saved_command(&["sleep", "300"], "/tmp/resurrection");
+
+        app.apply_foreground_change(id, app.active_tab_id(), Some(cmd));
+
+        assert!(app.pending_resurrect_command().is_none());
     }
 
     // ===== Git log navigation =====

@@ -79,7 +79,11 @@ mod tests {
     #[test]
     fn resurrect_input_basic() {
         let cmd = SavedCommand {
-            argv: vec!["python".into(), "tests.py".into(), "--flag=hello world".into()],
+            argv: vec![
+                "python".into(),
+                "tests.py".into(),
+                "--flag=hello world".into(),
+            ],
             cwd: "/home/me/work".into(),
         };
         assert_eq!(
