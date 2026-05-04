@@ -238,6 +238,11 @@ impl TerminalBufferState {
         self.core.lines(url_re)
     }
 
+    /// Returns the live cursor position in the visible viewport, if present.
+    pub fn cursor_position(&self) -> Option<(u16, u16)> {
+        self.core.cursor_position()
+    }
+
     /// Returns a plain-text row from the visible terminal viewport.
     pub fn plain_row(&self, row: u16) -> Option<String> {
         self.core.plain_row(row)
@@ -309,6 +314,13 @@ impl TerminalCore {
         match self {
             Self::Vt100(core) => core.lines(url_re),
             Self::Alacritty(core) => core.lines(url_re),
+        }
+    }
+
+    fn cursor_position(&self) -> Option<(u16, u16)> {
+        match self {
+            Self::Vt100(core) => core.cursor_position(),
+            Self::Alacritty(core) => core.cursor_position(),
         }
     }
 
@@ -410,7 +422,7 @@ impl Vt100Terminal {
                 }
                 let mut style = vt100_cell_style(cell);
                 if show_cursor && r == cursor_row && c == cursor_col {
-                    style = toggle_reverse_video(style);
+                    style = cursor_cell_style(style);
                 }
                 if url_ranges.iter().any(|&(s, e)| c >= s && c < e) {
                     style = style.add_modifier(Modifier::UNDERLINED);
@@ -425,6 +437,18 @@ impl Vt100Terminal {
             lines.push(Line::from(spans));
         }
         lines
+    }
+
+    fn cursor_position(&self) -> Option<(u16, u16)> {
+        let screen = self.parser.screen();
+        if screen.scrollback() > 0 {
+            return None;
+        }
+        let (rows, cols) = screen.size();
+        let (row, col) = screen.cursor_position();
+        let row = row.min(rows.saturating_sub(1));
+        let col = col.min(cols.saturating_sub(1));
+        Some((row, col))
     }
 
     fn plain_row(&self, row: u16) -> Option<String> {
@@ -572,6 +596,15 @@ impl AlacrittyTerminal {
             .collect()
     }
 
+    fn cursor_position(&self) -> Option<(u16, u16)> {
+        let content = self.term.renderable_content();
+        let cursor = point_to_viewport(content.display_offset, content.cursor.point)?;
+        if cursor.line >= self.term.screen_lines() || cursor.column.0 >= self.term.columns() {
+            return None;
+        }
+        Some((cursor.line as u16, cursor.column.0 as u16))
+    }
+
     fn plain_row(&self, row: u16) -> Option<String> {
         self.render_rows_without_urls()
             .get(row as usize)
@@ -677,7 +710,7 @@ impl AlacrittyTerminal {
         if let Some(cursor) = point_to_viewport(content.display_offset, content.cursor.point) {
             if cursor.line < rows && cursor.column.0 < cols {
                 let cell = &mut cells[cursor.line][cursor.column.0];
-                cell.style = toggle_reverse_video(cell.style);
+                cell.style = cursor_cell_style(cell.style);
             }
         }
 
@@ -741,6 +774,12 @@ fn toggle_reverse_video(style: Style) -> Style {
     } else {
         style.add_modifier(Modifier::REVERSED)
     }
+}
+
+fn cursor_cell_style(style: Style) -> Style {
+    style
+        .remove_modifier(Modifier::HIDDEN)
+        .add_modifier(Modifier::REVERSED | Modifier::UNDERLINED)
 }
 
 fn vt100_cell_style(cell: &vt100::Cell) -> Style {
@@ -1080,6 +1119,31 @@ mod tests {
             assert_eq!(style.fg, Some(TuiColor::Reset), "{kind:?}");
             assert_eq!(style.bg, Some(TuiColor::Reset), "{kind:?}");
             assert!(style.add_modifier.contains(Modifier::REVERSED), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn cursor_style_stays_visible_on_reversed_or_hidden_cells() {
+        let reversed_hidden = Style::default()
+            .add_modifier(Modifier::REVERSED | Modifier::HIDDEN)
+            .fg(TuiColor::Yellow)
+            .bg(TuiColor::Blue);
+        let style = cursor_cell_style(reversed_hidden);
+
+        assert_eq!(style.fg, Some(TuiColor::Yellow));
+        assert_eq!(style.bg, Some(TuiColor::Blue));
+        assert!(style.add_modifier.contains(Modifier::REVERSED));
+        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!style.add_modifier.contains(Modifier::HIDDEN));
+    }
+
+    #[test]
+    fn terminal_cursor_position_tracks_visible_cursor() {
+        for kind in [TerminalCoreKind::Alacritty, TerminalCoreKind::Vt100] {
+            let mut buffer = TerminalBufferState::new(kind);
+            buffer.append_bytes(b"abc");
+
+            assert_eq!(buffer.cursor_position(), Some((0, 3)), "{kind:?}");
         }
     }
 

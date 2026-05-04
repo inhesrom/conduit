@@ -1080,6 +1080,13 @@ impl TuiApp {
         tab.lines(url_regex())
     }
 
+    /// Returns the terminal cursor position relative to the visible terminal viewport.
+    pub fn terminal_cursor_position(&self, id: WorkspaceId, tab_id: &str) -> Option<(u16, u16)> {
+        let state = self.terminal_state.get(&id)?;
+        let tab = state.tabs.get(tab_id)?;
+        tab.cursor_position()
+    }
+
     /// Returns the URL at the given terminal position, if any.
     pub fn url_at_terminal_position(
         &self,

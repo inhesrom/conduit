@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -140,6 +140,17 @@ pub fn pane_border_style(
         ),
         _ => standard_border_style(focused),
     }
+}
+
+fn workspace_modal_active(app: &TuiApp) -> bool {
+    app.create_branch_input.is_some()
+        || app.commit_input.is_some()
+        || app.confirm_discard_file.is_some()
+        || app.confirm_discard_all.is_some()
+        || app.confirm_stash_pull_pop.is_some()
+        || app.confirm_delete_branch.is_some()
+        || app.stash_input.is_some()
+        || app.pending_resurrect_command().is_some()
 }
 
 /// Builds the title `Line` for the terminal pane, with an optional attention badge.
@@ -674,8 +685,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Terminal Pane (with browser-style tab notch) ---
     let terminal_focused = app.focus == crate::app::Focus::WsTerminal;
     let tabs_focused = app.focus == crate::app::Focus::WsTerminalTabs;
+    let active_tab_id = app.active_tab_id();
     let terminal_lines = ws_id
-        .map(|id| app.terminal_lines(id, &app.active_tab_id()))
+        .map(|id| app.terminal_lines(id, &active_tab_id))
         .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
     let (term_style, term_border_type) = pane_border_style(
         terminal_focused,
@@ -930,7 +942,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
     // --- "Scroll to bottom" indicator on terminal bottom border ---
     if let Some(ws_id) = ws_id {
-        if app.terminal_scrollback_active(ws_id, &app.active_tab_id()) {
+        if app.terminal_scrollback_active(ws_id, &active_tab_id) {
             let bottom_y = pane.bottom().saturating_sub(1);
             let inner_right = pane.right().saturating_sub(1);
             let buf = frame.buffer_mut();
@@ -955,6 +967,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
     // --- Footer ---
     footer::render(frame, l.footer, app);
+
+    if terminal_focused && !app.terminal_command_mode() && !workspace_modal_active(app) {
+        if let Some(ws_id) = ws_id {
+            if let Some((row, col)) = app.terminal_cursor_position(ws_id, &active_tab_id) {
+                let content = terminal_content_rect(area, app.focus, app.terminal_fullscreen());
+                if row < content.height && col < content.width {
+                    frame.set_cursor_position(Position::new(content.x + col, content.y + row));
+                }
+            }
+        }
+    }
 
     // --- Toast overlay for git action messages ---
     if let Some((msg, ts)) = &app.git_action_message {
@@ -1641,7 +1664,7 @@ mod tests {
     // --- render smoke tests ---
 
     use crate::app::TuiApp;
-    use protocol::{BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo};
+    use protocol::{BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo, TerminalKind};
 
     fn smoke_render_workspace(app: &TuiApp, width: u16, height: u16) {
         let backend = ratatui::backend::TestBackend::new(width, height);
@@ -1722,6 +1745,26 @@ mod tests {
     fn render_workspace_basic() {
         let (app, _) = app_with_workspace();
         smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_workspace_sets_outer_cursor_for_focused_terminal() {
+        let (mut app, id) = app_with_workspace();
+        app.append_terminal_bytes(id, "agent", TerminalKind::Agent, b"abc");
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render(frame, area, &app);
+            })
+            .unwrap();
+
+        let content = terminal_content_rect(Rect::new(0, 0, 120, 40), app.focus, false);
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position::new(content.x + 3, content.y));
     }
 
     #[test]
