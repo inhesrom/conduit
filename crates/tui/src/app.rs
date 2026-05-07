@@ -74,6 +74,117 @@ pub struct SshHistoryPicker {
     pub selected: usize,
 }
 
+/// Tracks a single-line editable text buffer with a UTF-8 byte cursor.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EditableText {
+    /// The current input text.
+    pub text: String,
+    /// Cursor position as a byte offset into `text`.
+    pub cursor: usize,
+}
+
+impl EditableText {
+    /// Inserts one character at the cursor and moves past it.
+    pub fn insert_char(&mut self, c: char) {
+        self.text.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+    }
+
+    /// Deletes the character before the cursor.
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let prev = self.previous_cursor_boundary();
+        self.text.drain(prev..self.cursor);
+        self.cursor = prev;
+    }
+
+    /// Deletes the character under the cursor.
+    pub fn delete(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let next = self.next_cursor_boundary();
+        self.text.drain(self.cursor..next);
+    }
+
+    /// Moves the cursor one character left.
+    pub fn move_left(&mut self) {
+        self.cursor = self.previous_cursor_boundary();
+    }
+
+    /// Moves the cursor one character right.
+    pub fn move_right(&mut self) {
+        self.cursor = self.next_cursor_boundary();
+    }
+
+    /// Moves the cursor to the beginning of the input.
+    pub fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Moves the cursor to the end of the input.
+    pub fn move_end(&mut self) {
+        self.cursor = self.text.len();
+    }
+
+    /// Returns the cursor position as a character offset for rendering.
+    pub fn cursor_char_index(&self) -> usize {
+        self.text[..self.cursor].chars().count()
+    }
+
+    fn previous_cursor_boundary(&self) -> usize {
+        self.text[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+    }
+
+    fn next_cursor_boundary(&self) -> usize {
+        if self.cursor >= self.text.len() {
+            return self.text.len();
+        }
+        self.text[self.cursor..]
+            .char_indices()
+            .nth(1)
+            .map(|(idx, _)| self.cursor + idx)
+            .unwrap_or(self.text.len())
+    }
+}
+
+/// Tracks the command popup input, captured output, and completion state.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkspaceCommandState {
+    /// Editable command text.
+    pub input: EditableText,
+    /// Captured command output shown in the popup.
+    pub output: String,
+    /// Whether a command is currently running.
+    pub running: bool,
+    /// Whether the current output belongs to a completed command.
+    pub completed: bool,
+    /// Process exit code, or `None` if the process was terminated by signal or failed to spawn.
+    pub exit_code: Option<i32>,
+    /// Vertical scroll offset for the output pane.
+    pub output_scroll: u16,
+}
+
+impl WorkspaceCommandState {
+    /// Creates an empty command popup state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Identifies command popup state by workspace and command working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkspaceCommandKey {
+    pub id: WorkspaceId,
+    pub cwd: String,
+}
+
 /// Tracks the state of the interactive directory browser shown when adding a workspace.
 pub struct DirBrowserState {
     /// The filesystem path currently shown in the browser.
@@ -327,6 +438,7 @@ pub struct TuiApp {
     pub git_action_message: Option<(String, Instant)>,
     pub commit_input: Option<String>,
     pub create_branch_input: Option<String>,
+    pub workspace_commands: HashMap<WorkspaceCommandKey, WorkspaceCommandState>,
     pub settings: Settings,
     /// When true, Conduit owns keyboard and mouse input for workspace commands.
     /// When false, the focused terminal receives normal input directly.
@@ -410,6 +522,7 @@ impl Default for TuiApp {
             git_action_message: None,
             commit_input: None,
             create_branch_input: None,
+            workspace_commands: HashMap::new(),
             git_op_in_progress: HashMap::new(),
             deferred_git_result: None,
             settings: load_settings(),
@@ -454,6 +567,10 @@ impl TuiApp {
         } else if self.home_selected >= self.workspaces.len() {
             self.home_selected = self.workspaces.len() - 1;
         }
+        let valid_command_workspaces: HashSet<WorkspaceId> =
+            self.workspaces.iter().map(|ws| ws.id).collect();
+        self.workspace_commands
+            .retain(|key, _| valid_command_workspaces.contains(&key.id));
         self.reconcile_workspace_tab_state();
         self.ensure_home_selected_visible();
     }
@@ -1346,6 +1463,106 @@ impl TuiApp {
         self.create_branch_input.is_some()
     }
 
+    pub fn begin_workspace_command(&mut self) {
+        let Some(key) = self.active_workspace_command_key() else {
+            return;
+        };
+        self.workspace_commands
+            .entry(key)
+            .or_insert_with(WorkspaceCommandState::new);
+    }
+
+    pub fn close_workspace_command(&mut self) {
+        let Some(key) = self.active_workspace_command_key() else {
+            return;
+        };
+        self.workspace_commands.remove(&key);
+    }
+
+    pub fn is_workspace_command_open(&self) -> bool {
+        self.workspace_command().is_some()
+    }
+
+    pub fn workspace_command_mut(&mut self) -> Option<&mut WorkspaceCommandState> {
+        let key = self.active_workspace_command_key()?;
+        self.workspace_commands.get_mut(&key)
+    }
+
+    pub fn workspace_command(&self) -> Option<&WorkspaceCommandState> {
+        let key = self.active_workspace_command_key()?;
+        self.workspace_commands.get(&key)
+    }
+
+    pub fn take_workspace_command_request(&mut self) -> Option<String> {
+        let state = self.workspace_command_mut()?;
+        if state.running {
+            return None;
+        }
+        let command = state.input.text.trim().to_string();
+        if command.is_empty() {
+            return None;
+        }
+        state.running = true;
+        state.completed = false;
+        state.exit_code = None;
+        state.output = format_workspace_command_start(&command);
+        state.output_scroll = 0;
+        Some(command)
+    }
+
+    pub fn apply_workspace_command_result(
+        &mut self,
+        id: WorkspaceId,
+        cwd: String,
+        command: String,
+        exit_code: Option<i32>,
+    ) {
+        let Some(key) = self.workspace_command_key_for_event(id, &cwd) else {
+            return;
+        };
+        let Some(state) = self.workspace_commands.get_mut(&key) else {
+            return;
+        };
+        state.running = false;
+        state.completed = true;
+        state.exit_code = exit_code;
+        state.output = finish_workspace_command_output(&state.output, &command, exit_code);
+        state.output_scroll = 0;
+    }
+
+    pub fn append_workspace_command_output(
+        &mut self,
+        id: WorkspaceId,
+        cwd: String,
+        stream: String,
+        data: String,
+    ) {
+        let Some(key) = self.workspace_command_key_for_event(id, &cwd) else {
+            return;
+        };
+        let Some(state) = self.workspace_commands.get_mut(&key) else {
+            return;
+        };
+        if stream == "stderr" && !state.output.contains("[stderr]\n") {
+            if !state.output.ends_with("\n\n") {
+                state.output.push('\n');
+            }
+            state.output.push_str("[stderr]\n");
+        }
+        state.output.push_str(&data.replace('\r', "\n"));
+    }
+
+    pub fn scroll_workspace_command_output(&mut self, delta: i16) {
+        let Some(state) = self.workspace_command_mut() else {
+            return;
+        };
+        if delta < 0 {
+            state.output_scroll = state.output_scroll.saturating_sub(delta.unsigned_abs());
+        } else {
+            state.output_scroll = state.output_scroll.saturating_add(delta as u16);
+        }
+    }
+
     pub fn is_confirming_discard(&self) -> bool {
         self.confirm_discard_file.is_some()
     }
@@ -1909,6 +2126,46 @@ impl TuiApp {
             .find(|w| w.id == id)
             .map(|w| w.path.clone())
     }
+
+    fn active_workspace_command_key(&self) -> Option<WorkspaceCommandKey> {
+        let id = self.active_workspace_id()?;
+        let cwd = self.workspace_path(id)?;
+        Some(self.workspace_command_key_for_workspace(id, cwd))
+    }
+
+    fn workspace_command_key_for_event(
+        &self,
+        id: WorkspaceId,
+        cwd: &str,
+    ) -> Option<WorkspaceCommandKey> {
+        let exact = WorkspaceCommandKey {
+            id,
+            cwd: cwd.to_string(),
+        };
+        if self.workspace_commands.contains_key(&exact) {
+            return Some(exact);
+        }
+        self.workspace_commands
+            .keys()
+            .find(|key| key.id == id)
+            .cloned()
+    }
+
+    fn workspace_command_key_for_workspace(
+        &self,
+        id: WorkspaceId,
+        cwd: String,
+    ) -> WorkspaceCommandKey {
+        let current = WorkspaceCommandKey { id, cwd };
+        if self.workspace_commands.contains_key(&current) {
+            return current;
+        }
+        self.workspace_commands
+            .keys()
+            .find(|key| key.id == id)
+            .cloned()
+            .unwrap_or(current)
+    }
 }
 
 /// Derives a workspace display name from a filesystem path,
@@ -1919,6 +2176,37 @@ fn workspace_name_from_path(path: &str) -> String {
         .map(|s| s.to_string_lossy().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "workspace".to_string())
+}
+
+fn format_workspace_command_start(command: &str) -> String {
+    let mut out = String::with_capacity(command.len() + 16);
+    out.push_str("$ ");
+    out.push_str(command);
+    out.push_str("\n[running]\n\n");
+    out
+}
+
+fn finish_workspace_command_output(output: &str, command: &str, exit_code: Option<i32>) -> String {
+    let status = match exit_code {
+        Some(code) => format!("[exit {code}]"),
+        None => "[terminated]".to_string(),
+    };
+    let mut out = if output.is_empty() {
+        format_workspace_command_start(command)
+    } else {
+        output.to_string()
+    };
+    if let Some(pos) = out.find("[running]") {
+        out.replace_range(pos..pos + "[running]".len(), &status);
+    } else {
+        out.push('\n');
+        out.push_str(&status);
+        out.push('\n');
+    }
+    if out.ends_with("\n\n") {
+        out.push_str("(no output)");
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -2087,14 +2375,7 @@ fn save_saved_tabs_by_path(
 }
 
 fn tabs_persist_path() -> Option<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return None;
-    };
-    Some(base.join("conduit").join("tui_tabs.json"))
+    conduit_config_path("tui_tabs.json")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2211,14 +2492,7 @@ impl Default for Settings {
 }
 
 fn settings_persist_path() -> Option<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return None;
-    };
-    Some(base.join("conduit").join("settings.json"))
+    conduit_config_path("settings.json")
 }
 
 fn load_settings() -> Settings {
@@ -2244,14 +2518,54 @@ fn save_settings(settings: &Settings) -> anyhow::Result<()> {
 }
 
 fn ssh_history_path() -> Option<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
+    conduit_config_path("ssh_history.json")
+}
+
+fn conduit_config_path(file_name: &str) -> Option<PathBuf> {
+    Some(conduit_config_root()?.join("conduit").join(file_name))
+}
+
+#[cfg(not(test))]
+fn conduit_config_root() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        Some(PathBuf::from(xdg))
     } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
+        Some(PathBuf::from(home).join(".config"))
     } else {
-        return None;
-    };
-    Some(base.join("conduit").join("ssh_history.json"))
+        None
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn conduit_config_root() -> Option<PathBuf> {
+    TEST_CONFIG_ROOT.with(|root| root.borrow().clone())
+}
+
+#[cfg(test)]
+struct TestConfigRootGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+fn use_test_config_root(root: PathBuf) -> TestConfigRootGuard {
+    let previous = TEST_CONFIG_ROOT.with(|current| current.replace(Some(root)));
+    TestConfigRootGuard { previous }
+}
+
+#[cfg(test)]
+impl Drop for TestConfigRootGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        TEST_CONFIG_ROOT.with(|current| {
+            current.replace(previous);
+        });
+    }
 }
 
 fn load_ssh_history() -> Vec<SshHistoryEntry> {
@@ -2382,6 +2696,130 @@ mod tests {
             argv: argv.iter().map(|s| (*s).to_string()).collect(),
             cwd: cwd.to_string(),
         }
+    }
+
+    #[test]
+    fn editable_text_inserts_and_moves_cursor() {
+        let mut input = EditableText::default();
+        for c in "git status".chars() {
+            input.insert_char(c);
+        }
+        input.move_left();
+        input.move_left();
+        input.insert_char('-');
+        assert_eq!(input.text, "git stat-us");
+        assert_eq!(input.cursor_char_index(), 9);
+    }
+
+    #[test]
+    fn editable_text_backspace_and_delete_handle_utf8() {
+        let mut input = EditableText::default();
+        for c in "aéz".chars() {
+            input.insert_char(c);
+        }
+        input.move_left();
+        input.backspace();
+        assert_eq!(input.text, "az");
+        input.delete();
+        assert_eq!(input.text, "a");
+    }
+
+    #[test]
+    fn workspace_command_request_marks_running() {
+        let (mut app, _id) = app_with_clean_open_workspace();
+        app.begin_workspace_command();
+        let state = app.workspace_command_mut().unwrap();
+        for c in "git status".chars() {
+            state.input.insert_char(c);
+        }
+        assert_eq!(
+            app.take_workspace_command_request(),
+            Some("git status".into())
+        );
+        assert!(app.workspace_command().unwrap().running);
+        assert!(app
+            .workspace_command()
+            .unwrap()
+            .output
+            .contains("[running]"));
+    }
+
+    #[test]
+    fn workspace_command_result_finishes_streamed_output() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        app.begin_workspace_command();
+        let cwd = app.workspace_path(id).unwrap();
+        for c in "printf hi".chars() {
+            app.workspace_command_mut().unwrap().input.insert_char(c);
+        }
+        app.take_workspace_command_request();
+        app.append_workspace_command_output(id, cwd.clone(), "stdout".into(), "hi\n".into());
+        app.apply_workspace_command_result(id, cwd, "printf hi".into(), Some(0));
+        let state = app.workspace_command().unwrap();
+        assert!(state.completed);
+        assert!(!state.running);
+        assert!(state.output.contains("[exit 0]"));
+        assert!(state.output.contains("hi"));
+    }
+
+    #[test]
+    fn workspace_command_events_fall_back_to_workspace_id() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        app.begin_workspace_command();
+        for c in "printf hi".chars() {
+            app.workspace_command_mut().unwrap().input.insert_char(c);
+        }
+        app.take_workspace_command_request();
+
+        let event_cwd = "/tmp/same-workspace-different-display".to_string();
+        app.append_workspace_command_output(id, event_cwd.clone(), "stdout".into(), "hi\n".into());
+        app.apply_workspace_command_result(id, event_cwd, "printf hi".into(), Some(0));
+
+        let state = app.workspace_command().unwrap();
+        assert!(state.completed);
+        assert!(!state.running);
+        assert!(state.output.contains("[exit 0]"));
+        assert!(state.output.contains("hi"));
+    }
+
+    #[test]
+    fn workspace_command_survives_workspace_path_display_change() {
+        let (mut app, id) = app_with_clean_open_workspace();
+        app.begin_workspace_command();
+        for c in "printf hi".chars() {
+            app.workspace_command_mut().unwrap().input.insert_char(c);
+        }
+        app.take_workspace_command_request();
+
+        let mut workspaces = app.workspaces.clone();
+        workspaces[0].path = "/tmp/same-workspace-renamed".to_string();
+        app.set_workspaces(workspaces);
+        assert!(app.is_workspace_command_open());
+
+        app.apply_workspace_command_result(
+            id,
+            "/tmp/same-workspace-renamed".into(),
+            "printf hi".into(),
+            Some(0),
+        );
+
+        let state = app.workspace_command().unwrap();
+        assert!(state.completed);
+        assert!(!state.running);
+    }
+
+    #[test]
+    fn workspace_command_state_is_workspace_specific() {
+        let mut app = app_with_workspaces(2);
+        let first = app.workspaces[0].id;
+        let second = app.workspaces[1].id;
+        app.open_workspace(first);
+        app.begin_workspace_command();
+        assert!(app.is_workspace_command_open());
+        app.open_workspace(second);
+        assert!(!app.is_workspace_command_open());
+        app.open_workspace(first);
+        assert!(app.is_workspace_command_open());
     }
 
     // ===== Navigation =====
@@ -2694,6 +3132,33 @@ mod tests {
         assert_eq!(app.settings_selected, 0);
         app.close_settings();
         assert!(!app.is_settings_open());
+    }
+
+    #[test]
+    fn tests_do_not_use_real_config_by_default() {
+        assert!(tabs_persist_path().is_none());
+        assert!(settings_persist_path().is_none());
+        assert!(ssh_history_path().is_none());
+
+        let mut settings = Settings::default();
+        settings.passthrough_key = "ctrl+shift+p".to_string();
+        save_settings(&settings).unwrap();
+
+        assert_eq!(load_settings().passthrough_key, default_passthrough_key());
+    }
+
+    #[test]
+    fn settings_persistence_can_use_test_config_root() {
+        let root = std::env::temp_dir().join(format!("conduit-config-test-{}", Uuid::new_v4()));
+        let _guard = use_test_config_root(root.clone());
+        let mut settings = Settings::default();
+        settings.passthrough_key = "ctrl+shift+p".to_string();
+
+        save_settings(&settings).unwrap();
+
+        assert_eq!(load_settings().passthrough_key, "ctrl+shift+p");
+        assert!(root.join("conduit").join("settings.json").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

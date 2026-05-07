@@ -29,6 +29,27 @@ pub fn build_command(ssh: Option<&SshTarget>, cwd: &Path, program: &str, args: &
     }
 }
 
+/// Builds a command that runs arbitrary shell text in a workspace directory.
+pub fn build_shell_command(ssh: Option<&SshTarget>, cwd: &Path, command: &str) -> Command {
+    match ssh {
+        None => {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+            let mut cmd = Command::new(&shell);
+            append_local_shell_args(&mut cmd, &shell);
+            cmd.arg(command).current_dir(cwd);
+            cmd
+        }
+        Some(target) => {
+            let mut cmd = Command::new(ssh_program());
+            append_ssh_args(&mut cmd, target);
+            cmd.arg("-o").arg("BatchMode=yes");
+            cmd.arg(ssh_destination(target));
+            cmd.arg(remote_shell_command(cwd, command));
+            cmd
+        }
+    }
+}
+
 /// Validates SSH connectivity and that the remote path exists.
 pub async fn validate_ssh_connection(target: &SshTarget, path: &Path) -> Result<()> {
     let mut cmd = Command::new(ssh_program());
@@ -137,11 +158,32 @@ fn ssh_program() -> String {
     std::env::var("CONDUIT_SSH_BIN").unwrap_or_else(|_| "ssh".to_string())
 }
 
+fn append_local_shell_args(cmd: &mut Command, shell: &str) {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+    if matches!(shell_name, "bash" | "zsh" | "fish") {
+        cmd.arg("-lc");
+    } else {
+        cmd.arg("-c");
+    }
+}
+
 fn remote_command(cwd: &Path, program: &str, args: &[&str]) -> String {
     let script = format!(
         "cd {} && {}",
         shell_quote(&cwd.display().to_string()),
         shell_words(program, args)
+    );
+    wrap_login_shell_script(&script)
+}
+
+fn remote_shell_command(cwd: &Path, command: &str) -> String {
+    let script = format!(
+        "cd {} && {}",
+        shell_quote(&cwd.display().to_string()),
+        command
     );
     wrap_login_shell_script(&script)
 }
@@ -317,6 +359,13 @@ mod tests {
         let cmd = remote_command(Path::new("/tmp/repo"), "git", &["status"]);
         assert!(cmd.contains("exec \"$SHELL\" -lc"));
         assert!(cmd.contains("cd '\\''/tmp/repo'\\'' && '\\''git'\\'' '\\''status'\\'''"));
+    }
+
+    #[test]
+    fn remote_shell_command_wraps_raw_shell_text() {
+        let cmd = remote_shell_command(Path::new("/tmp/repo"), "git status && pwd");
+        assert!(cmd.contains("exec \"$SHELL\" -lc"));
+        assert!(cmd.contains("cd '\\''/tmp/repo'\\'' && git status && pwd"));
     }
 
     #[test]

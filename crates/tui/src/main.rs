@@ -23,7 +23,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use protocol::{AttentionLevel, Command, Event as CoreEvent, Route, TerminalKind};
+use protocol::{AttentionLevel, Command, Event as CoreEvent, Route, TerminalKind, WorkspaceId};
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1332,6 +1332,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_renaming_tab()
                         && !app.is_committing()
                         && !app.is_creating_branch()
+                        && !app.is_workspace_command_open()
                         && !app.is_confirming_discard()
                         && !app.is_confirming_stash_pull_pop()
                         && !app.is_confirming_delete_branch()
@@ -1784,6 +1785,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
                         }
                         Route::Workspace { id } => {
+                            if handle_workspace_command_key(&mut app, &backend, id, key).await {
+                                continue;
+                            }
+
                             if app.is_renaming_tab() {
                                 match key.code {
                                     KeyCode::Esc => app.cancel_rename_tab(),
@@ -2311,6 +2316,15 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 KeyCode::BackTab => {
                                     app.focus = cycle_workspace_focus_reverse(app.focus)
                                 }
+                                KeyCode::Char(':') if workspace_command_shortcut_enabled(&app) => {
+                                    app.begin_workspace_command();
+                                }
+                                KeyCode::Char(';')
+                                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                                        && workspace_command_shortcut_enabled(&app) =>
+                                {
+                                    app.begin_workspace_command();
+                                }
                                 KeyCode::Char('g') => {
                                     let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
                                 }
@@ -2456,10 +2470,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         .unwrap_or(false);
                                     if has_changes {
                                         app.begin_git_op(id);
-                                        let _ = backend
-                                            .cmd_tx
-                                            .send(Command::GitStashAll { id })
-                                            .await;
+                                        let _ =
+                                            backend.cmd_tx.send(Command::GitStashAll { id }).await;
                                     }
                                 }
                                 KeyCode::Char('t') if matches!(app.focus, app::Focus::WsLog) => {
@@ -2650,7 +2662,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                     };
                 }
                 Event::Paste(text) => {
-                    if matches!(app.focus, app::Focus::WsTerminal) && !app.terminal_command_mode() {
+                    if let Some(state) = app.workspace_command_mut() {
+                        if !state.running {
+                            paste_into_workspace_command(state, &text);
+                        }
+                    } else if matches!(app.focus, app::Focus::WsTerminal)
+                        && !app.terminal_command_mode()
+                    {
                         if let Route::Workspace { id } = app.route {
                             // Wrap pasted text in bracketed paste sequences so the
                             // inner shell/editor knows it is a paste (prevents
@@ -2691,6 +2709,87 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     std::io::stdout().execute(DisableMouseCapture)?;
     std::io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
+}
+
+async fn handle_workspace_command_key(
+    app: &mut TuiApp,
+    backend: &Backend,
+    id: WorkspaceId,
+    key: KeyEvent,
+) -> bool {
+    if !app.is_workspace_command_open() {
+        return false;
+    }
+
+    match key.code {
+        KeyCode::Esc => app.close_workspace_command(),
+        KeyCode::Enter => {
+            if let Some(command) = app.take_workspace_command_request() {
+                let _ = backend
+                    .cmd_tx
+                    .send(Command::RunWorkspaceCommand { id, command })
+                    .await;
+            }
+        }
+        KeyCode::Left => {
+            if let Some(state) = app.workspace_command_mut() {
+                state.input.move_left();
+            }
+        }
+        KeyCode::Right => {
+            if let Some(state) = app.workspace_command_mut() {
+                state.input.move_right();
+            }
+        }
+        KeyCode::Home => {
+            if let Some(state) = app.workspace_command_mut() {
+                state.input.move_home();
+            }
+        }
+        KeyCode::End => {
+            if let Some(state) = app.workspace_command_mut() {
+                state.input.move_end();
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(state) = app.workspace_command_mut() {
+                if !state.running {
+                    state.input.backspace();
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if let Some(state) = app.workspace_command_mut() {
+                if !state.running {
+                    state.input.delete();
+                }
+            }
+        }
+        KeyCode::Up => app.scroll_workspace_command_output(-1),
+        KeyCode::Down => app.scroll_workspace_command_output(1),
+        KeyCode::PageUp => app.scroll_workspace_command_output(-10),
+        KeyCode::PageDown => app.scroll_workspace_command_output(10),
+        KeyCode::Char(c) => {
+            if let Some(state) = app.workspace_command_mut() {
+                if !state.running {
+                    state.input.insert_char(c);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    true
+}
+
+fn paste_into_workspace_command(state: &mut app::WorkspaceCommandState, text: &str) {
+    for c in text.chars() {
+        match c {
+            '\r' | '\n' | '\t' => state.input.insert_char(' '),
+            c if !c.is_control() => state.input.insert_char(c),
+            _ => {}
+        }
+    }
 }
 
 fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
@@ -2755,6 +2854,18 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
                 app.deferred_git_result = Some((id, message.clone()));
             }
         }
+        CoreEvent::WorkspaceCommandResult {
+            id,
+            cwd,
+            command,
+            exit_code,
+        } => app.apply_workspace_command_result(id, cwd, command, exit_code),
+        CoreEvent::WorkspaceCommandOutput {
+            id,
+            cwd,
+            stream,
+            data,
+        } => app.append_workspace_command_output(id, cwd, stream, data),
         CoreEvent::WorkspaceAttentionChanged { id, level } => {
             if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {
                 ws.attention = level;
@@ -2790,6 +2901,13 @@ fn cycle_workspace_focus(focus: app::Focus) -> app::Focus {
         app::Focus::WsDiff => app::Focus::WsBar,
         _ => app::Focus::WsTerminalTabs,
     }
+}
+
+fn workspace_command_shortcut_enabled(app: &TuiApp) -> bool {
+    matches!(
+        app.focus,
+        app::Focus::WsLog | app::Focus::WsBranches | app::Focus::WsDiff
+    ) || (matches!(app.focus, app::Focus::WsTerminal) && app.terminal_command_mode())
 }
 
 fn cycle_workspace_focus_reverse(focus: app::Focus) -> app::Focus {
@@ -3046,6 +3164,15 @@ async fn handle_mouse(
         Ok(s) => ratatui::layout::Rect::new(0, 0, s.width, s.height),
         Err(_) => return,
     };
+
+    if matches!(app.route, Route::Workspace { .. }) && app.is_workspace_command_open() {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => app.scroll_workspace_command_output(-3),
+            MouseEventKind::ScrollDown => app.scroll_workspace_command_output(3),
+            _ => {}
+        }
+        return;
+    }
 
     if forward_mouse_to_terminal(app, cmd_tx, area, mouse).await {
         return;

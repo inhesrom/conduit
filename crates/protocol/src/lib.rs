@@ -132,6 +132,10 @@ pub enum Command {
     RefreshGit {
         id: WorkspaceId,
     },
+    RunWorkspaceCommand {
+        id: WorkspaceId,
+        command: String,
+    },
     LoadDiff {
         id: WorkspaceId,
         file: String,
@@ -297,6 +301,18 @@ pub enum Event {
         action: String,
         success: bool,
         message: String,
+    },
+    WorkspaceCommandOutput {
+        id: WorkspaceId,
+        cwd: String,
+        stream: String,
+        data: String,
+    },
+    WorkspaceCommandResult {
+        id: WorkspaceId,
+        cwd: String,
+        command: String,
+        exit_code: Option<i32>,
     },
     ShellForegroundChanged {
         id: WorkspaceId,
@@ -491,6 +507,10 @@ mod tests {
             },
             Command::ClearAttention { id },
             Command::RefreshGit { id },
+            Command::RunWorkspaceCommand {
+                id,
+                command: "git status && pwd".into(),
+            },
             Command::LoadDiff {
                 id,
                 file: "f".into(),
@@ -641,6 +661,18 @@ mod tests {
                 action: "push".into(),
                 success: true,
                 message: "ok".into(),
+            },
+            Event::WorkspaceCommandResult {
+                id,
+                cwd: "/repo".into(),
+                command: "git status".into(),
+                exit_code: Some(0),
+            },
+            Event::WorkspaceCommandOutput {
+                id,
+                cwd: "/repo".into(),
+                stream: "stdout".into(),
+                data: "clean".into(),
             },
             Event::ShellForegroundChanged {
                 id,

@@ -6,12 +6,14 @@ pub mod workspace;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, time::Duration};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{broadcast, mpsc};
 
 use protocol::{
@@ -26,6 +28,101 @@ use foreground_commands::{ForegroundCommandKey, ForegroundCommandStore};
 struct GitRefreshResult {
     id: Uuid,
     result: Result<GitState, anyhow::Error>,
+}
+
+async fn forward_workspace_command_output<R>(
+    mut reader: R,
+    evt_tx: broadcast::Sender<Event>,
+    id: Uuid,
+    cwd: String,
+    stream: &'static str,
+) where
+    R: AsyncRead + Unpin,
+{
+    let mut buf = vec![0u8; 8192];
+    loop {
+        let Ok(n) = reader.read(&mut buf).await else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        let _ = evt_tx.send(Event::WorkspaceCommandOutput {
+            id,
+            cwd: cwd.clone(),
+            stream: stream.to_string(),
+            data: String::from_utf8_lossy(&buf[..n]).to_string(),
+        });
+    }
+}
+
+async fn run_workspace_shell_command(
+    id: Uuid,
+    path: PathBuf,
+    ssh: Option<SshTarget>,
+    command: String,
+    evt_tx: broadcast::Sender<Event>,
+    git_tx: mpsc::Sender<GitRefreshResult>,
+) {
+    let cwd = path.display().to_string();
+    let mut shell_cmd = ssh::build_shell_command(ssh.as_ref(), &path, &command);
+    shell_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let exit_code = match shell_cmd.spawn() {
+        Ok(mut child) => {
+            let stdout_task = child.stdout.take().map(|stdout| {
+                tokio::spawn(forward_workspace_command_output(
+                    stdout,
+                    evt_tx.clone(),
+                    id,
+                    cwd.clone(),
+                    "stdout",
+                ))
+            });
+            let stderr_task = child.stderr.take().map(|stderr| {
+                tokio::spawn(forward_workspace_command_output(
+                    stderr,
+                    evt_tx.clone(),
+                    id,
+                    cwd.clone(),
+                    "stderr",
+                ))
+            });
+            let status = child.wait().await.ok();
+            if let Some(task) = stdout_task {
+                let _ = task.await;
+            }
+            if let Some(task) = stderr_task {
+                let _ = task.await;
+            }
+            status.and_then(|status| status.code())
+        }
+        Err(err) => {
+            let _ = evt_tx.send(Event::WorkspaceCommandOutput {
+                id,
+                cwd: cwd.clone(),
+                stream: "stderr".to_string(),
+                data: err.to_string(),
+            });
+            None
+        }
+    };
+
+    let _ = evt_tx.send(Event::WorkspaceCommandResult {
+        id,
+        cwd,
+        command,
+        exit_code,
+    });
+    let _ = git_tx
+        .send(GitRefreshResult {
+            id,
+            result: refresh_git(&path, ssh.as_ref()).await,
+        })
+        .await;
 }
 
 use workspace::attention::AttentionDetector;
@@ -167,6 +264,18 @@ pub fn spawn_core() -> CoreHandle {
                                 });
                             }
                             let _ = git_tx.send(GitRefreshResult { id, result }).await;
+                        });
+                    }
+                }
+                Command::RunWorkspaceCommand { id, command } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt_tx = evt_tx_task.clone();
+                        let git_tx = git_result_tx.clone();
+                        tokio::spawn(async move {
+                            run_workspace_shell_command(id, path, ssh, command, evt_tx, git_tx)
+                                .await;
                         });
                     }
                 }

@@ -145,6 +145,7 @@ pub fn pane_border_style(
 fn workspace_modal_active(app: &TuiApp) -> bool {
     app.create_branch_input.is_some()
         || app.commit_input.is_some()
+        || app.workspace_command().is_some()
         || app.confirm_discard_file.is_some()
         || app.confirm_discard_all.is_some()
         || app.confirm_stash_pull_pop.is_some()
@@ -1251,6 +1252,125 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             modal_rect,
         );
     }
+
+    // --- Workspace command modal ---
+    if let Some(command) = app.workspace_command() {
+        render_workspace_command_modal(frame, area, command);
+    }
+}
+
+fn render_workspace_command_modal(
+    frame: &mut Frame,
+    area: Rect,
+    command: &crate::app::WorkspaceCommandState,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let modal_w = 88u16.min(area.width.saturating_sub(2)).max(1);
+    let modal_h = 18u16
+        .min(area.height.saturating_sub(2))
+        .max(5u16.min(area.height));
+    let modal_rect = Rect::new(
+        area.x + (area.width.saturating_sub(modal_w)) / 2,
+        area.y + (area.height.saturating_sub(modal_h)) / 2,
+        modal_w,
+        modal_h,
+    );
+    frame.render_widget(Clear, modal_rect);
+
+    let border_style = if command.running {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD)
+    };
+    let outer = Block::default()
+        .title("Command (Enter to run, Esc to close)")
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .border_type(BorderType::Thick);
+    let inner = outer.inner(modal_rect);
+    frame.render_widget(outer, modal_rect);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    let input_inner_width = chunks[0].width.saturating_sub(2);
+    let (input_text, cursor_x) = command_input_view(&command.input, input_inner_width);
+    frame.render_widget(
+        Paragraph::new(input_text)
+            .block(Block::default().title("Shell").borders(Borders::ALL))
+            .style(if command.running {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White)
+            }),
+        chunks[0],
+    );
+    if !command.running && input_inner_width > 0 {
+        frame.set_cursor_position(Position::new(
+            chunks[0].x + 1 + cursor_x.min(input_inner_width.saturating_sub(1)),
+            chunks[0].y + 1,
+        ));
+    }
+
+    let status = if command.running {
+        Line::from(Span::styled(
+            "running...",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if command.completed {
+        let code = command
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "terminated".to_string());
+        Line::from(Span::styled(
+            format!("exit {code}"),
+            Style::default().fg(if command.exit_code == Some(0) {
+                Color::Green
+            } else {
+                Color::Red
+            }),
+        ))
+    } else {
+        Line::from("")
+    };
+    frame.render_widget(Paragraph::new(status), chunks[1]);
+
+    let output = if !command.output.is_empty() {
+        command.output.clone()
+    } else if command.running {
+        "Command is running...".to_string()
+    } else {
+        String::new()
+    };
+    frame.render_widget(
+        Paragraph::new(output)
+            .block(Block::default().title("Output").borders(Borders::ALL))
+            .wrap(Wrap { trim: false })
+            .scroll((command.output_scroll, 0)),
+        chunks[2],
+    );
+}
+
+fn command_input_view(input: &crate::app::EditableText, width: u16) -> (String, u16) {
+    let available = width.max(1) as usize;
+    let chars: Vec<char> = input.text.chars().collect();
+    let cursor = input.cursor_char_index().min(chars.len());
+    let start = cursor.saturating_sub(available.saturating_sub(1));
+    let end = (start + available).min(chars.len());
+    let visible = chars[start..end].iter().collect::<String>();
+    (visible, (cursor - start) as u16)
 }
 
 pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit> {
