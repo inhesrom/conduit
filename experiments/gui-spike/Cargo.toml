@@ -1,0 +1,16 @@
+# Throwaway spike — its OWN Cargo workspace, deliberately NOT a member of the
+# Conduit workspace at the repo root. Compares GPUI vs Iced as a native GUI
+# front-end that reuses Conduit's real `core` (PTY/git/attention/persistence)
+# entirely through the `protocol` Command/Event boundary.
+[workspace]
+resolver = "2"
+members = ["bridge", "smoke", "termgrid", "iced-front"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+
+# vt100 has debug-only arithmetic that can overflow on real terminal data;
+# Conduit's root workspace disables overflow checks for it, so mirror that here.
+[profile.dev.package.vt100]
+overflow-checks = false

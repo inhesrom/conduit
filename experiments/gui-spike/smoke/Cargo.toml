@@ -1,0 +1,12 @@
+[package]
+name = "gui-spike-smoke"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "smoke"
+path = "src/main.rs"
+
+[dependencies]
+gui-spike-bridge = { path = "../bridge" }
+tokio = { version = "1", features = ["time"] }

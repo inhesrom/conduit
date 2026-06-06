@@ -1,0 +1,21 @@
+# gpui-front is its OWN workspace (note the [workspace] table below): GPUI is a
+# heavy git-only dependency, and isolating it keeps the bridge/termgrid/iced
+# builds fast and unaffected. It still reuses bridge + termgrid by path.
+[package]
+name = "gpui-front"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "gpui-front"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+gui-spike-bridge = { path = "../bridge" }
+termgrid = { path = "../termgrid" }
+gpui = { git = "https://github.com/zed-industries/zed" }
+# gpui split platform support into gpui_platform; on Linux it needs a windowing
+# backend feature (default is none), so enable both wayland and x11.
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["wayland", "x11"] }

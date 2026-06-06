@@ -1,0 +1,11 @@
+[package]
+name = "gui-spike-bridge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Conduit's real backend — reused unchanged, by path.
+conduit_core = { path = "../../../crates/core" }
+protocol = { path = "../../../crates/protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+base64 = "0.22"

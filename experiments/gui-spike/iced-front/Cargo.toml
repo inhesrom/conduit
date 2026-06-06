@@ -1,0 +1,13 @@
+[package]
+name = "iced-front"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "iced-front"
+path = "src/main.rs"
+
+[dependencies]
+gui-spike-bridge = { path = "../bridge" }
+termgrid = { path = "../termgrid" }
+iced = { version = "0.13", features = ["tokio"] }

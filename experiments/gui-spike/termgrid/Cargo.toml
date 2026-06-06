@@ -1,0 +1,9 @@
+[package]
+name = "termgrid"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Reuse Conduit's OWN vendored vt100 fork — same parser the TUI uses, so the
+# GUI fronts render an apples-to-apples grid.
+vt100 = { path = "../../../vendor/vt100" }
