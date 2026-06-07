@@ -33,6 +33,29 @@ fn gap() -> Span<'static> {
 ///
 /// Returns a `Line` whose spans vary based on the current route and focus state in `app`.
 pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
+    // The quick-create and delete-confirm modals float over either route, so
+    // their hints take precedence regardless of where they were raised.
+    if app.is_quick_creating() {
+        return Line::from(vec![
+            key("Enter"),
+            desc(" create"),
+            gap(),
+            key("Tab"),
+            desc(" more options"),
+            gap(),
+            key("Esc"),
+            desc(" cancel"),
+        ]);
+    }
+    if app.is_confirming_delete() {
+        return Line::from(vec![
+            key("Y"),
+            desc(" confirm delete"),
+            gap(),
+            key("N"),
+            desc(" cancel"),
+        ]);
+    }
     let spans = match app.route {
         Route::Home => {
             if app.ssh_history_picker.is_some() {
@@ -71,6 +94,15 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key("Enter"),
                     desc(" add repo"),
                     gap(),
+                    key("Space"),
+                    desc(" select child"),
+                    gap(),
+                    key("Bksp"),
+                    desc(" up"),
+                    gap(),
+                    key("."),
+                    desc(" hidden"),
+                    gap(),
                     key("/"),
                     desc(" edit path"),
                     gap(),
@@ -87,14 +119,6 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     gap(),
                     key("Esc"),
                     desc(" close"),
-                ]
-            } else if app.is_confirming_delete() {
-                vec![
-                    key("Y"),
-                    desc(" confirm delete"),
-                    gap(),
-                    key("N"),
-                    desc(" cancel"),
                 ]
             } else if app.is_renaming_workspace() {
                 vec![
@@ -147,6 +171,9 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     gap(),
                     key("N"),
                     desc(" repo"),
+                    gap(),
+                    key("D"),
+                    desc(" delete"),
                     gap(),
                     key("f"),
                     desc(" filter"),
@@ -208,6 +235,28 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
             desc(" close"),
         ],
         Route::Workspace { .. } => match app.focus {
+            // The sidebar can be focused (e.g. clicked) while a workspace is open.
+            // Add-repo/SSH/settings modals are gated off in this route, so only
+            // navigation, open, new workspace, review, and delete are advertised.
+            Focus::Sidebar => vec![
+                key("j/k"),
+                desc(" navigate"),
+                gap(),
+                key("Enter"),
+                desc(" open"),
+                gap(),
+                key("n"),
+                desc(" new"),
+                gap(),
+                key("R"),
+                desc(" review"),
+                gap(),
+                key("D"),
+                desc(" delete"),
+                gap(),
+                key("Esc"),
+                desc(" back"),
+            ],
             Focus::WsTerminalTabs => vec![
                 key("h/l"),
                 desc(" switch tab"),
@@ -559,6 +608,18 @@ mod tests {
             editing_path: false,
         });
         let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "add repo"));
+        assert!(hints_contain(&line, "cancel"));
+    }
+
+    #[test]
+    fn home_quick_creating_hints() {
+        let mut app = TuiApp::default();
+        app.begin_quick_create(Uuid::new_v4());
+        assert!(app.is_quick_creating());
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "create"));
+        assert!(hints_contain(&line, "more options"));
         assert!(hints_contain(&line, "cancel"));
     }
 
@@ -568,6 +629,36 @@ mod tests {
         app.pending_delete_workspace = Some(Uuid::new_v4());
         let line = build_footer_hints(&app);
         assert!(hints_contain(&line, "confirm delete"));
+    }
+
+    #[test]
+    fn quick_creating_hints_show_in_workspace_route() {
+        // A new workspace can be created from the sidebar while a workspace is
+        // open; the create hints must surface in that route too.
+        let (mut app, _id) = app_with_workspace();
+        app.begin_quick_create(Uuid::new_v4());
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "create"));
+        assert!(hints_contain(&line, "more options"));
+    }
+
+    #[test]
+    fn confirming_delete_hints_show_in_workspace_route() {
+        // A repo delete raised from the sidebar while a workspace is open must
+        // still surface the Y/confirm hint.
+        let (mut app, _id) = app_with_workspace();
+        app.pending_delete_repo = Some(Uuid::new_v4());
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "confirm delete"));
+    }
+
+    #[test]
+    fn workspace_sidebar_focus_hints() {
+        let (mut app, _id) = app_with_workspace();
+        app.focus = Focus::Sidebar;
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "delete"));
+        assert!(hints_contain(&line, "navigate"));
     }
 
     #[test]

@@ -528,6 +528,7 @@ pub struct TuiApp {
     pub spinner_tick: u8,
     pub dir_browser: Option<DirBrowserState>,
     pub pending_delete_workspace: Option<WorkspaceId>,
+    pub pending_delete_repo: Option<RepositoryId>,
     pub rename_workspace_input: Option<String>,
     pub rename_tab_input: Option<String>,
     pub git_action_message: Option<(String, Instant)>,
@@ -633,6 +634,7 @@ impl Default for TuiApp {
             spinner_tick: 0,
             dir_browser: None,
             pending_delete_workspace: None,
+            pending_delete_repo: None,
             rename_workspace_input: None,
             rename_tab_input: None,
             git_action_message: None,
@@ -1291,16 +1293,23 @@ impl TuiApp {
         self.dir_browser.as_mut()
     }
 
+    /// Cancels any pending delete confirmation (workspace or repository).
     pub fn cancel_delete_workspace(&mut self) {
         self.pending_delete_workspace = None;
+        self.pending_delete_repo = None;
     }
 
+    /// True while a delete-confirmation modal is showing for a workspace or repo.
     pub fn is_confirming_delete(&self) -> bool {
-        self.pending_delete_workspace.is_some()
+        self.pending_delete_workspace.is_some() || self.pending_delete_repo.is_some()
     }
 
     pub fn take_delete_workspace(&mut self) -> Option<WorkspaceId> {
         self.pending_delete_workspace.take()
+    }
+
+    pub fn take_delete_repo(&mut self) -> Option<RepositoryId> {
+        self.pending_delete_repo.take()
     }
 
     pub fn cancel_rename_workspace(&mut self) {
@@ -3365,6 +3374,28 @@ mod tests {
         app.pending_delete_workspace = app.selected_workspace_id();
         app.cancel_delete_workspace();
         assert!(!app.is_confirming_delete());
+    }
+
+    #[test]
+    fn delete_repo_flow() {
+        let mut app = TuiApp::default();
+        assert!(!app.is_confirming_delete());
+        let repo_id = uuid::Uuid::new_v4();
+        app.pending_delete_repo = Some(repo_id);
+        assert!(app.is_confirming_delete());
+        assert_eq!(app.take_delete_repo(), Some(repo_id));
+        assert!(!app.is_confirming_delete());
+    }
+
+    #[test]
+    fn cancel_clears_both_pending_deletes() {
+        let mut app = app_with_workspaces(1);
+        app.pending_delete_workspace = app.selected_workspace_id();
+        app.pending_delete_repo = Some(uuid::Uuid::new_v4());
+        app.cancel_delete_workspace();
+        assert!(!app.is_confirming_delete());
+        assert!(app.pending_delete_workspace.is_none());
+        assert!(app.pending_delete_repo.is_none());
     }
 
     #[test]

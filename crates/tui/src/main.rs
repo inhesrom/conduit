@@ -1372,6 +1372,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                     ui::widgets::sidebar::render_popout(frame, sr, full, &app);
                 }
             }
+            // The quick-create and delete-confirm modals float over everything
+            // (they can be raised from the sidebar regardless of route), so they
+            // are drawn last.
+            ui::screens::home::render_quick_create_modal(frame, detail_area, &app);
+            if app.is_confirming_delete() {
+                ui::screens::home::render_delete_modal(frame, detail_area, &app);
+            }
             // Extract selected text from the rendered buffer before applying highlights.
             if let Some(sel) = &app.pending_copy_selection {
                 let borders = match app.route {
@@ -1536,12 +1543,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             } else if app.is_confirming_delete() {
                                 match key.code {
                                     KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                        if let Some(id) = app.take_delete_workspace() {
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::RemoveWorkspace { id })
-                                                .await;
-                                        }
+                                        confirm_pending_delete(&mut app, &backend).await;
                                     }
                                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                         app.cancel_delete_workspace()
@@ -1782,260 +1784,43 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     _ => {}
                                 }
                             } else if app.is_quick_creating() {
-                                match key.code {
-                                    KeyCode::Esc => app.cancel_quick_create(),
-                                    KeyCode::Tab => {
-                                        if let Some(qc) = app.quick_create.as_mut() {
-                                            if !qc.expanded {
-                                                qc.expanded = true;
-                                                qc.field = app::QuickCreateField::BaseBranch;
-                                            } else {
-                                                qc.next_field();
-                                            }
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        if let Some(qc) = app.quick_create.take() {
-                                            let base_branch = if qc.base_branch.trim().is_empty() {
-                                                None
-                                            } else {
-                                                Some(qc.base_branch.trim().to_string())
-                                            };
-                                            let prompt = qc.initial_prompt.trim().to_string();
-                                            if !prompt.is_empty() {
-                                                app.pending_create_prompt = Some(prompt);
-                                            }
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::CreateWorkspace {
-                                                    repo_id: qc.repo_id,
-                                                    name: qc.name.clone(),
-                                                    base_branch,
-                                                })
-                                                .await;
-                                        }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(qc) = app.quick_create.as_mut() {
-                                            qc.active_input_mut().pop();
-                                        }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(qc) = app.quick_create.as_mut() {
-                                            qc.active_input_mut().push(c);
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                handle_quick_create_key(&mut app, &backend, key).await;
                             } else {
-                                // Sidebar is focused. Behaviour depends on display mode.
-                                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                                if app.sidebar_mode == app::SidebarMode::Rail
-                                    && app.sidebar_popout.is_some()
-                                {
-                                    // Pop-out open: navigate/open the repo's workspaces.
-                                    match key.code {
-                                        KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
-                                        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
-                                            app.close_sidebar_popout()
-                                        }
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            app.move_popout_selection(1)
-                                        }
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            app.move_popout_selection(-1)
-                                        }
-                                        KeyCode::Enter | KeyCode::Char('l') => {
-                                            if let Some(id) = app.selected_popout_workspace_id() {
-                                                app.close_sidebar_popout();
-                                                app.open_workspace(id);
-                                                start_workspace_tab_terminals(
-                                                    &backend.cmd_tx,
-                                                    id,
-                                                    &app.ws_tabs,
-                                                    &app.settings,
-                                                    app.terminal_content_size,
-                                                )
-                                                .await;
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::RefreshGit { id })
-                                                    .await;
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                } else if app.sidebar_mode == app::SidebarMode::Rail {
-                                    // Rail, no pop-out: navigate repos; Enter opens the pop-out.
-                                    match key.code {
-                                        KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            app.move_rail_selection(1)
-                                        }
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            app.move_rail_selection(-1)
-                                        }
-                                        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                                            app.toggle_sidebar_popout()
-                                        }
-                                        KeyCode::Char('n') => match app.selected_rail_repo() {
-                                            Some(repo_id) => app.begin_quick_create(repo_id),
-                                            None => {
-                                                app.git_action_message = Some((
-                                                    "No repositories — press N to add one first"
-                                                        .to_string(),
-                                                    Instant::now(),
-                                                ));
-                                            }
-                                        },
-                                        KeyCode::Char('N') => {
-                                            let cwd = std::env::current_dir()
-                                                .unwrap_or_else(|_| PathBuf::from("."))
-                                                .display()
-                                                .to_string();
-                                            app.begin_add_workspace(cwd);
-                                        }
-                                        KeyCode::Char('f') => {
-                                            app.sidebar_review_filter = !app.sidebar_review_filter;
-                                        }
-                                        KeyCode::Char('S') => app.open_settings(),
-                                        _ => {}
-                                    }
-                                } else {
-                                    // Sidebar (Repository -> Workspace tree) is focused.
-                                    match key.code {
-                                        KeyCode::Char('b') if ctrl => {
-                                            app.cycle_sidebar_mode();
-                                        }
-                                        // `n` (or ctrl+n) — new workspace under the selected repo.
-                                        KeyCode::Char('n') => match app.sidebar_context_repo() {
-                                            Some(repo_id) => app.begin_quick_create(repo_id),
-                                            None => {
-                                                app.git_action_message = Some((
-                                                    "No repositories — press N to add one first"
-                                                        .to_string(),
-                                                    Instant::now(),
-                                                ));
-                                            }
-                                        },
-                                        // `N` — add (register) a new repository.
-                                        KeyCode::Char('N') => {
-                                            let cwd = std::env::current_dir()
-                                                .unwrap_or_else(|_| PathBuf::from("."))
-                                                .display()
-                                                .to_string();
-                                            app.begin_add_workspace(cwd);
-                                        }
-                                        KeyCode::Down | KeyCode::Char('j') => {
-                                            app.move_sidebar_selection(1)
-                                        }
-                                        KeyCode::Up | KeyCode::Char('k') => {
-                                            app.move_sidebar_selection(-1)
-                                        }
-                                        KeyCode::Left | KeyCode::Char('h') => {
-                                            if let Some(app::SidebarRow::Repo(id)) =
-                                                app.selected_sidebar_row()
-                                            {
-                                                app.collapsed_repos.insert(id);
-                                            }
-                                        }
-                                        KeyCode::Right => {
-                                            if let Some(app::SidebarRow::Repo(id)) =
-                                                app.selected_sidebar_row()
-                                            {
-                                                app.collapsed_repos.remove(&id);
-                                            }
-                                        }
-                                        KeyCode::Enter | KeyCode::Char('l') => {
-                                            match app.selected_sidebar_row() {
-                                                Some(app::SidebarRow::Repo(_)) => {
-                                                    app.toggle_collapse_selected();
-                                                }
-                                                Some(app::SidebarRow::Workspace(id)) => {
-                                                    app.open_workspace(id);
-                                                    start_workspace_tab_terminals(
-                                                        &backend.cmd_tx,
-                                                        id,
-                                                        &app.ws_tabs,
-                                                        &app.settings,
-                                                        app.terminal_content_size,
-                                                    )
-                                                    .await;
-                                                    let _ = backend
-                                                        .cmd_tx
-                                                        .send(Command::RefreshGit { id })
-                                                        .await;
-                                                }
-                                                None => {}
-                                            }
-                                        }
-                                        KeyCode::Char('a') => {
-                                            let cwd = std::env::current_dir()
-                                                .unwrap_or_else(|_| PathBuf::from("."))
-                                                .display()
-                                                .to_string();
-                                            app.begin_add_workspace(cwd);
-                                        }
-                                        KeyCode::Char('A') => app.begin_add_ssh_workspace(),
-                                        KeyCode::Char('D') => {
-                                            if let Some(id) = app.selected_sidebar_workspace_id() {
-                                                app.pending_delete_workspace = Some(id);
-                                            }
-                                        }
-                                        KeyCode::Char('R') => {
-                                            if let Some(id) = app.selected_sidebar_workspace_id() {
-                                                app.open_workspace(id);
-                                                start_workspace_tab_terminals(
-                                                    &backend.cmd_tx,
-                                                    id,
-                                                    &app.ws_tabs,
-                                                    &app.settings,
-                                                    app.terminal_content_size,
-                                                )
-                                                .await;
-                                                app.enter_review_mode();
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::LoadBranchDiff { id })
-                                                    .await;
-                                            }
-                                        }
-                                        KeyCode::Char(' ') => {
-                                            if let Some(id) = app.selected_sidebar_workspace_id() {
-                                                let ready = app
-                                                    .workspaces
-                                                    .iter()
-                                                    .find(|w| w.id == id)
-                                                    .map(|w| w.ready_for_review)
-                                                    .unwrap_or(false);
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::SetReadyForReview {
-                                                        id,
-                                                        ready: !ready,
-                                                    })
-                                                    .await;
-                                            }
-                                        }
-                                        KeyCode::Char('f') => {
-                                            app.sidebar_review_filter = !app.sidebar_review_filter;
-                                        }
-                                        KeyCode::Char('g') => {
-                                            if let Some(id) = app.selected_sidebar_workspace_id() {
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::RefreshGit { id })
-                                                    .await;
-                                            }
-                                        }
-                                        KeyCode::Char('S') => app.open_settings(),
-                                        _ => {}
-                                    }
-                                }
+                                handle_sidebar_key(&mut app, &backend, key, true).await;
                             }
                         }
                         Route::Workspace { id } => {
                             if handle_workspace_command_key(&mut app, &backend, id, key).await {
+                                continue;
+                            }
+
+                            // A delete confirmation can be raised from the sidebar while a
+                            // workspace is open, so it must be answerable from this route too.
+                            if app.is_confirming_delete() {
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                        confirm_pending_delete(&mut app, &backend).await;
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                        app.cancel_delete_workspace();
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
+                            // A new workspace can be created from the sidebar while another
+                            // workspace is open, so service the quick-create modal here too.
+                            if handle_quick_create_key(&mut app, &backend, key).await {
+                                continue;
+                            }
+
+                            // When the sidebar is focused (e.g. clicked), it owns navigation
+                            // and actions like delete/new. Fall through only for keys it
+                            // doesn't consume so workspace shortcuts (Esc, F, …) still work.
+                            if app.focus == app::Focus::Sidebar
+                                && handle_sidebar_key(&mut app, &backend, key, false).await
+                            {
                                 continue;
                             }
 
@@ -3029,6 +2814,269 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     Ok(())
 }
 
+/// Sends the appropriate removal command for whatever delete is currently
+/// pending (a workspace or a repository) and clears the confirmation state.
+async fn confirm_pending_delete(app: &mut TuiApp, backend: &Backend) {
+    if let Some(id) = app.take_delete_workspace() {
+        let _ = backend.cmd_tx.send(Command::RemoveWorkspace { id }).await;
+    } else if let Some(repo_id) = app.take_delete_repo() {
+        let _ = backend
+            .cmd_tx
+            .send(Command::RemoveRepository { repo_id })
+            .await;
+    }
+}
+
+/// Handles a key while the quick-create ("New Workspace") modal is open.
+/// Returns `true` if the key was consumed; `false` if the modal isn't open.
+/// Shared between routes so a workspace can be created from the sidebar while
+/// another workspace is already open.
+async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEvent) -> bool {
+    if !app.is_quick_creating() {
+        return false;
+    }
+    match key.code {
+        KeyCode::Esc => app.cancel_quick_create(),
+        KeyCode::Tab => {
+            if let Some(qc) = app.quick_create.as_mut() {
+                if !qc.expanded {
+                    qc.expanded = true;
+                    qc.field = app::QuickCreateField::BaseBranch;
+                } else {
+                    qc.next_field();
+                }
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(qc) = app.quick_create.take() {
+                let base_branch = if qc.base_branch.trim().is_empty() {
+                    None
+                } else {
+                    Some(qc.base_branch.trim().to_string())
+                };
+                let prompt = qc.initial_prompt.trim().to_string();
+                if !prompt.is_empty() {
+                    app.pending_create_prompt = Some(prompt);
+                }
+                let _ = backend
+                    .cmd_tx
+                    .send(Command::CreateWorkspace {
+                        repo_id: qc.repo_id,
+                        name: qc.name.clone(),
+                        base_branch,
+                    })
+                    .await;
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(qc) = app.quick_create.as_mut() {
+                qc.active_input_mut().pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(qc) = app.quick_create.as_mut() {
+                qc.active_input_mut().push(c);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+/// Handles a key while the left sidebar is focused (`Focus::Sidebar`). Returns
+/// `true` if the key was consumed by the sidebar; `false` lets the caller fall
+/// through to its own handling. Shared between the Home and Workspace routes so
+/// sidebar actions (navigate, open, delete, review) work consistently from
+/// either — including deleting the selected workspace or repository.
+///
+/// `allow_modals` gates the keys that open Home-only modals (add repository
+/// `N`/`a`, add SSH workspace `A`, settings `S`). The Workspace route passes
+/// `false` because it cannot service those modals, which would otherwise trap
+/// input. New-workspace (`n`) is always allowed — its modal is serviced by both
+/// routes via [`handle_quick_create_key`].
+async fn handle_sidebar_key(
+    app: &mut TuiApp,
+    backend: &Backend,
+    key: KeyEvent,
+    allow_modals: bool,
+) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if app.sidebar_mode == app::SidebarMode::Rail && app.sidebar_popout.is_some() {
+        // Pop-out open: navigate/open the repo's workspaces.
+        match key.code {
+            KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => app.close_sidebar_popout(),
+            KeyCode::Down | KeyCode::Char('j') => app.move_popout_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => app.move_popout_selection(-1),
+            KeyCode::Enter | KeyCode::Char('l') => {
+                if let Some(id) = app.selected_popout_workspace_id() {
+                    app.close_sidebar_popout();
+                    app.open_workspace(id);
+                    start_workspace_tab_terminals(
+                        &backend.cmd_tx,
+                        id,
+                        &app.ws_tabs,
+                        &app.settings,
+                        app.terminal_content_size,
+                    )
+                    .await;
+                    let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+                }
+            }
+            KeyCode::Char('D') => {
+                if let Some(id) = app.selected_popout_workspace_id() {
+                    app.pending_delete_workspace = Some(id);
+                }
+            }
+            _ => return false,
+        }
+    } else if app.sidebar_mode == app::SidebarMode::Rail {
+        // Rail, no pop-out: navigate repos; Enter opens the pop-out.
+        match key.code {
+            KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+            KeyCode::Down | KeyCode::Char('j') => app.move_rail_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => app.move_rail_selection(-1),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.toggle_sidebar_popout(),
+            KeyCode::Char('n') => match app.selected_rail_repo() {
+                Some(repo_id) => app.begin_quick_create(repo_id),
+                None => {
+                    app.git_action_message = Some((
+                        "No repositories — press N to add one first".to_string(),
+                        Instant::now(),
+                    ));
+                }
+            },
+            KeyCode::Char('N') if allow_modals => {
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .display()
+                    .to_string();
+                app.begin_add_workspace(cwd);
+            }
+            // `D` — remove the selected repository.
+            KeyCode::Char('D') => {
+                if let Some(repo_id) = app.selected_rail_repo() {
+                    app.pending_delete_repo = Some(repo_id);
+                }
+            }
+            KeyCode::Char('f') => {
+                app.sidebar_review_filter = !app.sidebar_review_filter;
+            }
+            KeyCode::Char('S') if allow_modals => app.open_settings(),
+            _ => return false,
+        }
+    } else {
+        // Sidebar (Repository -> Workspace tree) is focused.
+        match key.code {
+            KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+            // `n` — new workspace under the selected repo.
+            KeyCode::Char('n') => match app.sidebar_context_repo() {
+                Some(repo_id) => app.begin_quick_create(repo_id),
+                None => {
+                    app.git_action_message = Some((
+                        "No repositories — press N to add one first".to_string(),
+                        Instant::now(),
+                    ));
+                }
+            },
+            // `N` — add (register) a new repository.
+            KeyCode::Char('N') if allow_modals => {
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .display()
+                    .to_string();
+                app.begin_add_workspace(cwd);
+            }
+            KeyCode::Down | KeyCode::Char('j') => app.move_sidebar_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => app.move_sidebar_selection(-1),
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(app::SidebarRow::Repo(id)) = app.selected_sidebar_row() {
+                    app.collapsed_repos.insert(id);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(app::SidebarRow::Repo(id)) = app.selected_sidebar_row() {
+                    app.collapsed_repos.remove(&id);
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('l') => match app.selected_sidebar_row() {
+                Some(app::SidebarRow::Repo(_)) => app.toggle_collapse_selected(),
+                Some(app::SidebarRow::Workspace(id)) => {
+                    app.open_workspace(id);
+                    start_workspace_tab_terminals(
+                        &backend.cmd_tx,
+                        id,
+                        &app.ws_tabs,
+                        &app.settings,
+                        app.terminal_content_size,
+                    )
+                    .await;
+                    let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+                }
+                None => {}
+            },
+            KeyCode::Char('a') if allow_modals => {
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .display()
+                    .to_string();
+                app.begin_add_workspace(cwd);
+            }
+            KeyCode::Char('A') if allow_modals => app.begin_add_ssh_workspace(),
+            // `D` — delete the selected workspace, or remove the selected repository.
+            KeyCode::Char('D') => match app.selected_sidebar_row() {
+                Some(app::SidebarRow::Workspace(id)) => {
+                    app.pending_delete_workspace = Some(id);
+                }
+                Some(app::SidebarRow::Repo(repo_id)) => {
+                    app.pending_delete_repo = Some(repo_id);
+                }
+                None => {}
+            },
+            KeyCode::Char('R') => {
+                if let Some(id) = app.selected_sidebar_workspace_id() {
+                    app.open_workspace(id);
+                    start_workspace_tab_terminals(
+                        &backend.cmd_tx,
+                        id,
+                        &app.ws_tabs,
+                        &app.settings,
+                        app.terminal_content_size,
+                    )
+                    .await;
+                    app.enter_review_mode();
+                    let _ = backend.cmd_tx.send(Command::LoadBranchDiff { id }).await;
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(id) = app.selected_sidebar_workspace_id() {
+                    let ready = app
+                        .workspaces
+                        .iter()
+                        .find(|w| w.id == id)
+                        .map(|w| w.ready_for_review)
+                        .unwrap_or(false);
+                    let _ = backend
+                        .cmd_tx
+                        .send(Command::SetReadyForReview { id, ready: !ready })
+                        .await;
+                }
+            }
+            KeyCode::Char('f') => {
+                app.sidebar_review_filter = !app.sidebar_review_filter;
+            }
+            KeyCode::Char('g') => {
+                if let Some(id) = app.selected_sidebar_workspace_id() {
+                    let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+                }
+            }
+            KeyCode::Char('S') if allow_modals => app.open_settings(),
+            _ => return false,
+        }
+    }
+    true
+}
+
 async fn handle_workspace_command_key(
     app: &mut TuiApp,
     backend: &Backend,
@@ -3677,26 +3725,33 @@ async fn handle_mouse(
         _ => {}
     }
 
+    // The delete-confirm modal floats over the detail pane regardless of route
+    // (it can be raised from the sidebar while a workspace is open), so handle
+    // clicks on it before the per-route handlers.
+    if app.is_confirming_delete() {
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            let rect = ui::screens::home::delete_modal_rect(area);
+            if point_in_rect(rect, mouse.column, mouse.row) {
+                let mid = rect.x + rect.width / 2;
+                if mouse.column < mid {
+                    if let Some(id) = app.take_delete_workspace() {
+                        let _ = cmd_tx.send(Command::RemoveWorkspace { id }).await;
+                    } else if let Some(repo_id) = app.take_delete_repo() {
+                        let _ = cmd_tx.send(Command::RemoveRepository { repo_id }).await;
+                    }
+                } else {
+                    app.cancel_delete_workspace();
+                }
+            } else {
+                app.cancel_delete_workspace();
+            }
+            return;
+        }
+    }
+
     match app.route {
         Route::Home => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Home modals render within the detail pane (`area`).
-                if app.is_confirming_delete() {
-                    let rect = ui::screens::home::delete_modal_rect(area);
-                    if point_in_rect(rect, mouse.column, mouse.row) {
-                        let mid = rect.x + rect.width / 2;
-                        if mouse.column < mid {
-                            if let Some(id) = app.take_delete_workspace() {
-                                let _ = cmd_tx.send(Command::RemoveWorkspace { id }).await;
-                            }
-                        } else {
-                            app.cancel_delete_workspace();
-                        }
-                    } else {
-                        app.cancel_delete_workspace();
-                    }
-                    return;
-                }
                 if app.is_adding_workspace() {
                     let rect = ui::screens::home::add_modal_rect(area);
                     if !point_in_rect(rect, mouse.column, mouse.row) {

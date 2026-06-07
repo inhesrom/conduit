@@ -176,8 +176,10 @@ fn dashboard_badge(count: usize, icon: &str, label: &str, color: Color) -> Vec<S
 
 /// Renders the add-workspace and delete-confirmation modals when active.
 fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    if let Some(qc) = &app.quick_create {
-        render_quick_create(frame, area, qc);
+    // The quick-create modal is drawn route-independently by the caller (see
+    // `render_quick_create_modal`) so a workspace can be created from the
+    // sidebar while another workspace is open.
+    if app.quick_create.is_some() {
         return;
     }
     if let Some(browser) = &app.dir_browser {
@@ -265,7 +267,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 Span::styled("j/k", key_style),
                 Span::styled(" nav  ", desc_style),
                 Span::styled("Enter", key_style),
-                Span::styled(" open ws  ", desc_style),
+                Span::styled(" add repo  ", desc_style),
                 Span::styled("Bksp", key_style),
                 Span::styled(" up  ", desc_style),
                 Span::styled(".", key_style),
@@ -405,26 +407,8 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         frame.render_widget(Paragraph::new(vec![hints]), sections[3]);
     }
 
-    if let Some(id) = app.pending_delete_workspace {
-        let name = app
-            .workspaces
-            .iter()
-            .find(|w| w.id == id)
-            .map(|w| w.name.clone())
-            .unwrap_or_else(|| id.to_string());
-        let modal = centered_rect(area, 56, 7);
-        frame.render_widget(Clear, modal);
-        frame.render_widget(
-            Paragraph::new(format!("Delete workspace?\n\n{}", name))
-                .alignment(Alignment::Left)
-                .block(
-                    Block::default()
-                        .title("Confirm Delete")
-                        .borders(Borders::ALL),
-                ),
-            modal,
-        );
-    }
+    // The delete-confirmation modal is drawn route-independently by the caller
+    // (see `render_delete_modal`) so it works while a workspace is open too.
 
     if app.is_renaming_workspace() {
         if let Some(name) = &app.rename_workspace_input {
@@ -858,6 +842,50 @@ pub fn add_modal_rect(area: Rect) -> Rect {
 /// Returns the rectangle used by the delete-confirmation modal.
 pub fn delete_modal_rect(area: Rect) -> Rect {
     centered_rect(area, 56, 7)
+}
+
+/// Renders the quick-create ("New Workspace") modal when active. Drawn
+/// route-independently because it can be opened from the sidebar while a
+/// workspace is already open.
+pub fn render_quick_create_modal(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    if let Some(qc) = &app.quick_create {
+        render_quick_create(frame, area, qc);
+    }
+}
+
+/// Renders the delete-confirmation modal for whichever item is pending — a
+/// workspace or a repository. Drawn route-independently because the deletion
+/// can be raised from the sidebar while a workspace is open.
+pub fn render_delete_modal(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let body = if let Some(id) = app.pending_delete_workspace {
+        let name = app
+            .workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| id.to_string());
+        format!("Delete workspace?\n\n{}", name)
+    } else if let Some(repo_id) = app.pending_delete_repo {
+        let name = app
+            .repositories
+            .iter()
+            .find(|r| r.id == repo_id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| repo_id.to_string());
+        format!("Remove from sidebar?\n\n{}\n\n(unregisters only — files on disk are untouched)", name)
+    } else {
+        return;
+    };
+    let modal = delete_modal_rect(area);
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(body).alignment(Alignment::Left).block(
+            Block::default()
+                .title("Confirm Delete")
+                .borders(Borders::ALL),
+        ),
+        modal,
+    );
 }
 
 /// Returns the rectangle occupied by the tile grid on the home screen.
