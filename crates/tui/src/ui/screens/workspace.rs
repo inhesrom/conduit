@@ -9,12 +9,10 @@ use ratatui::{
 use crate::app::TuiApp;
 use crate::ui::footer;
 use crate::ui::widgets::tile_grid::ORANGE;
-use crate::ui::widgets::workspace_bar;
 use protocol::{AttentionLevel, Route};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceHit {
-    WorkspaceBarPill(usize),
     TerminalTab(usize),
     TerminalPane,
     ScrollToBottom,
@@ -25,7 +23,6 @@ pub enum WorkspaceHit {
 
 #[derive(Debug, Clone, Copy)]
 struct WorkspaceLayout {
-    workspace_bar: Rect,
     terminal_pane: Rect,
     git_log: Rect,
     git_branches: Rect,
@@ -34,34 +31,27 @@ struct WorkspaceLayout {
 }
 
 fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> WorkspaceLayout {
-    // Top-level: workspace bar + body + footer
+    // Top-level: body + footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(3),
-            Constraint::Length(2),
-        ])
+        .constraints([Constraint::Min(3), Constraint::Length(2)])
         .split(area);
 
     if terminal_fullscreen {
         let zero = Rect::new(0, 0, 0, 0);
         return WorkspaceLayout {
-            workspace_bar: chunks[0],
-            terminal_pane: chunks[1],
+            terminal_pane: chunks[0],
             git_log: zero,
             git_branches: zero,
             git_diff: zero,
-            footer: chunks[2],
+            footer: chunks[1],
         };
     }
 
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints(match focus {
-            crate::app::Focus::WsBar
-            | crate::app::Focus::WsTerminal
-            | crate::app::Focus::WsTerminalTabs => {
+            crate::app::Focus::WsTerminal | crate::app::Focus::WsTerminalTabs => {
                 [Constraint::Percentage(72), Constraint::Percentage(28)]
             }
             crate::app::Focus::WsLog
@@ -69,7 +59,7 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
             | crate::app::Focus::WsDiff => [Constraint::Percentage(35), Constraint::Percentage(65)],
             _ => [Constraint::Percentage(55), Constraint::Percentage(45)],
         })
-        .split(chunks[1]);
+        .split(chunks[0]);
     let git_area = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -82,12 +72,11 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
         .split(git_area[0]);
 
     WorkspaceLayout {
-        workspace_bar: chunks[0],
         terminal_pane: body[0],
         git_log: left_split[0],
         git_branches: left_split[1],
         git_diff: git_area[1],
-        footer: chunks[2],
+        footer: chunks[1],
     }
 }
 
@@ -313,22 +302,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             .map(|w| w.attention)
             .unwrap_or(AttentionLevel::None),
     );
-
-    // --- Workspace status bar ---
-    let bar_selected = if matches!(app.focus, crate::app::Focus::WsBar) {
-        Some(app.ws_bar_selected)
-    } else {
-        None
-    };
-    let bar_line = workspace_bar::build_workspace_bar_line(
-        &app.workspaces,
-        ws_id,
-        app.spinner_tick % 2 == 0,
-        app.settings.attention_notifications,
-        l.workspace_bar.width,
-        bar_selected,
-    );
-    frame.render_widget(Paragraph::new(bar_line), l.workspace_bar);
 
     // Build workspace info string for the border line
     let ws_info = ws_info_string(app);
@@ -1470,16 +1443,6 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
 
     let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
 
-    // Check if click is on the workspace bar
-    if point_inside(l.workspace_bar) {
-        if let Some(idx) =
-            crate::ui::widgets::workspace_bar::pill_index_at(l.workspace_bar, &app.workspaces, x, y)
-        {
-            return Some(WorkspaceHit::WorkspaceBarPill(idx));
-        }
-        return None;
-    }
-
     // Check if click is on the terminal pane's top border (tab area)
     let border_y = l.terminal_pane.y;
     if y == border_y && x >= l.terminal_pane.x && x < l.terminal_pane.right() {
@@ -2093,16 +2056,16 @@ mod tests {
     fn layout_terminal_pane_starts_at_top() {
         let area = Rect::new(0, 0, 120, 40);
         let l = layout(area, Focus::WsTerminal, false);
-        // Terminal pane starts below the 2-line workspace bar (row 2)
-        assert_eq!(l.terminal_pane.y, 2);
+        // With the workspace bar removed, the body (and terminal pane) starts at row 0.
+        assert_eq!(l.terminal_pane.y, 0);
     }
 
     #[test]
     fn layout_fullscreen_terminal_fills_body() {
         let area = Rect::new(0, 0, 120, 40);
         let l = layout(area, Focus::WsTerminal, true);
-        // In fullscreen, terminal pane gets all rows except bar (2) and footer (2)
-        assert_eq!(l.terminal_pane.height, 36);
+        // In fullscreen, terminal pane gets all rows except the footer (2).
+        assert_eq!(l.terminal_pane.height, 38);
     }
 
     #[test]

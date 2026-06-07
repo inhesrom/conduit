@@ -23,7 +23,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use protocol::{AttentionLevel, Command, Event as CoreEvent, Route, TerminalKind, WorkspaceId};
+use protocol::{Command, Event as CoreEvent, Route, TerminalKind, WorkspaceId};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
@@ -2407,54 +2407,29 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             if key.code == KeyCode::Esc {
                                 if matches!(app.focus, app::Focus::WsTerminal) {
                                     app.focus = app::Focus::WsTerminalTabs;
-                                } else if matches!(app.focus, app::Focus::WsBar) {
-                                    app.focus = app::Focus::WsTerminal;
                                 } else {
                                     app.go_home();
                                 }
                                 continue;
                             }
 
-                            // Workspace bar navigation
-                            if matches!(app.focus, app::Focus::WsBar) {
-                                match key.code {
-                                    KeyCode::Left | KeyCode::Char('h') => {
-                                        app.ws_bar_selected = app.ws_bar_selected.saturating_sub(1);
-                                    }
-                                    KeyCode::Right | KeyCode::Char('l') => {
-                                        app.ws_bar_selected = (app.ws_bar_selected + 1)
-                                            .min(app.workspaces.len().saturating_sub(1));
-                                    }
-                                    KeyCode::Enter => {
-                                        if let Some(target) =
-                                            app.workspaces.get(app.ws_bar_selected)
-                                        {
-                                            let target_id = target.id;
-                                            if Some(target_id) != app.active_workspace_id() {
-                                                app.open_workspace(target_id);
-                                                start_workspace_tab_terminals(
-                                                    &backend.cmd_tx,
-                                                    target_id,
-                                                    &app.ws_tabs,
-                                                    &app.settings,
-                                                )
-                                                .await;
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::RefreshGit { id: target_id })
-                                                    .await;
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::ClearAttention { id: target_id })
-                                                    .await;
-                                            } else {
-                                                app.focus = app::Focus::WsTerminal;
-                                            }
-                                        }
-                                    }
-                                    _ => {}
+                            if matches!(app.focus, app::Focus::WsTerminal)
+                                && key.code != KeyCode::Tab
+                                && key.code != KeyCode::BackTab
+                            {
+                                if let Some(bytes) = key_to_terminal_bytes(key) {
+                                    let _ = backend
+                                        .cmd_tx
+                                        .send(Command::SendTerminalInput {
+                                            id,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
+                                            data_b64: base64::engine::general_purpose::STANDARD
+                                                .encode(bytes),
+                                        })
+                                        .await;
+                                    continue;
                                 }
-                                continue;
                             }
 
                             match key.code {
@@ -3132,12 +3107,11 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
 
 fn cycle_workspace_focus(focus: app::Focus) -> app::Focus {
     match focus {
-        app::Focus::WsBar => app::Focus::WsTerminalTabs,
         app::Focus::WsTerminalTabs => app::Focus::WsTerminal,
         app::Focus::WsTerminal => app::Focus::WsLog,
         app::Focus::WsLog => app::Focus::WsBranches,
         app::Focus::WsBranches => app::Focus::WsDiff,
-        app::Focus::WsDiff => app::Focus::WsBar,
+        app::Focus::WsDiff => app::Focus::WsTerminalTabs,
         _ => app::Focus::WsTerminalTabs,
     }
 }
@@ -3151,8 +3125,7 @@ fn workspace_command_shortcut_enabled(app: &TuiApp) -> bool {
 
 fn cycle_workspace_focus_reverse(focus: app::Focus) -> app::Focus {
     match focus {
-        app::Focus::WsBar => app::Focus::WsDiff,
-        app::Focus::WsTerminalTabs => app::Focus::WsBar,
+        app::Focus::WsTerminalTabs => app::Focus::WsDiff,
         app::Focus::WsTerminal => app::Focus::WsTerminalTabs,
         app::Focus::WsLog => app::Focus::WsTerminal,
         app::Focus::WsBranches => app::Focus::WsLog,
@@ -3417,6 +3390,53 @@ async fn handle_mouse(
         (None, full)
     };
 
+    // The sidebar tree is clickable from any route and regardless of focus
+    // (including while the terminal is focused or in passthrough). Handle it
+    // before anything else so a click on the tree always lands here.
+    if let Some(sr) = sidebar_rect {
+        if point_in_rect(sr, mouse.column, mouse.row) {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(idx) =
+                        ui::widgets::sidebar::row_index_at(sr, app, mouse.column, mouse.row)
+                    {
+                        app.sidebar_selected = idx;
+                        app.focus = app::Focus::Sidebar;
+                        match app.sidebar_rows()[idx] {
+                            app::SidebarRow::Repo(_) => app.toggle_collapse_selected(),
+                            app::SidebarRow::Workspace(id) => {
+                                if Some(id) != app.active_workspace_id() {
+                                    app.open_workspace(id);
+                                    start_workspace_tab_terminals(
+                                        cmd_tx,
+                                        id,
+                                        &app.ws_tabs,
+                                        &app.settings,
+                                    )
+                                    .await;
+                                    let _ = cmd_tx.send(Command::RefreshGit { id }).await;
+                                    let _ = cmd_tx.send(Command::ClearAttention { id }).await;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                MouseEventKind::ScrollUp => {
+                    app.move_sidebar_selection(-1);
+                    return;
+                }
+                MouseEventKind::ScrollDown => {
+                    app.move_sidebar_selection(1);
+                    return;
+                }
+                // Drag / button-up fall through to the global selection handlers
+                // so a drag that began in a detail pane can still release here.
+                _ => {}
+            }
+        }
+    }
+
     if matches!(app.route, Route::Workspace { .. }) && app.is_workspace_command_open() {
         match mouse.kind {
             MouseEventKind::ScrollUp => app.scroll_workspace_command_output(-3),
@@ -3468,30 +3488,6 @@ async fn handle_mouse(
     match app.route {
         Route::Home => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Click on a sidebar row: select + open (workspace) / collapse (repo).
-                if let Some(sr) = sidebar_rect {
-                    if let Some(idx) =
-                        ui::widgets::sidebar::row_index_at(sr, app, mouse.column, mouse.row)
-                    {
-                        app.sidebar_selected = idx;
-                        app.focus = app::Focus::Sidebar;
-                        match app.sidebar_rows()[idx] {
-                            app::SidebarRow::Repo(_) => app.toggle_collapse_selected(),
-                            app::SidebarRow::Workspace(id) => {
-                                app.open_workspace(id);
-                                start_workspace_tab_terminals(
-                                    cmd_tx,
-                                    id,
-                                    &app.ws_tabs,
-                                    &app.settings,
-                                )
-                                .await;
-                                let _ = cmd_tx.send(Command::RefreshGit { id }).await;
-                            }
-                        }
-                        return;
-                    }
-                }
                 // Home modals render within the detail pane (`area`).
                 if app.is_confirming_delete() {
                     let rect = ui::screens::home::delete_modal_rect(area);
@@ -3519,16 +3515,6 @@ async fn handle_mouse(
                 // Otherwise start a text selection on the detail pane.
                 app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
             }
-            MouseEventKind::ScrollUp => {
-                if sidebar_rect.map_or(false, |sr| point_in_rect(sr, mouse.column, mouse.row)) {
-                    app.move_sidebar_selection(-1);
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if sidebar_rect.map_or(false, |sr| point_in_rect(sr, mouse.column, mouse.row)) {
-                    app.move_sidebar_selection(1);
-                }
-            }
             _ => {}
         },
         Route::Workspace { id } => match mouse.kind {
@@ -3544,26 +3530,6 @@ async fn handle_mouse(
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
                     match hit {
-                        ui::screens::workspace::WorkspaceHit::WorkspaceBarPill(idx) => {
-                            if let Some(target) = app.workspaces.get(idx) {
-                                let target_id = target.id;
-                                if Some(target_id) != app.active_workspace_id() {
-                                    app.open_workspace(target_id);
-                                    start_workspace_tab_terminals(
-                                        cmd_tx,
-                                        target_id,
-                                        &app.ws_tabs,
-                                        &app.settings,
-                                    )
-                                    .await;
-                                    let _ =
-                                        cmd_tx.send(Command::RefreshGit { id: target_id }).await;
-                                    let _ = cmd_tx
-                                        .send(Command::ClearAttention { id: target_id })
-                                        .await;
-                                }
-                            }
-                        }
                         ui::screens::workspace::WorkspaceHit::TerminalTab(idx) => {
                             app.focus = app::Focus::WsTerminalTabs;
                             app.set_active_tab_index(idx);

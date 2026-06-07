@@ -163,16 +163,6 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
             desc(" close"),
         ],
         Route::Workspace { .. } => match app.focus {
-            Focus::WsBar => vec![
-                key("h/l"),
-                desc(" select"),
-                gap(),
-                key("Enter"),
-                desc(" switch"),
-                gap(),
-                key("Esc"),
-                desc(" cancel"),
-            ],
             Focus::WsTerminalTabs => vec![
                 key("h/l"),
                 desc(" switch tab"),
