@@ -213,6 +213,11 @@ fn ws_info_string(app: &TuiApp) -> String {
             };
             if let Some(rename) = &app.rename_workspace_input {
                 format!("Rename: {rename}")
+            } else if branch == w.name || branch == "-" {
+                // Avoid a doubled title when the branch matches the workspace
+                // name (the common case for freshly-created workspaces) or when
+                // the branch is unknown.
+                format!("{}  ◈{}{}", w.name, w.dirty_files, ab)
             } else {
                 format!("{} · {}  ◈{}{}", w.name, branch, w.dirty_files, ab)
             }
@@ -2144,6 +2149,23 @@ mod tests {
             "should contain branch name: {}",
             info
         );
+    }
+
+    #[test]
+    fn ws_info_string_dedupes_branch_matching_name() {
+        let (mut app, id) = app_with_workspace();
+        let mut git = make_git_state();
+        // Branch name matches the workspace name ("test") — common for
+        // freshly-created workspaces.
+        git.branch = Some("test".into());
+        app.set_workspace_git(id, git);
+        let info = ws_info_string(&app);
+        assert!(
+            !info.contains('·'),
+            "should not show a doubled title when branch == name: {}",
+            info
+        );
+        assert_eq!(info.matches("test").count(), 1, "name shown once: {}", info);
     }
 
     #[test]
