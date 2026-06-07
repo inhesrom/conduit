@@ -1786,8 +1786,18 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
         return;
     };
     for item in items {
-        let id = Uuid::new_v4();
         let repo_path = PathBuf::from(item.path);
+        // Skip legacy migration duplicates: a bare workspace (no repository FK)
+        // whose path is already a registered Repository. On first launch the
+        // entry was imported as a Repository; without this guard it would also
+        // load as an orphan Workspace and float to the bottom of the sidebar,
+        // visually attaching to whichever repository is listed last.
+        if item.repository_id.is_none()
+            && state.repositories.values().any(|r| r.path == repo_path)
+        {
+            continue;
+        }
+        let id = Uuid::new_v4();
         let initial_git = refresh_git(&repo_path, item.ssh.as_ref())
             .await
             .unwrap_or_default();
