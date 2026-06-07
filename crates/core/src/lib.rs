@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use protocol::{
     AttentionLevel, Command, Event, GitState, RepositoryId, RepositorySummary, SavedCommand,
-    SshTarget, WorkspaceSummary,
+    SshTarget, WorkspaceId, WorkspaceSummary,
 };
 use state::{AppState, Repository, Workspace};
 use uuid::Uuid;
@@ -155,7 +155,8 @@ use workspace::git::{
     delete_local_branch, delete_remote_branch, detect_default_branch, diff_branch_file,
     diff_branch_files, diff_commit, diff_commit_file, diff_file, discard_all, discard_file,
     gh_create_pr, git_fetch, git_pull, git_push, git_stash, git_stash_all, git_stash_pull_pop,
-    list_commit_files, refresh_git, remote_origin_url, remove_worktree, repo_root, stage_all,
+    list_commit_files, list_worktrees, refresh_git, remote_origin_url, remove_worktree, repo_root,
+    stage_all,
     stage_file, unstage_all, unstage_file,
 };
 use workspace::process_info;
@@ -178,6 +179,28 @@ pub fn spawn_core() -> CoreHandle {
         let mut state = AppState::default();
         restore_repositories(&mut state).await;
         restore_workspaces(&mut state, &evt_tx_task).await;
+        // Surface any on-disk worktrees that aren't tracked yet as Workspaces
+        // under their owning Repository (created outside the app, or in a
+        // session whose persisted state was lost). Done before the initial list
+        // emits so the sidebar shows them on first paint.
+        {
+            let repo_ids = state.ordered_repo_ids.clone();
+            let mut picked_up = Vec::new();
+            for repo_id in repo_ids {
+                picked_up.extend(pickup_worktrees_for_repo(&mut state, repo_id).await);
+            }
+            if !picked_up.is_empty() {
+                save_workspaces(&state);
+                for id in picked_up {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let _ = evt_tx_task.send(Event::WorkspaceGitUpdated {
+                            id,
+                            git: ws.git.clone(),
+                        });
+                    }
+                }
+            }
+        }
         let _ = evt_tx_task.send(Event::RepositoryList {
             items: repository_summaries(&state),
         });
@@ -234,6 +257,26 @@ pub fn spawn_core() -> CoreHandle {
                             let _ = evt_tx_task.send(Event::RepositoryList {
                                 items: repository_summaries(&state),
                             });
+                            // Auto-pickup any worktrees that already exist on
+                            // disk for this freshly registered repo.
+                            let added = pickup_worktrees_for_repo(&mut state, id).await;
+                            if !added.is_empty() {
+                                save_workspaces(&state);
+                                let _ = evt_tx_task.send(Event::RepositoryList {
+                                    items: repository_summaries(&state),
+                                });
+                                let _ = evt_tx_task.send(Event::WorkspaceList {
+                                    items: workspace_summaries(&state),
+                                });
+                                for ws_id in added {
+                                    if let Some(ws) = state.workspaces.get(&ws_id) {
+                                        let _ = evt_tx_task.send(Event::WorkspaceGitUpdated {
+                                            id: ws_id,
+                                            git: ws.git.clone(),
+                                        });
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             let _ = evt_tx_task.send(Event::Error {
@@ -1830,6 +1873,90 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
     }
 }
 
+/// Best-effort path equality. Compares canonicalized forms when both resolve,
+/// otherwise falls back to a raw comparison. Guards against double-adding a
+/// worktree when git reports a symlink-resolved path that differs textually
+/// from a stored Workspace path.
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(ca), Ok(cb)) if ca == cb)
+}
+
+/// Discovers on-disk git worktrees for `repo_id` that are not yet tracked as
+/// Workspaces and registers them under their owning Repository. The primary
+/// worktree (the base repo itself) and worktrees already represented by a
+/// Workspace are skipped. Returns the ids of any newly added Workspaces (empty
+/// on error or when nothing new is found). Callers persist + emit events.
+async fn pickup_worktrees_for_repo(state: &mut AppState, repo_id: RepositoryId) -> Vec<WorkspaceId> {
+    let Some(repo) = state.repositories.get(&repo_id) else {
+        return Vec::new();
+    };
+    let repo_path = repo.path.clone();
+    let default_branch = repo.default_branch.clone();
+    let ssh = repo.ssh.clone();
+
+    let Ok(worktrees) = list_worktrees(&repo_path, ssh.as_ref()).await else {
+        return Vec::new();
+    };
+
+    let mut added = Vec::new();
+    for (wt_path, branch) in worktrees {
+        // Skip the primary worktree (the base repo itself, never worked in).
+        if same_path(&wt_path, &repo_path) {
+            continue;
+        }
+        // Skip worktrees whose directory has gone away (local only; over SSH we
+        // can't cheaply stat, so trust git's listing).
+        if ssh.is_none() && !wt_path.exists() {
+            continue;
+        }
+        // Skip worktrees already tracked as a Workspace.
+        if state.workspaces.values().any(|w| same_path(&w.path, &wt_path)) {
+            continue;
+        }
+
+        let id = Uuid::new_v4();
+        let initial_git = refresh_git(&wt_path, ssh.as_ref()).await.unwrap_or_default();
+        let branch = if branch.is_empty() {
+            initial_git.branch.clone()
+        } else {
+            Some(branch)
+        };
+        let name = branch
+            .clone()
+            .or_else(|| {
+                wt_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "worktree".to_string());
+
+        let ws = Workspace {
+            id,
+            name,
+            path: wt_path,
+            ssh: ssh.clone(),
+            git: initial_git,
+            attention: AttentionLevel::None,
+            terminals: Default::default(),
+            last_activity: Instant::now(),
+            repository_id: Some(repo_id),
+            branch,
+            base_branch: default_branch.clone(),
+            ready_for_review: false,
+            review_manual: false,
+            agent_idle: false,
+        };
+        state.ordered_ids.push(id);
+        state.workspaces.insert(id, ws);
+        added.push(id);
+    }
+    added
+}
+
 // ---------------------------------------------------------------------------
 // Repository registry — global (above sessions), persisted to repositories.json
 // ---------------------------------------------------------------------------
@@ -2298,5 +2425,81 @@ mod tests {
         let agent_cmd = default_terminal_cmd(protocol::TerminalKind::Agent);
         let shell_cmd = default_terminal_cmd(protocol::TerminalKind::Shell);
         assert_eq!(agent_cmd, shell_cmd);
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Auto-pickup registers on-disk worktrees as Workspaces, skips the primary
+    /// worktree (the base repo itself), and is idempotent (no duplicates).
+    #[tokio::test]
+    async fn pickup_worktrees_registers_and_dedupes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init"]);
+        git(dir, &["config", "user.email", "t@t.com"]);
+        git(dir, &["config", "user.name", "T"]);
+        std::fs::write(dir.join("readme.md"), "hi").unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-m", "init"]);
+
+        // Two worktrees off HEAD, on new branches.
+        let wt_a = dir.join(".conduit-worktrees").join("feat-a");
+        let wt_b = dir.join(".conduit-worktrees").join("feat-b");
+        create_worktree(dir, &wt_a, "feat-a", "HEAD", None)
+            .await
+            .unwrap();
+        create_worktree(dir, &wt_b, "feat-b", "HEAD", None)
+            .await
+            .unwrap();
+
+        let root = repo_root(dir, None).await.unwrap();
+        let mut state = AppState::default();
+        let repo_id = Uuid::new_v4();
+        state.ordered_repo_ids.push(repo_id);
+        state.repositories.insert(
+            repo_id,
+            Repository {
+                id: repo_id,
+                name: "demo".into(),
+                path: root,
+                default_branch: Some("main".into()),
+                worktree_root: None,
+                default_agent: None,
+                ssh: None,
+            },
+        );
+
+        let added = pickup_worktrees_for_repo(&mut state, repo_id).await;
+        assert_eq!(added.len(), 2, "should pick up exactly the two worktrees");
+
+        // Every new Workspace belongs to the repo; primary worktree is absent.
+        for id in &added {
+            let ws = state.workspaces.get(id).unwrap();
+            assert_eq!(ws.repository_id, Some(repo_id));
+            assert_eq!(ws.base_branch.as_deref(), Some("main"));
+            assert!(!same_path(&ws.path, &state.repositories[&repo_id].path));
+        }
+        let mut branches: Vec<String> = added
+            .iter()
+            .filter_map(|id| state.workspaces[id].branch.clone())
+            .collect();
+        branches.sort();
+        assert_eq!(branches, vec!["feat-a".to_string(), "feat-b".to_string()]);
+
+        // Running again finds nothing new (idempotent — no duplicates).
+        let again = pickup_worktrees_for_repo(&mut state, repo_id).await;
+        assert!(again.is_empty(), "re-scan should add nothing: {again:?}");
+        assert_eq!(state.workspaces.len(), 2);
     }
 }
