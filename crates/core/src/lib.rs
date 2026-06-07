@@ -1033,6 +1033,8 @@ pub fn spawn_core() -> CoreHandle {
                     kind,
                     tab_id,
                     cmd,
+                    cols,
+                    rows,
                 } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
                         let cwd = ws.path.clone();
@@ -1091,7 +1093,9 @@ pub fn spawn_core() -> CoreHandle {
                                 }
                             }
 
-                            match start_terminal(cwd, command, ssh_target.as_ref()).await {
+                            match start_terminal(cwd, command, ssh_target.as_ref(), cols, rows)
+                                .await
+                            {
                                 Ok((session, mut out_rx)) => {
                                     match kind {
                                         protocol::TerminalKind::Agent => {

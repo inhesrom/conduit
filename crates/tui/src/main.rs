@@ -1207,7 +1207,14 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         // and deliver any queued initial prompt once the agent has spun up.
         if let Some(id) = app.pending_open_created.take() {
             app.open_workspace(id);
-            start_workspace_tab_terminals(&backend.cmd_tx, id, &app.ws_tabs, &app.settings).await;
+            start_workspace_tab_terminals(
+                &backend.cmd_tx,
+                id,
+                &app.ws_tabs,
+                &app.settings,
+                app.terminal_content_size,
+            )
+            .await;
             let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
         }
         if let Some((id, prompt)) = app.pending_prompt_send.take() {
@@ -1248,6 +1255,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 kind: protocol::TerminalKind::Shell,
                 tab_id,
                 cmd: Vec::new(),
+                cols: app.terminal_content_size.0,
+                rows: app.terminal_content_size.1,
             });
         }
 
@@ -1262,7 +1271,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
         if let Route::Workspace { id } = app.route {
             if let Ok(size) = terminal.size() {
-                let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                // Size against the detail area (sidebar carved off), matching
+                // what `terminal.draw` actually renders the workspace into. Using
+                // the full terminal width here would tell the PTY it's wider than
+                // the visible pane and the child's output runs off the right edge.
+                let full = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                let area = detail_area(full, app.sidebar_visible);
                 let inner = ui::screens::workspace::terminal_content_rect(
                     area,
                     app.focus,
@@ -1272,23 +1286,46 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 let rows = inner.height.max(1);
                 let tid = app.active_tab_id();
                 let kind = app.active_tab_kind();
-                if app.has_terminal_tab(id, &tid) && app.should_send_resize(id, &tid, cols, rows) {
-                    app.resize_terminal_parser(id, &tid, cols, rows);
-                    let _ = backend.cmd_tx.try_send(Command::ResizeTerminal {
+                if app.has_terminal_tab(id, &tid) && app.needs_resize(id, &tid, cols, rows) {
+                    // Keep what we render (the emulator) and what the child sees
+                    // (the PTY) in lockstep. Only latch the new size and rebuild
+                    // the emulator once the resize command is actually enqueued.
+                    // If the channel is momentarily full we leave the size
+                    // unlatched so the next frame retries — otherwise the PTY can
+                    // stay wider than the pane we draw, and the child (e.g. the
+                    // Claude TUI) wraps to the stale width, spilling text off the
+                    // right edge until the terminal is restarted.
+                    let sent = backend.cmd_tx.try_send(Command::ResizeTerminal {
                         id,
                         kind,
-                        tab_id: Some(tid),
+                        tab_id: Some(tid.clone()),
                         cols,
                         rows,
                     });
+                    if sent.is_ok() {
+                        app.resize_terminal_parser(id, &tid, cols, rows);
+                        app.mark_resize_sent(id, &tid, cols, rows);
+                    }
                 }
             }
         }
 
         // Update cached grid height for scroll calculations.
         if let Ok(size) = terminal.size() {
-            let area = Rect::new(0, 0, size.width, size.height);
-            app.last_grid_height = ui::screens::home::grid_rect(area).height;
+            let full = Rect::new(0, 0, size.width, size.height);
+            app.last_grid_height = ui::screens::home::grid_rect(full).height;
+            // Track the terminal content size every frame (even on Home) so a
+            // newly-opened workspace can spawn its PTYs at the right size. Carve
+            // the sidebar off and use the focused-terminal layout (not the current
+            // focus) since that's the size the pane will have once the terminal is
+            // shown — so the child is born at its final width with no reflow.
+            let area = detail_area(full, app.sidebar_visible);
+            let content = ui::screens::workspace::terminal_content_rect(
+                area,
+                app::Focus::WsTerminal,
+                app.terminal_fullscreen(),
+            );
+            app.terminal_content_size = (content.width.max(1), content.height.max(1));
         }
 
         app.debug_fps_frame_count += 1;
@@ -1832,6 +1869,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                     id,
                                                     &app.ws_tabs,
                                                     &app.settings,
+                                                    app.terminal_content_size,
                                                 )
                                                 .await;
                                                 let _ = backend
@@ -1863,6 +1901,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 id,
                                                 &app.ws_tabs,
                                                 &app.settings,
+                                                app.terminal_content_size,
                                             )
                                             .await;
                                             app.enter_review_mode();
@@ -2352,6 +2391,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             target_id,
                                             &app.ws_tabs,
                                             &app.settings,
+                                            app.terminal_content_size,
                                         )
                                         .await;
                                         let _ = backend
@@ -2399,6 +2439,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         kind: TerminalKind::Agent,
                                         tab_id: Some("agent".to_string()),
                                         cmd: agent_cmd_continue(&app.settings),
+                                        cols: app.terminal_content_size.0,
+                                        rows: app.terminal_content_size.1,
                                     })
                                     .await;
                                 continue;
@@ -2763,6 +2805,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             kind: TerminalKind::Shell,
                                             tab_id: Some(app.active_tab_id()),
                                             cmd: Vec::new(),
+                                            cols: app.terminal_content_size.0,
+                                            rows: app.terminal_content_size.1,
                                         })
                                         .await;
                                 }
@@ -2795,6 +2839,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             kind: app.active_tab_kind(),
                                             tab_id: Some(app.active_tab_id()),
                                             cmd: Vec::new(),
+                                            cols: app.terminal_content_size.0,
+                                            rows: app.terminal_content_size.1,
                                         })
                                         .await;
                                     app.focus = app::Focus::WsTerminal;
@@ -2821,6 +2867,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             kind: app.active_tab_kind(),
                                             tab_id: Some(app.active_tab_id()),
                                             cmd: Vec::new(),
+                                            cols: app.terminal_content_size.0,
+                                            rows: app.terminal_content_size.1,
                                         })
                                         .await;
                                 }
@@ -3412,6 +3460,7 @@ async fn handle_mouse(
                                         id,
                                         &app.ws_tabs,
                                         &app.settings,
+                                        app.terminal_content_size,
                                     )
                                     .await;
                                     let _ = cmd_tx.send(Command::RefreshGit { id }).await;
@@ -3881,6 +3930,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn detail_area_carves_sidebar_when_visible() {
+        let full = Rect::new(0, 0, 120, 40);
+
+        // No sidebar: terminal sizing uses the whole width.
+        assert_eq!(detail_area(full, false), full);
+
+        // Sidebar visible: the detail area is offset and narrowed by the sidebar
+        // width, so PTYs are sized to the visible pane and don't overflow right.
+        let detail = detail_area(full, true);
+        assert_eq!(detail.x, ui::widgets::sidebar::WIDTH);
+        assert_eq!(detail.width, 120 - ui::widgets::sidebar::WIDTH);
+        assert_eq!(detail.height, 40);
+    }
+
+    #[test]
     fn normal_screen_terminals_keep_wheel_events_local() {
         assert!(!should_forward_mouse_event_to_terminal(
             MouseEventKind::ScrollUp,
@@ -4287,11 +4351,31 @@ fn open_url(url: &str) {
         .spawn();
 }
 
+/// Carves the persistent left sidebar (when visible) off the full terminal area,
+/// returning the detail area the Home/Workspace screen is actually rendered into.
+///
+/// Terminal sizing must be derived from this — not the full terminal width — or
+/// the embedded PTY is told it's wider than the pane we draw and the child's
+/// output (e.g. the Claude TUI) wraps past the right edge. This mirrors the carve
+/// in `terminal.draw` and the mouse handler.
+fn detail_area(full: Rect, sidebar_visible: bool) -> Rect {
+    if sidebar_visible {
+        Layout::horizontal([
+            Constraint::Length(ui::widgets::sidebar::WIDTH),
+            Constraint::Min(0),
+        ])
+        .split(full)[1]
+    } else {
+        full
+    }
+}
+
 async fn start_workspace_tab_terminals(
     cmd_tx: &tokio::sync::mpsc::Sender<Command>,
     id: protocol::WorkspaceId,
     tabs: &[app::TerminalTab],
     settings: &app::Settings,
+    size: (u16, u16),
 ) {
     for tab in tabs {
         let cmd = if tab.kind == protocol::TerminalKind::Agent {
@@ -4305,6 +4389,8 @@ async fn start_workspace_tab_terminals(
                 kind: tab.kind,
                 tab_id: Some(tab.id.clone()),
                 cmd,
+                cols: size.0,
+                rows: size.1,
             })
             .await;
     }

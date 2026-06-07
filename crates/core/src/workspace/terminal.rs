@@ -68,10 +68,16 @@ impl TerminalSession {
     }
 }
 
+/// Default PTY dimensions used when the caller doesn't yet know the real size.
+const DEFAULT_PTY_COLS: u16 = 120;
+const DEFAULT_PTY_ROWS: u16 = 24;
+
 pub async fn start_terminal(
     cwd: PathBuf,
     cmd: Vec<String>,
     ssh_target: Option<&SshTarget>,
+    cols: u16,
+    rows: u16,
 ) -> Result<(TerminalSession, mpsc::Receiver<TerminalOutput>)> {
     let effective_cmd = if let Some(target) = ssh_target {
         if cmd.is_empty() || is_default_shell_cmd(&cmd) {
@@ -87,10 +93,16 @@ pub async fn start_terminal(
         bail!("terminal command cannot be empty");
     };
 
+    // Birth the PTY at the caller's real size so the child process (e.g. the
+    // Claude TUI) lays out at the correct width immediately. A `0` from older
+    // callers falls back to the historical default and relies on a follow-up
+    // resize.
+    let cols = if cols == 0 { DEFAULT_PTY_COLS } else { cols };
+    let rows = if rows == 0 { DEFAULT_PTY_ROWS } else { rows };
     let pty_system = native_pty_system();
     let pty_pair = pty_system.openpty(PtySize {
-        rows: 24,
-        cols: 120,
+        rows,
+        cols,
         pixel_width: 0,
         pixel_height: 0,
     })?;
