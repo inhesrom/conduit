@@ -408,6 +408,7 @@ pub enum SidebarMode {
 pub enum QuickCreateField {
     Name,
     BaseBranch,
+    Agent,
     Prompt,
 }
 
@@ -421,6 +422,15 @@ pub struct QuickCreateState {
     pub expanded: bool,
     /// Empty = use the repository's default branch.
     pub base_branch: String,
+    /// Agent to launch: a configured profile name or a raw custom command.
+    /// Pre-filled with the repo/global default. While [`Self::agent_command_edit`]
+    /// is false this holds a profile name cycled with ←/→; once true it holds a
+    /// free-text launch command.
+    pub agent: String,
+    /// When true, the agent field is being edited as a raw launch command (the
+    /// selected agent was expanded with Enter). When false it's a cyclable
+    /// profile selection (`◂ name ▸`).
+    pub agent_command_edit: bool,
     pub initial_prompt: String,
     pub field: QuickCreateField,
 }
@@ -430,6 +440,7 @@ impl QuickCreateState {
         match self.field {
             QuickCreateField::Name => &mut self.name,
             QuickCreateField::BaseBranch => &mut self.base_branch,
+            QuickCreateField::Agent => &mut self.agent,
             QuickCreateField::Prompt => &mut self.initial_prompt,
         }
     }
@@ -439,9 +450,33 @@ impl QuickCreateState {
         self.field = match self.field {
             QuickCreateField::Name if self.expanded => QuickCreateField::BaseBranch,
             QuickCreateField::Name => QuickCreateField::Name,
-            QuickCreateField::BaseBranch => QuickCreateField::Prompt,
+            QuickCreateField::BaseBranch => QuickCreateField::Agent,
+            QuickCreateField::Agent => QuickCreateField::Prompt,
             QuickCreateField::Prompt => QuickCreateField::Name,
         };
+    }
+
+    /// Replace the agent field with the next/prev configured agent name,
+    /// wrapping around. Used by ←/→ while the Agent field is focused. If the
+    /// current value isn't a known agent (a custom command), starts at the end
+    /// (so → lands on the first agent, ← on the last).
+    pub fn cycle_agent(&mut self, agents: &[AgentProfile], delta: i32) {
+        if agents.is_empty() {
+            return;
+        }
+        let len = agents.len() as i32;
+        let cur = agents.iter().position(|a| a.name == self.agent);
+        let next = match cur {
+            Some(i) => (i as i32 + delta).rem_euclid(len),
+            None => {
+                if delta >= 0 {
+                    0
+                } else {
+                    len - 1
+                }
+            }
+        };
+        self.agent = agents[next as usize].name.clone();
     }
 }
 
@@ -759,18 +794,21 @@ impl TuiApp {
     }
 
     pub fn begin_quick_create(&mut self, repo_id: RepositoryId) {
-        let repo_name = self
-            .repositories
-            .iter()
-            .find(|r| r.id == repo_id)
-            .map(|r| r.name.clone())
-            .unwrap_or_default();
+        let repo = self.repositories.iter().find(|r| r.id == repo_id);
+        let repo_name = repo.map(|r| r.name.clone()).unwrap_or_default();
+        // Default to the repo's configured agent if set, else the global default.
+        let agent = repo
+            .and_then(|r| r.default_agent.clone())
+            .filter(|a| !a.trim().is_empty())
+            .unwrap_or_else(|| self.settings.default_agent.clone());
         self.quick_create = Some(QuickCreateState {
             repo_id,
             repo_name,
             name: String::new(),
             expanded: false,
             base_branch: String::new(),
+            agent,
+            agent_command_edit: false,
             initial_prompt: String::new(),
             field: QuickCreateField::Name,
         });
@@ -922,6 +960,15 @@ impl TuiApp {
             Route::Workspace { id } => Some(id),
             Route::Home => None,
         }
+    }
+
+    /// The agent chosen for a Workspace at creation (profile name or custom
+    /// command), if any. Used to launch the right agent in its terminal.
+    pub fn workspace_agent(&self, id: WorkspaceId) -> Option<String> {
+        self.workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .and_then(|w| w.agent.clone())
     }
 
     pub fn open_workspace(&mut self, id: WorkspaceId) {
@@ -2898,6 +2945,7 @@ mod tests {
             repository_id: None,
             base_branch: None,
             ready_for_review: false,
+            agent: None,
         }
     }
 
@@ -3811,6 +3859,49 @@ mod tests {
         app.home_selected = 2;
         app.set_workspaces(vec![]);
         assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn cycle_agent_wraps_through_configured_agents() {
+        let agents = default_agents(); // [claude, codex]
+        let mut qc = QuickCreateState {
+            repo_id: Uuid::new_v4(),
+            repo_name: "r".into(),
+            name: String::new(),
+            expanded: true,
+            base_branch: String::new(),
+            agent: "claude".into(),
+            agent_command_edit: false,
+            initial_prompt: String::new(),
+            field: QuickCreateField::Agent,
+        };
+        qc.cycle_agent(&agents, 1);
+        assert_eq!(qc.agent, "codex");
+        qc.cycle_agent(&agents, 1); // wraps back to the first
+        assert_eq!(qc.agent, "claude");
+        qc.cycle_agent(&agents, -1); // wraps to the last
+        assert_eq!(qc.agent, "codex");
+    }
+
+    #[test]
+    fn cycle_agent_from_custom_command_lands_on_an_agent() {
+        let agents = default_agents(); // [claude, codex]
+        let mut qc = QuickCreateState {
+            repo_id: Uuid::new_v4(),
+            repo_name: "r".into(),
+            name: String::new(),
+            expanded: true,
+            base_branch: String::new(),
+            agent: "my-custom-cmd".into(), // not a known profile
+            agent_command_edit: false,
+            initial_prompt: String::new(),
+            field: QuickCreateField::Agent,
+        };
+        qc.cycle_agent(&agents, 1); // forward from unknown → first
+        assert_eq!(qc.agent, "claude");
+        qc.agent = "my-custom-cmd".into();
+        qc.cycle_agent(&agents, -1); // backward from unknown → last
+        assert_eq!(qc.agent, "codex");
     }
 
     #[test]

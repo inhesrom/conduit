@@ -58,6 +58,10 @@ pub struct WorkspaceSummary {
     pub base_branch: Option<String>,
     #[serde(default)]
     pub ready_for_review: bool,
+    /// Agent chosen for this Workspace at creation: a configured profile name or
+    /// a raw custom command. `None` = use the client's default agent.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// Summary of a base Repository sent to clients for the sidebar tree.
@@ -304,6 +308,11 @@ pub enum Command {
         name: String,
         #[serde(default)]
         base_branch: Option<String>,
+        /// Agent to launch in this Workspace: a configured profile name or a raw
+        /// custom command. `None` = use the client's default agent. Opaque to
+        /// core; interpreted by the TUI when it starts the agent terminal.
+        #[serde(default)]
+        agent: Option<String>,
     },
     // --- Review ---
     SetReadyForReview {
@@ -521,6 +530,7 @@ mod tests {
             repository_id: Some(Uuid::new_v4()),
             base_branch: Some("main".into()),
             ready_for_review: true,
+            agent: Some("claude".into()),
         });
     }
 
