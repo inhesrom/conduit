@@ -27,6 +27,10 @@ const SELECT_BG_FOCUSED: Color = Color::Rgb(40, 44, 72);
 /// Background colour for the selected row/strip when the sidebar is unfocused.
 const SELECT_BG_UNFOCUSED: Color = Color::Rgb(32, 32, 40);
 
+/// Accent colour for the "you are here" bar marking the currently-open
+/// workspace — persistent regardless of where the keyboard cursor sits.
+const ACTIVE_ACCENT: Color = Color::Cyan;
+
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let focused = app.focus == Focus::Sidebar;
     let border_style = if focused {
@@ -137,21 +141,30 @@ fn workspace_line(app: &TuiApp, wid: protocol::WorkspaceId) -> Line<'static> {
     let Some(ws) = app.workspaces.iter().find(|w| w.id == wid) else {
         return Line::from("");
     };
+    let active = app.active_workspace_id() == Some(wid);
     let marker = match ws.attention {
         AttentionLevel::NeedsInput => Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
         AttentionLevel::Error => Span::styled("✖ ", Style::default().fg(Color::Red)),
         _ => Span::raw("  "),
     };
-    let name_style = if ws.agent_running {
+    // The currently-open workspace always carries a left accent bar + bold name
+    // so it stays visible no matter where the keyboard cursor or focus is. The
+    // bar replaces the 2-col indent, keeping every row's columns aligned.
+    let indent = if active {
+        Span::styled("▌ ", Style::default().fg(ACTIVE_ACCENT))
+    } else {
+        Span::raw("  ")
+    };
+    let name_style = if active {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else if ws.agent_running {
         Style::default().fg(Color::White)
     } else {
         Style::default().fg(Color::Gray)
     };
-    let mut spans = vec![
-        Span::raw("  "),
-        marker,
-        Span::styled(ws.name.clone(), name_style),
-    ];
+    let mut spans = vec![indent, marker, Span::styled(ws.name.clone(), name_style)];
     if ws.dirty_files > 0 {
         spans.push(Span::styled(
             format!(" ±{}", ws.dirty_files),
