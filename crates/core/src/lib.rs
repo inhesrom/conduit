@@ -1956,6 +1956,7 @@ async fn pickup_worktrees_for_repo(state: &mut AppState, repo_id: RepositoryId) 
             repository_id: Some(repo_id),
             branch,
             base_branch: default_branch.clone(),
+            agent: None,
             ready_for_review: false,
             review_manual: false,
             agent_idle: false,
