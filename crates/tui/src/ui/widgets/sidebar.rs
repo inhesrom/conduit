@@ -10,7 +10,7 @@ use ratatui::{
 
 use protocol::AttentionLevel;
 
-use crate::app::{Focus, SidebarRow, TuiApp};
+use crate::app::{Focus, SidebarMode, SidebarRow, TuiApp};
 
 /// Steady, non-flashing colour for the ready-for-review marker — deliberately
 /// distinct from the attention orange/red so the two never read the same.
@@ -21,6 +21,18 @@ pub const WIDTH: u16 = 30;
 
 /// Width of the collapsed vertical rail in columns (borders + a 3-col strip).
 pub const RAIL_WIDTH: u16 = 5;
+
+/// On-screen width of the sidebar for a given display mode. Single source of
+/// truth for the carve: rendering, mouse hit-testing, and embedded-terminal
+/// sizing all derive their sidebar width from here, so the PTY can never be
+/// told it is wider than the pane Conduit actually draws.
+pub fn width(mode: SidebarMode) -> u16 {
+    match mode {
+        SidebarMode::Expanded => WIDTH,
+        SidebarMode::Rail => RAIL_WIDTH,
+        SidebarMode::Hidden => 0,
+    }
+}
 
 /// Background colour for the selected row/strip when the sidebar is focused.
 const SELECT_BG_FOCUSED: Color = Color::Rgb(40, 44, 72);
