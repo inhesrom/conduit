@@ -250,6 +250,15 @@ pub enum Command {
         #[serde(default)]
         tab_id: Option<String>,
         cmd: Vec<String>,
+        /// Initial terminal width in columns. `0` (or absent, for older
+        /// clients) means "use the default" so the child process is born at the
+        /// right size instead of a hardcoded width it has to be resized away
+        /// from. Spawning at the wrong width briefly leaves full-screen TUIs
+        /// (e.g. Claude) wrapping to a stale column count.
+        #[serde(default)]
+        cols: u16,
+        #[serde(default)]
+        rows: u16,
     },
     StopTerminal {
         id: WorkspaceId,
@@ -718,12 +727,16 @@ mod tests {
                 kind: TerminalKind::Agent,
                 tab_id: None,
                 cmd: vec!["bash".into()],
+                cols: 100,
+                rows: 30,
             },
             Command::StartTerminal {
                 id,
                 kind: TerminalKind::Shell,
                 tab_id: Some("t".into()),
                 cmd: vec![],
+                cols: 0,
+                rows: 0,
             },
             Command::StopTerminal {
                 id,

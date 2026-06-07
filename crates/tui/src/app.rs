@@ -574,6 +574,11 @@ pub struct TuiApp {
     pub home_scroll_offset: u16,
     /// Cached grid height from last render, used for scroll calculations.
     pub last_grid_height: u16,
+    /// Cached terminal content area `(cols, rows)` from the last frame. Used to
+    /// birth new PTYs at the right size so freshly-spawned TUIs (e.g. Claude)
+    /// lay out at the correct width immediately instead of starting wide and
+    /// relying on a follow-up resize.
+    pub terminal_content_size: (u16, u16),
     /// Pending CPR (Cursor Position Report) responses to write back to PTY.
     pub pending_cpr_responses: Vec<(WorkspaceId, String, protocol::TerminalKind, Vec<u8>)>,
     /// Debug FPS display — computed once per second.
@@ -661,6 +666,7 @@ impl Default for TuiApp {
             home_expanded_tiles: HashSet::new(),
             home_scroll_offset: 0,
             last_grid_height: 0,
+            terminal_content_size: (120, 24),
             pending_cpr_responses: Vec::new(),
             debug_fps: 0,
             debug_fps_frame_count: 0,
@@ -1436,20 +1442,22 @@ impl TuiApp {
             .unwrap_or(false)
     }
 
-    pub fn should_send_resize(
-        &mut self,
-        id: WorkspaceId,
-        tab_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> bool {
+    /// Returns true when the terminal at `tab_id` still needs a resize command
+    /// for the given size. This is a pure check: it records nothing, so a size
+    /// is only latched as "sent" once it has actually been delivered to the PTY
+    /// (via [`Self::mark_resize_sent`]). Keeping the check and the latch separate
+    /// lets the caller retry a dropped resize instead of silently leaving the
+    /// PTY at a stale (often wider) size.
+    pub fn needs_resize(&self, id: WorkspaceId, tab_id: &str, cols: u16, rows: u16) -> bool {
         let key = (id, tab_id.to_string());
-        let next = (cols.max(1), rows.max(1));
-        if self.last_resize_sent.get(&key).copied() == Some(next) {
-            return false;
-        }
-        self.last_resize_sent.insert(key, next);
-        true
+        self.last_resize_sent.get(&key).copied() != Some((cols.max(1), rows.max(1)))
+    }
+
+    /// Records that a resize to `cols`x`rows` has been delivered to the PTY for
+    /// `tab_id`, so it isn't resent until the rendered size changes again.
+    pub fn mark_resize_sent(&mut self, id: WorkspaceId, tab_id: &str, cols: u16, rows: u16) {
+        self.last_resize_sent
+            .insert((id, tab_id.to_string()), (cols.max(1), rows.max(1)));
     }
 
     pub fn terminal_lines(&self, id: WorkspaceId, tab_id: &str) -> Vec<Line<'static>> {
@@ -2964,6 +2972,28 @@ mod tests {
             argv: argv.iter().map(|s| (*s).to_string()).collect(),
             cwd: cwd.to_string(),
         }
+    }
+
+    #[test]
+    fn resize_only_latches_once_marked_sent() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+
+        // A never-before-sized terminal always needs a resize.
+        assert!(app.needs_resize(id, "agent", 80, 24));
+
+        // Simulating a *dropped* resize command (parser rebuilt or not, but the
+        // PTY command never delivered): without marking it sent, the next frame
+        // must retry rather than leave the PTY at a stale width.
+        assert!(app.needs_resize(id, "agent", 80, 24));
+
+        // Once the resize is actually delivered we latch it and stop resending.
+        app.mark_resize_sent(id, "agent", 80, 24);
+        assert!(!app.needs_resize(id, "agent", 80, 24));
+
+        // A new size needs sending again; an unrelated tab is independent.
+        assert!(app.needs_resize(id, "agent", 100, 24));
+        assert!(app.needs_resize(id, "shell", 80, 24));
     }
 
     #[test]
