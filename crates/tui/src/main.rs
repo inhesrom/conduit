@@ -1276,7 +1276,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 // the full terminal width here would tell the PTY it's wider than
                 // the visible pane and the child's output runs off the right edge.
                 let full = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-                let area = detail_area(full, app.sidebar_visible());
+                let area = detail_area(full, app.sidebar_mode);
                 let inner = ui::screens::workspace::terminal_content_rect(
                     area,
                     app.focus,
@@ -1284,27 +1284,35 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 );
                 let cols = inner.width.max(1);
                 let rows = inner.height.max(1);
-                let tid = app.active_tab_id();
-                let kind = app.active_tab_kind();
-                if app.has_terminal_tab(id, &tid) && app.needs_resize(id, &tid, cols, rows) {
-                    // Keep what we render (the emulator) and what the child sees
-                    // (the PTY) in lockstep. Only latch the new size and rebuild
-                    // the emulator once the resize command is actually enqueued.
-                    // If the channel is momentarily full we leave the size
-                    // unlatched so the next frame retries — otherwise the PTY can
-                    // stay wider than the pane we draw, and the child (e.g. the
-                    // Claude TUI) wraps to the stale width, spilling text off the
-                    // right edge until the terminal is restarted.
-                    let sent = backend.cmd_tx.try_send(Command::ResizeTerminal {
-                        id,
-                        kind,
-                        tab_id: Some(tid.clone()),
-                        cols,
-                        rows,
-                    });
-                    if sent.is_ok() {
-                        app.resize_terminal_parser(id, &tid, cols, rows);
-                        app.mark_resize_sent(id, &tid, cols, rows);
+                // Resize every tab of the open workspace, not just the active
+                // one: all tabs render into the same pane geometry, so a
+                // background tab left at its (possibly wider) birth size would
+                // spill off the right edge the instant it is shown. Snapshot the
+                // tab list first so the immutable borrow of `app` is released
+                // before the mutable resize-parser/latch calls below.
+                let tabs: Vec<(String, TerminalKind)> =
+                    app.ws_tabs.iter().map(|t| (t.id.clone(), t.kind)).collect();
+                for (tid, kind) in tabs {
+                    if app.has_terminal_tab(id, &tid) && app.needs_resize(id, &tid, cols, rows) {
+                        // Keep what we render (the emulator) and what the child
+                        // sees (the PTY) in lockstep. Only latch the new size and
+                        // rebuild the emulator once the resize command is actually
+                        // enqueued. If the channel is momentarily full we leave
+                        // the size unlatched so the next frame retries — otherwise
+                        // the PTY can stay wider than the pane we draw, and the
+                        // child (e.g. the Claude TUI) wraps to the stale width,
+                        // spilling text off the right edge until it is restarted.
+                        let sent = backend.cmd_tx.try_send(Command::ResizeTerminal {
+                            id,
+                            kind,
+                            tab_id: Some(tid.clone()),
+                            cols,
+                            rows,
+                        });
+                        if sent.is_ok() {
+                            app.resize_terminal_parser(id, &tid, cols, rows);
+                            app.mark_resize_sent(id, &tid, cols, rows);
+                        }
                     }
                 }
             }
@@ -1319,7 +1327,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             // the sidebar off and use the focused-terminal layout (not the current
             // focus) since that's the size the pane will have once the terminal is
             // shown — so the child is born at its final width with no reflow.
-            let area = detail_area(full, app.sidebar_visible());
+            let area = detail_area(full, app.sidebar_mode);
             let content = ui::screens::workspace::terminal_content_rect(
                 area,
                 app::Focus::WsTerminal,
@@ -1341,11 +1349,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             // Persistent sidebar on the left + detail pane on the right. The
             // sidebar has three display modes (Expanded tree / vertical Rail /
             // Hidden); Rail mode can also float a workspace pop-out.
-            let sidebar_w = match app.sidebar_mode {
-                app::SidebarMode::Expanded => ui::widgets::sidebar::WIDTH,
-                app::SidebarMode::Rail => ui::widgets::sidebar::RAIL_WIDTH,
-                app::SidebarMode::Hidden => 0,
-            };
+            let sidebar_w = ui::widgets::sidebar::width(app.sidebar_mode);
             let (sidebar_rect, detail_area) = if sidebar_w > 0 {
                 let chunks =
                     Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(0)])
@@ -3565,15 +3569,15 @@ async fn handle_mouse(
     // Mirror the draw split: `area` is the detail pane (offset right by the
     // sidebar), `sidebar_rect` is the tree on the left. Hit-tests below run
     // against `area`, so detail clicks line up with what's rendered.
-    let (sidebar_rect, area) = if app.sidebar_visible() {
-        let w = match app.sidebar_mode {
-            app::SidebarMode::Rail => ui::widgets::sidebar::RAIL_WIDTH,
-            _ => ui::widgets::sidebar::WIDTH,
-        };
-        let chunks = Layout::horizontal([Constraint::Length(w), Constraint::Min(0)]).split(full);
-        (Some(chunks[0]), chunks[1])
-    } else {
-        (None, full)
+    let (sidebar_rect, area) = {
+        let w = ui::widgets::sidebar::width(app.sidebar_mode);
+        if w > 0 {
+            let chunks =
+                Layout::horizontal([Constraint::Length(w), Constraint::Min(0)]).split(full);
+            (Some(chunks[0]), chunks[1])
+        } else {
+            (None, full)
+        }
     };
 
     // The Rail's workspace pop-out floats over the detail pane, so it gets first
@@ -4128,18 +4132,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detail_area_carves_sidebar_when_visible() {
+    fn detail_area_matches_sidebar_width_per_mode() {
+        use app::SidebarMode::*;
         let full = Rect::new(0, 0, 120, 40);
 
-        // No sidebar: terminal sizing uses the whole width.
-        assert_eq!(detail_area(full, false), full);
+        // Hidden: terminal sizing uses the whole width.
+        assert_eq!(detail_area(full, Hidden), full);
 
-        // Sidebar visible: the detail area is offset and narrowed by the sidebar
-        // width, so PTYs are sized to the visible pane and don't overflow right.
-        let detail = detail_area(full, true);
-        assert_eq!(detail.x, ui::widgets::sidebar::WIDTH);
-        assert_eq!(detail.width, 120 - ui::widgets::sidebar::WIDTH);
-        assert_eq!(detail.height, 40);
+        // Expanded / Rail: the detail area is offset and narrowed by exactly the
+        // sidebar width the renderer draws, so the PTY is sized to the visible
+        // pane and never told it is wider than what's on screen.
+        for mode in [Expanded, Rail] {
+            let w = ui::widgets::sidebar::width(mode);
+            let detail = detail_area(full, mode);
+            assert_eq!(detail.x, w, "mode {mode:?} x");
+            assert_eq!(detail.width, 120 - w, "mode {mode:?} width");
+            assert_eq!(detail.height, 40);
+        }
+    }
+
+    #[test]
+    fn terminal_sizing_stays_within_drawn_pane_in_every_mode() {
+        use app::SidebarMode::*;
+        let full = Rect::new(0, 0, 200, 50);
+        for mode in [Expanded, Rail, Hidden] {
+            // Sizing path: the geometry the resize loop sends to the PTY.
+            let area = detail_area(full, mode);
+            let content = ui::screens::workspace::terminal_content_rect(
+                area,
+                app::Focus::WsTerminal,
+                false,
+            );
+            // Draw path: the carve `terminal.draw` actually renders the workspace
+            // into. These must be identical so the PTY can never be told it is
+            // wider than the pane on screen.
+            let sidebar_w = ui::widgets::sidebar::width(mode);
+            let drawn = if sidebar_w > 0 {
+                Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(0)]).split(full)
+                    [1]
+            } else {
+                full
+            };
+            assert_eq!(area, drawn, "sizing carve must match drawn carve in {mode:?}");
+            assert!(content.right() <= drawn.right(), "{mode:?} overflows right edge");
+            assert!(content.x >= drawn.x, "{mode:?} starts left of the pane");
+        }
     }
 
     #[test]
@@ -4556,13 +4593,10 @@ fn open_url(url: &str) {
 /// the embedded PTY is told it's wider than the pane we draw and the child's
 /// output (e.g. the Claude TUI) wraps past the right edge. This mirrors the carve
 /// in `terminal.draw` and the mouse handler.
-fn detail_area(full: Rect, sidebar_visible: bool) -> Rect {
-    if sidebar_visible {
-        Layout::horizontal([
-            Constraint::Length(ui::widgets::sidebar::WIDTH),
-            Constraint::Min(0),
-        ])
-        .split(full)[1]
+fn detail_area(full: Rect, sidebar_mode: app::SidebarMode) -> Rect {
+    let w = ui::widgets::sidebar::width(sidebar_mode);
+    if w > 0 {
+        Layout::horizontal([Constraint::Length(w), Constraint::Min(0)]).split(full)[1]
     } else {
         full
     }

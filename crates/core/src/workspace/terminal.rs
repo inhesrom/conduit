@@ -115,6 +115,13 @@ pub async fn start_terminal(
     builder.env("COLORTERM", "truecolor");
     builder.env_remove("TERM_PROGRAM");
     builder.env_remove("TERM_PROGRAM_VERSION");
+    // The child inherits Conduit's environment, which can carry COLUMNS/LINES
+    // from the outer terminal Conduit was launched in. A TUI that honours those
+    // would lay out at the outer-terminal width instead of this PTY's width and
+    // run off the right edge of the pane. Drop them so the child sizes itself
+    // solely from the PTY ioctl (TIOCGWINSZ), which we keep matched to the pane.
+    builder.env_remove("COLUMNS");
+    builder.env_remove("LINES");
     if ssh_target.is_none() {
         builder.cwd(cwd);
     }
