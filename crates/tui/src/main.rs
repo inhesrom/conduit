@@ -1301,22 +1301,38 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         let mut pending_clipboard_text: Option<String> = None;
         terminal.draw(|frame| {
             let full = frame.area();
-            // Persistent sidebar on the left + detail pane on the right.
-            let detail_area = if app.sidebar_visible {
-                let chunks = Layout::horizontal([
-                    Constraint::Length(ui::widgets::sidebar::WIDTH),
-                    Constraint::Min(0),
-                ])
-                .split(full);
-                ui::widgets::sidebar::render(frame, chunks[0], &app);
-                chunks[1]
-            } else {
-                full
+            // Persistent sidebar on the left + detail pane on the right. The
+            // sidebar has three display modes (Expanded tree / vertical Rail /
+            // Hidden); Rail mode can also float a workspace pop-out.
+            let sidebar_w = match app.sidebar_mode {
+                app::SidebarMode::Expanded => ui::widgets::sidebar::WIDTH,
+                app::SidebarMode::Rail => ui::widgets::sidebar::RAIL_WIDTH,
+                app::SidebarMode::Hidden => 0,
             };
+            let (sidebar_rect, detail_area) = if sidebar_w > 0 {
+                let chunks =
+                    Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(0)])
+                        .split(full);
+                (Some(chunks[0]), chunks[1])
+            } else {
+                (None, full)
+            };
+            if let Some(sr) = sidebar_rect {
+                if app.sidebar_mode == app::SidebarMode::Rail {
+                    ui::widgets::sidebar::render_rail(frame, sr, &app);
+                } else {
+                    ui::widgets::sidebar::render(frame, sr, &app);
+                }
+            }
             match app.route {
                 Route::Home => ui::screens::home::render(frame, detail_area, &app),
-                Route::Workspace { .. } => {
-                    ui::screens::workspace::render(frame, detail_area, &app)
+                Route::Workspace { .. } => ui::screens::workspace::render(frame, detail_area, &app),
+            }
+            // The Rail's workspace pop-out floats over the detail pane, so it is
+            // drawn after the route content.
+            if app.sidebar_mode == app::SidebarMode::Rail {
+                if let Some(sr) = sidebar_rect {
+                    ui::widgets::sidebar::render_popout(frame, sr, full, &app);
                 }
             }
             // Extract selected text from the rendered buffer before applying highlights.
@@ -1775,57 +1791,26 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     _ => {}
                                 }
                             } else {
-                                // Sidebar (Repository -> Workspace tree) is focused.
+                                // Sidebar is focused. Behaviour depends on display mode.
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                                match key.code {
-                                    KeyCode::Char('b') if ctrl => {
-                                        app.sidebar_visible = !app.sidebar_visible;
-                                    }
-                                    // `n` (or ctrl+n) — new workspace under the selected repo.
-                                    KeyCode::Char('n') => match app.sidebar_context_repo() {
-                                        Some(repo_id) => app.begin_quick_create(repo_id),
-                                        None => {
-                                            app.git_action_message = Some((
-                                                "No repositories — press N to add one first"
-                                                    .to_string(),
-                                                Instant::now(),
-                                            ));
+                                if app.sidebar_mode == app::SidebarMode::Rail
+                                    && app.sidebar_popout.is_some()
+                                {
+                                    // Pop-out open: navigate/open the repo's workspaces.
+                                    match key.code {
+                                        KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+                                        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
+                                            app.close_sidebar_popout()
                                         }
-                                    },
-                                    // `N` — add (register) a new repository.
-                                    KeyCode::Char('N') => {
-                                        let cwd = std::env::current_dir()
-                                            .unwrap_or_else(|_| PathBuf::from("."))
-                                            .display()
-                                            .to_string();
-                                        app.begin_add_workspace(cwd);
-                                    }
-                                    KeyCode::Down | KeyCode::Char('j') => {
-                                        app.move_sidebar_selection(1)
-                                    }
-                                    KeyCode::Up | KeyCode::Char('k') => {
-                                        app.move_sidebar_selection(-1)
-                                    }
-                                    KeyCode::Left | KeyCode::Char('h') => {
-                                        if let Some(app::SidebarRow::Repo(id)) =
-                                            app.selected_sidebar_row()
-                                        {
-                                            app.collapsed_repos.insert(id);
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            app.move_popout_selection(1)
                                         }
-                                    }
-                                    KeyCode::Right => {
-                                        if let Some(app::SidebarRow::Repo(id)) =
-                                            app.selected_sidebar_row()
-                                        {
-                                            app.collapsed_repos.remove(&id);
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.move_popout_selection(-1)
                                         }
-                                    }
-                                    KeyCode::Enter | KeyCode::Char('l') => {
-                                        match app.selected_sidebar_row() {
-                                            Some(app::SidebarRow::Repo(_)) => {
-                                                app.toggle_collapse_selected();
-                                            }
-                                            Some(app::SidebarRow::Workspace(id)) => {
+                                        KeyCode::Enter | KeyCode::Char('l') => {
+                                            if let Some(id) = app.selected_popout_workspace_id() {
+                                                app.close_sidebar_popout();
                                                 app.open_workspace(id);
                                                 start_workspace_tab_terminals(
                                                     &backend.cmd_tx,
@@ -1839,69 +1824,173 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                     .send(Command::RefreshGit { id })
                                                     .await;
                                             }
-                                            None => {}
                                         }
+                                        _ => {}
                                     }
-                                    KeyCode::Char('a') => {
-                                        let cwd = std::env::current_dir()
-                                            .unwrap_or_else(|_| PathBuf::from("."))
-                                            .display()
-                                            .to_string();
-                                        app.begin_add_workspace(cwd);
-                                    }
-                                    KeyCode::Char('A') => app.begin_add_ssh_workspace(),
-                                    KeyCode::Char('D') => {
-                                        if let Some(id) = app.selected_sidebar_workspace_id() {
-                                            app.pending_delete_workspace = Some(id);
+                                } else if app.sidebar_mode == app::SidebarMode::Rail {
+                                    // Rail, no pop-out: navigate repos; Enter opens the pop-out.
+                                    match key.code {
+                                        KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            app.move_rail_selection(1)
                                         }
-                                    }
-                                    KeyCode::Char('R') => {
-                                        if let Some(id) = app.selected_sidebar_workspace_id() {
-                                            app.open_workspace(id);
-                                            start_workspace_tab_terminals(
-                                                &backend.cmd_tx,
-                                                id,
-                                                &app.ws_tabs,
-                                                &app.settings,
-                                            )
-                                            .await;
-                                            app.enter_review_mode();
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::LoadBranchDiff { id })
-                                                .await;
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.move_rail_selection(-1)
                                         }
+                                        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                                            app.toggle_sidebar_popout()
+                                        }
+                                        KeyCode::Char('n') => match app.selected_rail_repo() {
+                                            Some(repo_id) => app.begin_quick_create(repo_id),
+                                            None => {
+                                                app.git_action_message = Some((
+                                                    "No repositories — press N to add one first"
+                                                        .to_string(),
+                                                    Instant::now(),
+                                                ));
+                                            }
+                                        },
+                                        KeyCode::Char('N') => {
+                                            let cwd = std::env::current_dir()
+                                                .unwrap_or_else(|_| PathBuf::from("."))
+                                                .display()
+                                                .to_string();
+                                            app.begin_add_workspace(cwd);
+                                        }
+                                        KeyCode::Char('f') => {
+                                            app.sidebar_review_filter = !app.sidebar_review_filter;
+                                        }
+                                        KeyCode::Char('S') => app.open_settings(),
+                                        _ => {}
                                     }
-                                    KeyCode::Char(' ') => {
-                                        if let Some(id) = app.selected_sidebar_workspace_id() {
-                                            let ready = app
-                                                .workspaces
-                                                .iter()
-                                                .find(|w| w.id == id)
-                                                .map(|w| w.ready_for_review)
-                                                .unwrap_or(false);
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::SetReadyForReview {
+                                } else {
+                                    // Sidebar (Repository -> Workspace tree) is focused.
+                                    match key.code {
+                                        KeyCode::Char('b') if ctrl => {
+                                            app.cycle_sidebar_mode();
+                                        }
+                                        // `n` (or ctrl+n) — new workspace under the selected repo.
+                                        KeyCode::Char('n') => match app.sidebar_context_repo() {
+                                            Some(repo_id) => app.begin_quick_create(repo_id),
+                                            None => {
+                                                app.git_action_message = Some((
+                                                    "No repositories — press N to add one first"
+                                                        .to_string(),
+                                                    Instant::now(),
+                                                ));
+                                            }
+                                        },
+                                        // `N` — add (register) a new repository.
+                                        KeyCode::Char('N') => {
+                                            let cwd = std::env::current_dir()
+                                                .unwrap_or_else(|_| PathBuf::from("."))
+                                                .display()
+                                                .to_string();
+                                            app.begin_add_workspace(cwd);
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            app.move_sidebar_selection(1)
+                                        }
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.move_sidebar_selection(-1)
+                                        }
+                                        KeyCode::Left | KeyCode::Char('h') => {
+                                            if let Some(app::SidebarRow::Repo(id)) =
+                                                app.selected_sidebar_row()
+                                            {
+                                                app.collapsed_repos.insert(id);
+                                            }
+                                        }
+                                        KeyCode::Right => {
+                                            if let Some(app::SidebarRow::Repo(id)) =
+                                                app.selected_sidebar_row()
+                                            {
+                                                app.collapsed_repos.remove(&id);
+                                            }
+                                        }
+                                        KeyCode::Enter | KeyCode::Char('l') => {
+                                            match app.selected_sidebar_row() {
+                                                Some(app::SidebarRow::Repo(_)) => {
+                                                    app.toggle_collapse_selected();
+                                                }
+                                                Some(app::SidebarRow::Workspace(id)) => {
+                                                    app.open_workspace(id);
+                                                    start_workspace_tab_terminals(
+                                                        &backend.cmd_tx,
+                                                        id,
+                                                        &app.ws_tabs,
+                                                        &app.settings,
+                                                    )
+                                                    .await;
+                                                    let _ = backend
+                                                        .cmd_tx
+                                                        .send(Command::RefreshGit { id })
+                                                        .await;
+                                                }
+                                                None => {}
+                                            }
+                                        }
+                                        KeyCode::Char('a') => {
+                                            let cwd = std::env::current_dir()
+                                                .unwrap_or_else(|_| PathBuf::from("."))
+                                                .display()
+                                                .to_string();
+                                            app.begin_add_workspace(cwd);
+                                        }
+                                        KeyCode::Char('A') => app.begin_add_ssh_workspace(),
+                                        KeyCode::Char('D') => {
+                                            if let Some(id) = app.selected_sidebar_workspace_id() {
+                                                app.pending_delete_workspace = Some(id);
+                                            }
+                                        }
+                                        KeyCode::Char('R') => {
+                                            if let Some(id) = app.selected_sidebar_workspace_id() {
+                                                app.open_workspace(id);
+                                                start_workspace_tab_terminals(
+                                                    &backend.cmd_tx,
                                                     id,
-                                                    ready: !ready,
-                                                })
+                                                    &app.ws_tabs,
+                                                    &app.settings,
+                                                )
                                                 .await;
+                                                app.enter_review_mode();
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::LoadBranchDiff { id })
+                                                    .await;
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char('f') => {
-                                        app.sidebar_review_filter = !app.sidebar_review_filter;
-                                    }
-                                    KeyCode::Char('g') => {
-                                        if let Some(id) = app.selected_sidebar_workspace_id() {
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::RefreshGit { id })
-                                                .await;
+                                        KeyCode::Char(' ') => {
+                                            if let Some(id) = app.selected_sidebar_workspace_id() {
+                                                let ready = app
+                                                    .workspaces
+                                                    .iter()
+                                                    .find(|w| w.id == id)
+                                                    .map(|w| w.ready_for_review)
+                                                    .unwrap_or(false);
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::SetReadyForReview {
+                                                        id,
+                                                        ready: !ready,
+                                                    })
+                                                    .await;
+                                            }
                                         }
+                                        KeyCode::Char('f') => {
+                                            app.sidebar_review_filter = !app.sidebar_review_filter;
+                                        }
+                                        KeyCode::Char('g') => {
+                                            if let Some(id) = app.selected_sidebar_workspace_id() {
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::RefreshGit { id })
+                                                    .await;
+                                            }
+                                        }
+                                        KeyCode::Char('S') => app.open_settings(),
+                                        _ => {}
                                     }
-                                    KeyCode::Char('S') => app.open_settings(),
-                                    _ => {}
                                 }
                             }
                         }
@@ -3379,25 +3468,64 @@ async fn handle_mouse(
     // Mirror the draw split: `area` is the detail pane (offset right by the
     // sidebar), `sidebar_rect` is the tree on the left. Hit-tests below run
     // against `area`, so detail clicks line up with what's rendered.
-    let (sidebar_rect, area) = if app.sidebar_visible {
-        let chunks = Layout::horizontal([
-            Constraint::Length(ui::widgets::sidebar::WIDTH),
-            Constraint::Min(0),
-        ])
-        .split(full);
+    let (sidebar_rect, area) = if app.sidebar_visible() {
+        let w = match app.sidebar_mode {
+            app::SidebarMode::Rail => ui::widgets::sidebar::RAIL_WIDTH,
+            _ => ui::widgets::sidebar::WIDTH,
+        };
+        let chunks = Layout::horizontal([Constraint::Length(w), Constraint::Min(0)]).split(full);
         (Some(chunks[0]), chunks[1])
     } else {
         (None, full)
     };
 
-    // The sidebar tree is clickable from any route and regardless of focus
-    // (including while the terminal is focused or in passthrough). Handle it
-    // before anything else so a click on the tree always lands here.
+    // The Rail's workspace pop-out floats over the detail pane, so it gets first
+    // crack at clicks: inside it selects+opens a workspace; a click elsewhere
+    // (outside the rail) dismisses it.
+    if app.sidebar_mode == app::SidebarMode::Rail && app.sidebar_popout.is_some() {
+        if let (Some(sr), MouseEventKind::Down(MouseButton::Left)) = (sidebar_rect, mouse.kind) {
+            if let Some(idx) =
+                ui::widgets::sidebar::popout_row_index_at(sr, full, app, mouse.column, mouse.row)
+            {
+                app.popout_selected = idx;
+                if let Some(id) = app.selected_popout_workspace_id() {
+                    app.close_sidebar_popout();
+                    if Some(id) != app.active_workspace_id() {
+                        app.open_workspace(id);
+                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, &app.settings)
+                            .await;
+                        let _ = cmd_tx.send(Command::RefreshGit { id }).await;
+                        let _ = cmd_tx.send(Command::ClearAttention { id }).await;
+                    }
+                }
+                return;
+            }
+            if !point_in_rect(sr, mouse.column, mouse.row) {
+                app.close_sidebar_popout();
+                return;
+            }
+        }
+    }
+
+    // The sidebar is clickable from any route and regardless of focus (including
+    // while the terminal is focused or in passthrough). Handle it before
+    // anything else so a click on the sidebar always lands here.
     if let Some(sr) = sidebar_rect {
         if point_in_rect(sr, mouse.column, mouse.row) {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some(idx) =
+                    if app.sidebar_mode == app::SidebarMode::Rail {
+                        if let Some(ri) = ui::widgets::sidebar::rail_repo_index_at(
+                            sr,
+                            app,
+                            mouse.column,
+                            mouse.row,
+                        ) {
+                            app.rail_selected = ri;
+                            app.focus = app::Focus::Sidebar;
+                            app.open_sidebar_popout();
+                        }
+                    } else if let Some(idx) =
                         ui::widgets::sidebar::row_index_at(sr, app, mouse.column, mouse.row)
                     {
                         app.sidebar_selected = idx;
@@ -3423,11 +3551,19 @@ async fn handle_mouse(
                     return;
                 }
                 MouseEventKind::ScrollUp => {
-                    app.move_sidebar_selection(-1);
+                    if app.sidebar_mode == app::SidebarMode::Rail {
+                        app.move_rail_selection(-1);
+                    } else {
+                        app.move_sidebar_selection(-1);
+                    }
                     return;
                 }
                 MouseEventKind::ScrollDown => {
-                    app.move_sidebar_selection(1);
+                    if app.sidebar_mode == app::SidebarMode::Rail {
+                        app.move_rail_selection(1);
+                    } else {
+                        app.move_sidebar_selection(1);
+                    }
                     return;
                 }
                 // Drag / button-up fall through to the global selection handlers

@@ -115,10 +115,55 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key("Esc"),
                     desc(" done"),
                 ]
+            } else if app.sidebar_mode == crate::app::SidebarMode::Rail
+                && app.sidebar_popout.is_some()
+            {
+                vec![
+                    key("j/k"),
+                    desc(" navigate"),
+                    gap(),
+                    key("Enter"),
+                    desc(" open"),
+                    gap(),
+                    key("Esc"),
+                    desc(" close"),
+                    gap(),
+                    key("^B"),
+                    desc(" sidebar"),
+                ]
+            } else if app.sidebar_mode == crate::app::SidebarMode::Rail {
+                vec![
+                    key("j/k"),
+                    desc(" repos"),
+                    gap(),
+                    key("Enter"),
+                    desc(" workspaces"),
+                    gap(),
+                    key("^B"),
+                    desc(" sidebar"),
+                    gap(),
+                    key("n"),
+                    desc(" new"),
+                    gap(),
+                    key("N"),
+                    desc(" repo"),
+                    gap(),
+                    key("f"),
+                    desc(" filter"),
+                    gap(),
+                    key("S"),
+                    desc(" settings"),
+                    gap(),
+                    key("q"),
+                    desc(" quit"),
+                ]
             } else {
                 vec![
                     key("Enter"),
                     desc(" open"),
+                    gap(),
+                    key("^B"),
+                    desc(" collapse"),
                     gap(),
                     key("n"),
                     desc(" new"),

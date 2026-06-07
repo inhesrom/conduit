@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -18,6 +18,14 @@ pub const REVIEW: Color = Color::Magenta;
 
 /// Default sidebar width in columns.
 pub const WIDTH: u16 = 30;
+
+/// Width of the collapsed vertical rail in columns (borders + a 3-col strip).
+pub const RAIL_WIDTH: u16 = 5;
+
+/// Background colour for the selected row/strip when the sidebar is focused.
+const SELECT_BG_FOCUSED: Color = Color::Rgb(40, 44, 72);
+/// Background colour for the selected row/strip when the sidebar is unfocused.
+const SELECT_BG_UNFOCUSED: Color = Color::Rgb(32, 32, 40);
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let focused = app.focus == Focus::Sidebar;
@@ -64,9 +72,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         };
         if i == app.sidebar_selected {
             let bg = if focused {
-                Color::Rgb(40, 44, 72)
+                SELECT_BG_FOCUSED
             } else {
-                Color::Rgb(32, 32, 40)
+                SELECT_BG_UNFOCUSED
             };
             line = line.style(Style::default().bg(bg));
         }
@@ -105,7 +113,10 @@ fn repo_line(app: &TuiApp, id: protocol::RepositoryId) -> Line<'static> {
     let caret = if collapsed { "▸" } else { "▾" };
     let mut spans = vec![
         Span::styled(format!("{caret} "), Style::default().fg(Color::Gray)),
-        Span::styled(repo.name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            repo.name.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
     ];
     if let Some(branch) = &repo.default_branch {
         spans.push(Span::styled(
@@ -136,7 +147,11 @@ fn workspace_line(app: &TuiApp, wid: protocol::WorkspaceId) -> Line<'static> {
     } else {
         Style::default().fg(Color::Gray)
     };
-    let mut spans = vec![Span::raw("  "), marker, Span::styled(ws.name.clone(), name_style)];
+    let mut spans = vec![
+        Span::raw("  "),
+        marker,
+        Span::styled(ws.name.clone(), name_style),
+    ];
     if ws.dirty_files > 0 {
         spans.push(Span::styled(
             format!(" ±{}", ws.dirty_files),
@@ -147,4 +162,226 @@ fn workspace_line(app: &TuiApp, wid: protocol::WorkspaceId) -> Line<'static> {
         spans.push(Span::styled("  ◆", Style::default().fg(REVIEW)));
     }
     Line::from(spans)
+}
+
+// ---------------------------------------------------------------------------
+// Collapsed vertical rail + workspace pop-out
+// ---------------------------------------------------------------------------
+
+/// Builds a single rail row: `ch` centred in a `width`-wide strip, padded with
+/// spaces so the (optional) background fills the whole strip.
+fn rail_char_line(ch: char, width: u16, style: Style) -> Line<'static> {
+    let w = width.max(1) as usize;
+    let left = w.saturating_sub(1) / 2;
+    let right = w.saturating_sub(1).saturating_sub(left);
+    Line::from(vec![
+        Span::styled(" ".repeat(left), style),
+        Span::styled(ch.to_string(), style),
+        Span::styled(" ".repeat(right), style),
+    ])
+}
+
+/// Builds the rail's lines (each repo's name stacked one char per row, repos
+/// separated by a blank row) alongside a parallel `owners` vec mapping every
+/// line index to its repository index — so rendering and click hit-testing
+/// stay in lockstep. The leading separator is owned by the following repo so
+/// there are no dead rows.
+fn rail_lines(
+    app: &TuiApp,
+    width: u16,
+    selected: usize,
+    focused: bool,
+) -> (Vec<Line<'static>>, Vec<usize>) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut owners: Vec<usize> = Vec::new();
+    let sel_bg = if focused {
+        SELECT_BG_FOCUSED
+    } else {
+        SELECT_BG_UNFOCUSED
+    };
+    for (ri, repo) in app.repositories.iter().enumerate() {
+        let is_sel = ri == selected;
+        let name_style = if is_sel {
+            Style::default()
+                .fg(Color::White)
+                .bg(sel_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        if ri > 0 {
+            let sep = if is_sel {
+                Style::default().bg(sel_bg)
+            } else {
+                Style::default()
+            };
+            lines.push(rail_char_line(' ', width, sep));
+            owners.push(ri);
+        }
+        if repo.ready_for_review_count > 0 {
+            let mut s = Style::default().fg(REVIEW);
+            if is_sel {
+                s = s.bg(sel_bg);
+            }
+            lines.push(rail_char_line('◆', width, s));
+            owners.push(ri);
+        }
+        for ch in repo.name.chars() {
+            lines.push(rail_char_line(ch, width, name_style));
+            owners.push(ri);
+        }
+    }
+    (lines, owners)
+}
+
+/// Scroll offset (in rows) that keeps the selected repo's run visible.
+fn rail_scroll(owners: &[usize], selected: usize, inner_h: usize) -> usize {
+    if owners.is_empty() || inner_h == 0 {
+        return 0;
+    }
+    let Some(first) = owners.iter().position(|&o| o == selected) else {
+        return 0;
+    };
+    let last = owners.iter().rposition(|&o| o == selected).unwrap_or(first);
+    let mut scroll = 0usize;
+    if last + 1 > inner_h {
+        scroll = last + 1 - inner_h;
+    }
+    if first < scroll {
+        scroll = first;
+    }
+    scroll.min(owners.len().saturating_sub(1))
+}
+
+/// Renders the collapsed vertical rail. Each repository's name is stacked one
+/// character per row down a narrow strip; the selected repo is highlighted.
+/// Pressing Enter on it opens the workspace pop-out (see `render_popout`).
+pub fn render_rail(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let focused = app.focus == Focus::Sidebar;
+    let border_style = if focused {
+        Style::default().fg(Color::LightBlue)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.repositories.is_empty() {
+        return;
+    }
+    let selected = app.rail_selected_repo_index();
+    let (lines, owners) = rail_lines(app, inner.width, selected, focused);
+    let scroll = rail_scroll(&owners, selected, inner.height.max(1) as usize);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+}
+
+/// Maps a click within the rail `area` to a repository index, mirroring
+/// `render_rail`'s inner + scroll math.
+pub fn rail_repo_index_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<usize> {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    if x < inner.x || x >= inner.right() || y < inner.y || y >= inner.bottom() {
+        return None;
+    }
+    if app.repositories.is_empty() {
+        return None;
+    }
+    let selected = app.rail_selected_repo_index();
+    let (_lines, owners) = rail_lines(app, inner.width, selected, false);
+    let scroll = rail_scroll(&owners, selected, inner.height.max(1) as usize);
+    let li = (y - inner.y) as usize + scroll;
+    owners.get(li).copied()
+}
+
+/// Geometry of the workspace pop-out: a box just right of the rail, anchored at
+/// the selected repo's row and clamped to the screen. `None` when none is open.
+pub fn popout_rect(rail: Rect, full: Rect, app: &TuiApp) -> Option<Rect> {
+    app.sidebar_popout?;
+    let content_h = app.popout_workspaces().len().max(1) as u16;
+    let box_h = (content_h + 2).min(full.height.max(3));
+    let avail = full.right().saturating_sub(rail.right());
+    let box_w = 40u16.min(avail).max(12);
+    let x = rail.right();
+
+    let inner = Block::default().borders(Borders::ALL).inner(rail);
+    let selected = app.rail_selected_repo_index();
+    let (_l, owners) = rail_lines(app, inner.width, selected, false);
+    let scroll = rail_scroll(&owners, selected, inner.height.max(1) as usize);
+    let first = owners.iter().position(|&o| o == selected).unwrap_or(0);
+    let y_in_inner = (first.saturating_sub(scroll)) as u16;
+    let mut y = inner.y.saturating_add(y_in_inner);
+    let max_y = full.bottom().saturating_sub(box_h);
+    if y > max_y {
+        y = max_y;
+    }
+    Some(Rect::new(x, y, box_w, box_h))
+}
+
+/// Renders the workspace pop-out for the rail's open repo, listing its
+/// workspaces with the normal horizontal `workspace_line` styling.
+pub fn render_popout(frame: &mut Frame, rail: Rect, full: Rect, app: &TuiApp) {
+    let Some(rect) = popout_rect(rail, full, app) else {
+        return;
+    };
+    let Some(repo_id) = app.sidebar_popout else {
+        return;
+    };
+    let name = app
+        .repositories
+        .iter()
+        .find(|r| r.id == repo_id)
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::LightBlue))
+        .title(format!(" {name} "));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let ids = app.popout_workspaces();
+    if ids.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  no workspaces",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(ids.len());
+    for (i, wid) in ids.iter().enumerate() {
+        let mut line = workspace_line(app, *wid);
+        if i == app.popout_selected {
+            line = line.style(Style::default().bg(SELECT_BG_FOCUSED));
+        }
+        lines.push(line);
+    }
+    let h = inner.height.max(1) as usize;
+    let scroll = app.popout_selected.saturating_sub(h.saturating_sub(1)) as u16;
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+}
+
+/// Maps a click to a workspace index within the open pop-out, if inside its
+/// inner content area.
+pub fn popout_row_index_at(rail: Rect, full: Rect, app: &TuiApp, x: u16, y: u16) -> Option<usize> {
+    let rect = popout_rect(rail, full, app)?;
+    let inner = Block::default().borders(Borders::ALL).inner(rect);
+    if x < inner.x || x >= inner.right() || y < inner.y || y >= inner.bottom() {
+        return None;
+    }
+    let ids = app.popout_workspaces();
+    if ids.is_empty() {
+        return None;
+    }
+    let h = inner.height.max(1) as usize;
+    let scroll = app.popout_selected.saturating_sub(h.saturating_sub(1));
+    let idx = (y - inner.y) as usize + scroll;
+    (idx < ids.len()).then_some(idx)
 }

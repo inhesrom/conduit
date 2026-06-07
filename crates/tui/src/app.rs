@@ -392,6 +392,18 @@ pub enum SidebarRow {
     Workspace(WorkspaceId),
 }
 
+/// How the left sidebar is displayed. `Ctrl+B` cycles through these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    /// Full Repository → Workspace tree (default).
+    Expanded,
+    /// Narrow vertical rail: each repo's name stacked one character per row.
+    /// Pressing Enter on a repo opens a pop-out listing its workspaces.
+    Rail,
+    /// Hidden entirely; the detail pane fills the screen.
+    Hidden,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickCreateField {
     Name,
@@ -467,8 +479,15 @@ pub struct TuiApp {
     pub repositories: Vec<RepositorySummary>,
     /// Selected row index into the flattened sidebar tree.
     pub sidebar_selected: usize,
-    /// Whether the sidebar is shown (hidden during terminal passthrough / ctrl+b).
-    pub sidebar_visible: bool,
+    /// How the sidebar is displayed (Expanded tree / vertical Rail / Hidden).
+    /// `Ctrl+B` cycles through the three.
+    pub sidebar_mode: SidebarMode,
+    /// In Rail mode, the index (into `repositories`) of the highlighted repo.
+    pub rail_selected: usize,
+    /// In Rail mode, the repo whose workspace pop-out is open (None = closed).
+    pub sidebar_popout: Option<RepositoryId>,
+    /// Selected workspace index within the open pop-out.
+    pub popout_selected: usize,
     /// Repositories whose workspace children are collapsed in the sidebar.
     pub collapsed_repos: HashSet<RepositoryId>,
     /// When true, the sidebar shows only ready-for-review workspaces.
@@ -571,7 +590,10 @@ impl Default for TuiApp {
             workspaces: Vec::new(),
             repositories: Vec::new(),
             sidebar_selected: 0,
-            sidebar_visible: true,
+            sidebar_mode: SidebarMode::Expanded,
+            rail_selected: 0,
+            sidebar_popout: None,
+            popout_selected: 0,
             collapsed_repos: HashSet::new(),
             sidebar_review_filter: false,
             quick_create: None,
@@ -786,6 +808,101 @@ impl TuiApp {
             }
             self.clamp_sidebar_selection();
         }
+    }
+
+    /// True while the sidebar occupies columns on screen (Expanded or Rail).
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_mode != SidebarMode::Hidden
+    }
+
+    /// Advance the sidebar display: Expanded → Rail → Hidden → Expanded.
+    pub fn cycle_sidebar_mode(&mut self) {
+        self.sidebar_mode = match self.sidebar_mode {
+            SidebarMode::Expanded => {
+                // Sync the rail's repo selection to whatever the tree had in context.
+                if let Some(rid) = self.sidebar_context_repo() {
+                    if let Some(i) = self.repositories.iter().position(|r| r.id == rid) {
+                        self.rail_selected = i;
+                    }
+                }
+                SidebarMode::Rail
+            }
+            SidebarMode::Rail => {
+                self.sidebar_popout = None;
+                SidebarMode::Hidden
+            }
+            SidebarMode::Hidden => SidebarMode::Expanded,
+        };
+    }
+
+    /// Clamped index of the highlighted repo in Rail mode.
+    pub fn rail_selected_repo_index(&self) -> usize {
+        self.rail_selected
+            .min(self.repositories.len().saturating_sub(1))
+    }
+
+    pub fn move_rail_selection(&mut self, delta: isize) {
+        let len = self.repositories.len();
+        if len == 0 {
+            self.rail_selected = 0;
+            return;
+        }
+        let n = (self.rail_selected as isize + delta).clamp(0, (len - 1) as isize);
+        self.rail_selected = n as usize;
+    }
+
+    /// Repository currently highlighted in the rail, if any.
+    pub fn selected_rail_repo(&self) -> Option<RepositoryId> {
+        self.repositories
+            .get(self.rail_selected_repo_index())
+            .map(|r| r.id)
+    }
+
+    /// Open the workspace pop-out for the currently highlighted rail repo.
+    pub fn open_sidebar_popout(&mut self) {
+        if let Some(id) = self.selected_rail_repo() {
+            self.sidebar_popout = Some(id);
+            self.popout_selected = 0;
+        }
+    }
+
+    pub fn close_sidebar_popout(&mut self) {
+        self.sidebar_popout = None;
+    }
+
+    pub fn toggle_sidebar_popout(&mut self) {
+        if self.sidebar_popout.is_some() {
+            self.close_sidebar_popout();
+        } else {
+            self.open_sidebar_popout();
+        }
+    }
+
+    /// Workspace ids belonging to the repo whose pop-out is open (all of them,
+    /// ignoring the review filter — the pop-out shows every workspace).
+    pub fn popout_workspaces(&self) -> Vec<WorkspaceId> {
+        let Some(repo) = self.sidebar_popout else {
+            return Vec::new();
+        };
+        self.workspaces
+            .iter()
+            .filter(|w| w.repository_id == Some(repo))
+            .map(|w| w.id)
+            .collect()
+    }
+
+    pub fn move_popout_selection(&mut self, delta: isize) {
+        let len = self.popout_workspaces().len();
+        if len == 0 {
+            self.popout_selected = 0;
+            return;
+        }
+        let n = (self.popout_selected as isize + delta).clamp(0, (len - 1) as isize);
+        self.popout_selected = n as usize;
+    }
+
+    pub fn selected_popout_workspace_id(&self) -> Option<WorkspaceId> {
+        self.popout_workspaces().get(self.popout_selected).copied()
     }
 
     pub fn selected_workspace_id(&self) -> Option<WorkspaceId> {

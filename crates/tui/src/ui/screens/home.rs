@@ -62,12 +62,11 @@ fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
             if let Some(repo) = app.repositories.iter().find(|r| r.id == id) {
                 lines.push(Line::from(Span::styled(
                     format!("  Repository: {}", repo.name),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 )));
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", repo.path),
-                    desc,
-                )));
+                lines.push(Line::from(Span::styled(format!("  {}", repo.path), desc)));
                 lines.push(Line::from(Span::styled(
                     format!(
                         "  default branch: {}    workspaces: {}",
@@ -82,7 +81,9 @@ fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
             if let Some(ws) = app.workspaces.iter().find(|w| w.id == wid) {
                 lines.push(Line::from(Span::styled(
                     format!("  Workspace: {}", ws.name),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 lines.push(Line::from(Span::styled(
                     format!("  branch: {}", ws.branch.as_deref().unwrap_or("?")),
