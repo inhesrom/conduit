@@ -576,6 +576,7 @@ mod tests {
             repository_id: None,
             base_branch: None,
             ready_for_review: false,
+            agent: None,
         }
     }
 

@@ -733,7 +733,7 @@ fn render_toggle(enabled: bool) -> Span<'static> {
 /// Returns a centered rectangle within `area` at `width_pct` width and fixed `height`.
 fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCreateState) {
     use crate::app::QuickCreateField;
-    let height = if qc.expanded { 14 } else { 9 };
+    let height = if qc.expanded { 15 } else { 9 };
     let modal = centered_rect(area, 60, height);
     frame.render_widget(Clear, modal);
     let block = Block::default()
@@ -791,6 +791,35 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
                 &qc.base_branch
             },
         ));
+        // Agent field. Selection mode shows `◂ value ▸` (←/→ cycles, Enter
+        // expands to an editable command); edit mode shows the raw launch
+        // command as a plain editable field.
+        let agent_active = matches!(qc.field, QuickCreateField::Agent);
+        let alabel = if agent_active { focused } else { label };
+        if qc.agent_command_edit {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<8}", "agent"), alabel),
+                Span::styled(qc.agent.clone(), Style::default().fg(Color::White)),
+                if agent_active {
+                    Span::styled("▏", focused)
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        } else {
+            let arrows = if agent_active { focused } else { desc };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<8}", "agent"), alabel),
+                Span::styled("◂ ", arrows),
+                Span::styled(qc.agent.clone(), Style::default().fg(Color::White)),
+                Span::styled(" ▸", arrows),
+                if agent_active {
+                    Span::styled("▏", focused)
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        }
         lines.push(field_line(
             matches!(qc.field, QuickCreateField::Prompt),
             "prompt",
@@ -803,14 +832,27 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
     } else {
         " more options"
     };
-    lines.push(Line::from(vec![
+    // On the agent selector, Enter expands to an editable command rather than
+    // creating; everywhere else it creates.
+    let agent_selecting = matches!(qc.field, QuickCreateField::Agent) && !qc.agent_command_edit;
+    let enter_hint = if agent_selecting {
+        " edit command  "
+    } else {
+        " create  "
+    };
+    let mut footer = vec![
         Span::styled("Enter", key),
-        Span::styled(" create  ", desc),
+        Span::styled(enter_hint, desc),
         Span::styled("Tab", key),
         Span::styled(more, desc),
-        Span::styled("  Esc", key),
-        Span::styled(" cancel", desc),
-    ]));
+    ];
+    if agent_selecting {
+        footer.push(Span::styled("  ←/→", key));
+        footer.push(Span::styled(" agent", desc));
+    }
+    footer.push(Span::styled("  Esc", key));
+    footer.push(Span::styled(" cancel", desc));
+    lines.push(Line::from(footer));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -958,6 +1000,7 @@ mod tests {
             repository_id: None,
             base_branch: None,
             ready_for_review: false,
+            agent: None,
         }
     }
 

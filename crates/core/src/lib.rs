@@ -145,6 +145,7 @@ struct WorkspaceCreateOutcome {
     path: PathBuf,
     branch: String,
     base_branch: String,
+    agent: Option<String>,
     ssh: Option<SshTarget>,
     result: Result<(), anyhow::Error>,
 }
@@ -254,6 +255,7 @@ pub fn spawn_core() -> CoreHandle {
                     repo_id,
                     name,
                     base_branch,
+                    agent,
                 } => {
                     if let Some(repo) = state.repositories.get(&repo_id) {
                         let id = Uuid::new_v4();
@@ -309,6 +311,7 @@ pub fn spawn_core() -> CoreHandle {
                                     path: wt_path,
                                     branch: slug,
                                     base_branch: base,
+                                    agent,
                                     ssh,
                                     result,
                                 })
@@ -433,6 +436,7 @@ pub fn spawn_core() -> CoreHandle {
                         repository_id: None,
                         branch: None,
                         base_branch: None,
+                        agent: None,
                         ready_for_review: false,
                         review_manual: false,
                         agent_idle: false,
@@ -1480,6 +1484,7 @@ pub fn spawn_core() -> CoreHandle {
                                 repository_id: Some(outcome.repo_id),
                                 branch: Some(outcome.branch.clone()),
                                 base_branch: Some(outcome.base_branch),
+                                agent: outcome.agent,
                                 ready_for_review: false,
                                 review_manual: false,
                                 agent_idle: false,
@@ -1662,6 +1667,7 @@ fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
                 repository_id: ws.repository_id,
                 base_branch: ws.base_branch.clone(),
                 ready_for_review: ws.ready_for_review,
+                agent: ws.agent.clone(),
             }
         })
         .collect::<Vec<_>>()
@@ -1703,6 +1709,8 @@ struct PersistedWorkspace {
     branch: Option<String>,
     #[serde(default)]
     base_branch: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 fn persist_file() -> Option<PathBuf> {
@@ -1772,6 +1780,7 @@ fn save_workspaces(state: &AppState) {
             repository_id: ws.repository_id,
             branch: ws.branch.clone(),
             base_branch: ws.base_branch.clone(),
+            agent: ws.agent.clone(),
         })
         .collect::<Vec<_>>();
     if let Ok(json) = serde_json::to_string_pretty(&items) {
@@ -1817,6 +1826,7 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
             repository_id: item.repository_id,
             branch: item.branch.clone().or_else(|| initial_git.branch.clone()),
             base_branch: item.base_branch.clone(),
+            agent: item.agent.clone(),
             ready_for_review: false,
             review_manual: false,
             agent_idle: false,
@@ -2096,6 +2106,7 @@ mod tests {
             repository_id: None,
             branch: None,
             base_branch: None,
+            agent: None,
             ready_for_review: false,
             review_manual: false,
             agent_idle: false,

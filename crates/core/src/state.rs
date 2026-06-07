@@ -59,6 +59,10 @@ pub struct Workspace {
     pub branch: Option<String>,
     /// The base branch this worktree was created from.
     pub base_branch: Option<String>,
+    /// Agent chosen for this Workspace at creation: a configured profile name or
+    /// a raw custom command (opaque to core; interpreted by the TUI when it
+    /// starts the agent terminal). `None` = use the client's default agent.
+    pub agent: Option<String>,
     /// Review state — orthogonal to `attention`. Set by the idle-while-dirty
     /// heuristic or a manual toggle.
     pub ready_for_review: bool,

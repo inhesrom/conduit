@@ -1212,6 +1212,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                 id,
                 &app.ws_tabs,
                 &app.settings,
+                app.workspace_agent(id).as_deref(),
                 app.terminal_content_size,
             )
             .await;
@@ -2266,6 +2267,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             target_id,
                                             &app.ws_tabs,
                                             &app.settings,
+                                            app.workspace_agent(target_id).as_deref(),
                                             app.terminal_content_size,
                                         )
                                         .await;
@@ -2847,12 +2849,51 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 }
             }
         }
+        KeyCode::Left | KeyCode::Right => {
+            // While the agent field is focused in selection mode, ←/→ cycle
+            // through configured agents. Once expanded into command-edit mode
+            // (or on other fields) the arrows do nothing — so they can't clobber
+            // an edited command.
+            if let Some(qc) = app.quick_create.as_mut() {
+                if qc.field == app::QuickCreateField::Agent && !qc.agent_command_edit {
+                    let delta = if key.code == KeyCode::Left { -1 } else { 1 };
+                    qc.cycle_agent(&app.settings.agents, delta);
+                }
+            }
+        }
         KeyCode::Enter => {
+            // First Enter on the agent selector expands the chosen agent into
+            // its full launch command for editing, instead of creating. Read the
+            // name under an immutable borrow, then mutate (so `&app.settings` and
+            // the `&mut qc` borrow don't overlap).
+            let expand_agent = app
+                .quick_create
+                .as_ref()
+                .map(|qc| qc.field == app::QuickCreateField::Agent && !qc.agent_command_edit)
+                .unwrap_or(false);
+            if expand_agent {
+                let name = app
+                    .quick_create
+                    .as_ref()
+                    .map(|qc| qc.agent.trim().to_string())
+                    .unwrap_or_default();
+                let resolved = agent_cmd_for(&app.settings, Some(&name)).join(" ");
+                if let Some(qc) = app.quick_create.as_mut() {
+                    qc.agent = resolved;
+                    qc.agent_command_edit = true;
+                }
+                return true;
+            }
             if let Some(qc) = app.quick_create.take() {
                 let base_branch = if qc.base_branch.trim().is_empty() {
                     None
                 } else {
                     Some(qc.base_branch.trim().to_string())
+                };
+                let agent = if qc.agent.trim().is_empty() {
+                    None
+                } else {
+                    Some(qc.agent.trim().to_string())
                 };
                 let prompt = qc.initial_prompt.trim().to_string();
                 if !prompt.is_empty() {
@@ -2864,18 +2905,25 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                         repo_id: qc.repo_id,
                         name: qc.name.clone(),
                         base_branch,
+                        agent,
                     })
                     .await;
             }
         }
         KeyCode::Backspace => {
             if let Some(qc) = app.quick_create.as_mut() {
-                qc.active_input_mut().pop();
+                // Agent selection mode is cycle + Enter-to-edit only; text edits
+                // apply once the command has been expanded for editing.
+                if qc.field != app::QuickCreateField::Agent || qc.agent_command_edit {
+                    qc.active_input_mut().pop();
+                }
             }
         }
         KeyCode::Char(c) => {
             if let Some(qc) = app.quick_create.as_mut() {
-                qc.active_input_mut().push(c);
+                if qc.field != app::QuickCreateField::Agent || qc.agent_command_edit {
+                    qc.active_input_mut().push(c);
+                }
             }
         }
         _ => {}
@@ -2917,6 +2965,7 @@ async fn handle_sidebar_key(
                         id,
                         &app.ws_tabs,
                         &app.settings,
+                        app.workspace_agent(id).as_deref(),
                         app.terminal_content_size,
                     )
                     .await;
@@ -3008,6 +3057,7 @@ async fn handle_sidebar_key(
                         id,
                         &app.ws_tabs,
                         &app.settings,
+                        app.workspace_agent(id).as_deref(),
                         app.terminal_content_size,
                     )
                     .await;
@@ -3041,6 +3091,7 @@ async fn handle_sidebar_key(
                         id,
                         &app.ws_tabs,
                         &app.settings,
+                        app.workspace_agent(id).as_deref(),
                         app.terminal_content_size,
                     )
                     .await;
@@ -3594,6 +3645,7 @@ async fn handle_mouse(
                             id,
                             &app.ws_tabs,
                             &app.settings,
+                            app.workspace_agent(id).as_deref(),
                             app.terminal_content_size,
                         )
                         .await;
@@ -3643,6 +3695,7 @@ async fn handle_mouse(
                                         id,
                                         &app.ws_tabs,
                                         &app.settings,
+                                        app.workspace_agent(id).as_deref(),
                                         app.terminal_content_size,
                                     )
                                     .await;
@@ -4210,6 +4263,58 @@ mod tests {
     }
 
     #[test]
+    fn agent_cmd_for_falls_back_to_default_when_unset() {
+        let settings = app::Settings::default();
+        // None / empty → the global default agent (claude).
+        assert_eq!(agent_cmd_for(&settings, None), vec!["claude".to_string()]);
+        assert_eq!(agent_cmd_for(&settings, Some("  ")), vec!["claude".to_string()]);
+    }
+
+    #[test]
+    fn agent_cmd_for_uses_named_profile_and_yolo_flags() {
+        let mut settings = app::Settings::default();
+        // A configured profile name resolves to its command (no yolo by default).
+        assert_eq!(agent_cmd_for(&settings, Some("codex")), vec!["codex".to_string()]);
+        // With yolo_mode on, the profile's yolo flags are appended.
+        settings.yolo_mode = true;
+        assert_eq!(
+            agent_cmd_for(&settings, Some("codex")),
+            vec!["codex".to_string(), "--full-auto".to_string()],
+        );
+    }
+
+    #[test]
+    fn agent_cmd_for_treats_unknown_value_as_custom_command() {
+        let settings = app::Settings::default();
+        // Not a known profile → split the raw command on whitespace into argv.
+        assert_eq!(
+            agent_cmd_for(&settings, Some("aider --model gpt-4")),
+            vec!["aider".to_string(), "--model".to_string(), "gpt-4".to_string()],
+        );
+    }
+
+    #[test]
+    fn expanded_then_edited_command_launches_verbatim() {
+        let settings = app::Settings::default();
+        // Expanding `codex` (yolo on) yields its full command; the user edits it
+        // and the edited string launches verbatim as argv (custom-command path).
+        let mut settings_yolo = settings.clone();
+        settings_yolo.yolo_mode = true;
+        let expanded = agent_cmd_for(&settings_yolo, Some("codex")).join(" ");
+        assert_eq!(expanded, "codex --full-auto");
+        let edited = format!("{expanded} --model o3");
+        assert_eq!(
+            agent_cmd_for(&settings, Some(&edited)),
+            vec![
+                "codex".to_string(),
+                "--full-auto".to_string(),
+                "--model".to_string(),
+                "o3".to_string(),
+            ],
+        );
+    }
+
+    #[test]
     fn parses_latest_release_tag_from_json() {
         let body = r#"{"tag_name":"v0.3.21"}"#;
         assert_eq!(parse_latest_release_tag(body).unwrap(), "v0.3.21");
@@ -4521,6 +4626,26 @@ fn agent_cmd(settings: &app::Settings) -> Vec<String> {
     cmd
 }
 
+/// Resolves the command to launch in a Workspace's agent terminal, honoring a
+/// per-Workspace `agent` choice. The choice is either a configured profile name
+/// (→ that profile's command + yolo flags) or a raw custom command (→ split on
+/// whitespace into argv). `None`/empty falls back to the global default agent.
+fn agent_cmd_for(settings: &app::Settings, agent_choice: Option<&str>) -> Vec<String> {
+    let Some(choice) = agent_choice.map(str::trim).filter(|c| !c.is_empty()) else {
+        return agent_cmd(settings);
+    };
+    if let Some(profile) = settings.agents.iter().find(|a| a.name == choice) {
+        let mut cmd = vec![profile.command.clone()];
+        if settings.yolo_mode {
+            cmd.extend(profile.yolo_flags.iter().cloned());
+        }
+        cmd
+    } else {
+        // Custom command: split on whitespace into argv.
+        choice.split_whitespace().map(str::to_string).collect()
+    }
+}
+
 fn agent_cmd_continue(settings: &app::Settings) -> Vec<String> {
     let Some(agent) = settings.active_agent() else {
         return vec!["claude".to_string()];
@@ -4573,11 +4698,12 @@ async fn start_workspace_tab_terminals(
     id: protocol::WorkspaceId,
     tabs: &[app::TerminalTab],
     settings: &app::Settings,
+    agent_choice: Option<&str>,
     size: (u16, u16),
 ) {
     for tab in tabs {
         let cmd = if tab.kind == protocol::TerminalKind::Agent {
-            agent_cmd(settings)
+            agent_cmd_for(settings, agent_choice)
         } else {
             Vec::new()
         };
