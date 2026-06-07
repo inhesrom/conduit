@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use protocol::{
-    AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, Route, SavedCommand, TerminalKind,
-    WorkspaceId, WorkspaceSummary,
+    AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, RepositoryId, RepositorySummary, Route,
+    SavedCommand, TerminalKind, WorkspaceId, WorkspaceSummary,
 };
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
@@ -373,13 +373,65 @@ impl MouseSelection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    HomeGrid,
+    /// The persistent Repository → Workspace tree on the left.
+    Sidebar,
     WsBar,
     WsLog,
     WsBranches,
     WsDiff,
     WsTerminal,
     WsTerminalTabs,
+    /// Review sub-mode panes within the detail.
+    ReviewFiles,
+    ReviewDiff,
+}
+
+/// A flattened row in the sidebar tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarRow {
+    Repo(RepositoryId),
+    Workspace(WorkspaceId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickCreateField {
+    Name,
+    BaseBranch,
+    Prompt,
+}
+
+/// State of the ctrl+n quick-create-workspace modal.
+#[derive(Debug, Clone)]
+pub struct QuickCreateState {
+    pub repo_id: RepositoryId,
+    pub repo_name: String,
+    pub name: String,
+    /// When false, only the name field is shown; Tab reveals the overrides.
+    pub expanded: bool,
+    /// Empty = use the repository's default branch.
+    pub base_branch: String,
+    pub initial_prompt: String,
+    pub field: QuickCreateField,
+}
+
+impl QuickCreateState {
+    pub fn active_input_mut(&mut self) -> &mut String {
+        match self.field {
+            QuickCreateField::Name => &mut self.name,
+            QuickCreateField::BaseBranch => &mut self.base_branch,
+            QuickCreateField::Prompt => &mut self.initial_prompt,
+        }
+    }
+
+    /// Advance focus, only visiting the override fields once expanded.
+    pub fn next_field(&mut self) {
+        self.field = match self.field {
+            QuickCreateField::Name if self.expanded => QuickCreateField::BaseBranch,
+            QuickCreateField::Name => QuickCreateField::Name,
+            QuickCreateField::BaseBranch => QuickCreateField::Prompt,
+            QuickCreateField::Prompt => QuickCreateField::Name,
+        };
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +464,32 @@ pub struct TuiApp {
     pub route: Route,
     pub focus: Focus,
     pub workspaces: Vec<WorkspaceSummary>,
+    /// Registered base repositories (top tier of the sidebar tree).
+    pub repositories: Vec<RepositorySummary>,
+    /// Selected row index into the flattened sidebar tree.
+    pub sidebar_selected: usize,
+    /// Whether the sidebar is shown (hidden during terminal passthrough / ctrl+b).
+    pub sidebar_visible: bool,
+    /// Repositories whose workspace children are collapsed in the sidebar.
+    pub collapsed_repos: HashSet<RepositoryId>,
+    /// When true, the sidebar shows only ready-for-review workspaces.
+    pub sidebar_review_filter: bool,
+    /// Active ctrl+n quick-create modal, if any.
+    pub quick_create: Option<QuickCreateState>,
+    /// Initial prompt to deliver to the agent of the next created workspace.
+    pub pending_create_prompt: Option<String>,
+    /// (workspace, prompt) waiting for the agent terminal to produce output.
+    pub pending_agent_prompt: Option<(WorkspaceId, String)>,
+    /// A newly created workspace whose terminals the main loop should start.
+    pub pending_open_created: Option<WorkspaceId>,
+    /// (workspace, prompt) the main loop should send to the agent now.
+    pub pending_prompt_send: Option<(WorkspaceId, String)>,
+    /// Whole-branch review: changed file paths per workspace.
+    pub review_files: HashMap<WorkspaceId, Vec<String>>,
+    pub review_file_selected: usize,
+    pub review_diff_scroll: u16,
+    /// (workspace, file) whose branch diff the main loop should request now.
+    pub pending_review_diff: Option<(WorkspaceId, String)>,
     pub workspace_git: HashMap<WorkspaceId, GitState>,
     pub workspace_diff: HashMap<WorkspaceId, (String, String)>,
     pub terminal_state: HashMap<WorkspaceId, WorkspaceTerminalState>,
@@ -491,8 +569,22 @@ impl Default for TuiApp {
     fn default() -> Self {
         Self {
             route: Route::Home,
-            focus: Focus::HomeGrid,
+            focus: Focus::Sidebar,
             workspaces: Vec::new(),
+            repositories: Vec::new(),
+            sidebar_selected: 0,
+            sidebar_visible: true,
+            collapsed_repos: HashSet::new(),
+            sidebar_review_filter: false,
+            quick_create: None,
+            pending_create_prompt: None,
+            pending_agent_prompt: None,
+            pending_open_created: None,
+            pending_prompt_send: None,
+            review_files: HashMap::new(),
+            review_file_selected: 0,
+            review_diff_scroll: 0,
+            pending_review_diff: None,
             workspace_git: HashMap::new(),
             workspace_diff: HashMap::new(),
             terminal_state: HashMap::new(),
@@ -573,6 +665,130 @@ impl TuiApp {
             .retain(|key, _| valid_command_workspaces.contains(&key.id));
         self.reconcile_workspace_tab_state();
         self.ensure_home_selected_visible();
+        self.clamp_sidebar_selection();
+    }
+
+    pub fn set_repositories(&mut self, repositories: Vec<RepositorySummary>) {
+        self.repositories = repositories;
+        self.clamp_sidebar_selection();
+    }
+
+    /// Flattened sidebar rows: each repo header followed by its (optionally
+    /// review-filtered) workspace children, then any orphan workspaces.
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        let mut rows = Vec::new();
+        for repo in &self.repositories {
+            rows.push(SidebarRow::Repo(repo.id));
+            if !self.collapsed_repos.contains(&repo.id) {
+                for ws in &self.workspaces {
+                    if ws.repository_id == Some(repo.id)
+                        && (!self.sidebar_review_filter || ws.ready_for_review)
+                    {
+                        rows.push(SidebarRow::Workspace(ws.id));
+                    }
+                }
+            }
+        }
+        for ws in &self.workspaces {
+            let has_repo = ws
+                .repository_id
+                .map(|rid| self.repositories.iter().any(|r| r.id == rid))
+                .unwrap_or(false);
+            if !has_repo && (!self.sidebar_review_filter || ws.ready_for_review) {
+                rows.push(SidebarRow::Workspace(ws.id));
+            }
+        }
+        rows
+    }
+
+    fn clamp_sidebar_selection(&mut self) {
+        let len = self.sidebar_rows().len();
+        if len == 0 {
+            self.sidebar_selected = 0;
+        } else if self.sidebar_selected >= len {
+            self.sidebar_selected = len - 1;
+        }
+    }
+
+    pub fn move_sidebar_selection(&mut self, delta: isize) {
+        let len = self.sidebar_rows().len();
+        if len == 0 {
+            self.sidebar_selected = 0;
+            return;
+        }
+        let n = (self.sidebar_selected as isize + delta).clamp(0, (len - 1) as isize);
+        self.sidebar_selected = n as usize;
+    }
+
+    pub fn selected_sidebar_row(&self) -> Option<SidebarRow> {
+        self.sidebar_rows().get(self.sidebar_selected).copied()
+    }
+
+    pub fn selected_sidebar_workspace_id(&self) -> Option<WorkspaceId> {
+        match self.selected_sidebar_row()? {
+            SidebarRow::Workspace(id) => Some(id),
+            SidebarRow::Repo(_) => None,
+        }
+    }
+
+    pub fn begin_quick_create(&mut self, repo_id: RepositoryId) {
+        let repo_name = self
+            .repositories
+            .iter()
+            .find(|r| r.id == repo_id)
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
+        self.quick_create = Some(QuickCreateState {
+            repo_id,
+            repo_name,
+            name: String::new(),
+            expanded: false,
+            base_branch: String::new(),
+            initial_prompt: String::new(),
+            field: QuickCreateField::Name,
+        });
+    }
+
+    pub fn is_quick_creating(&self) -> bool {
+        self.quick_create.is_some()
+    }
+
+    pub fn cancel_quick_create(&mut self) {
+        self.quick_create = None;
+    }
+
+    pub fn enter_review_mode(&mut self) {
+        self.focus = Focus::ReviewFiles;
+        self.review_file_selected = 0;
+        self.review_diff_scroll = 0;
+    }
+
+    pub fn exit_review_mode(&mut self) {
+        self.focus = Focus::WsTerminal;
+    }
+
+    /// The repo "in context" for the current sidebar selection: the repo of a
+    /// selected workspace, or a selected repo header itself.
+    pub fn sidebar_context_repo(&self) -> Option<RepositoryId> {
+        match self.selected_sidebar_row()? {
+            SidebarRow::Repo(id) => Some(id),
+            SidebarRow::Workspace(wid) => self
+                .workspaces
+                .iter()
+                .find(|w| w.id == wid)
+                .and_then(|w| w.repository_id),
+        }
+    }
+
+    pub fn toggle_collapse_selected(&mut self) {
+        if let Some(SidebarRow::Repo(id)) = self.selected_sidebar_row() {
+            if self.collapsed_repos.contains(&id) {
+                self.collapsed_repos.remove(&id);
+            } else {
+                self.collapsed_repos.insert(id);
+            }
+            self.clamp_sidebar_selection();
+        }
     }
 
     pub fn selected_workspace_id(&self) -> Option<WorkspaceId> {
@@ -597,7 +813,7 @@ impl TuiApp {
     pub fn go_home(&mut self) {
         self.persist_tabs_for_active_workspace();
         self.route = Route::Home;
-        self.focus = Focus::HomeGrid;
+        self.focus = Focus::Sidebar;
     }
 
     pub fn terminal_fullscreen(&self) -> bool {
@@ -607,23 +823,6 @@ impl TuiApp {
     pub fn toggle_terminal_fullscreen(&mut self) {
         let idx = self.ws_active_tab.min(self.ws_tabs.len().saturating_sub(1));
         self.ws_tabs[idx].fullscreen = !self.ws_tabs[idx].fullscreen;
-    }
-
-    pub fn move_home_selection(&mut self, delta: isize) {
-        let len = self.workspaces.len();
-        if len == 0 {
-            self.home_selected = 0;
-            return;
-        }
-        let new_idx = (self.home_selected as isize + delta).clamp(0, (len - 1) as isize);
-        self.home_selected = new_idx as usize;
-        self.ensure_home_selected_visible();
-    }
-
-    pub fn begin_move_workspace(&mut self) {
-        if !self.workspaces.is_empty() {
-            self.moving_workspace = true;
-        }
     }
 
     pub fn end_move_workspace(&mut self) {
@@ -658,27 +857,6 @@ impl TuiApp {
         Some((id, delta as i32))
     }
 
-    pub fn toggle_home_expanded_tile(&mut self) {
-        if self.workspaces.is_empty() {
-            self.home_expanded_tiles.clear();
-            return;
-        }
-        let idx = self.home_selected;
-        if !self.home_expanded_tiles.remove(&idx) {
-            self.home_expanded_tiles.insert(idx);
-        }
-        self.ensure_home_selected_visible();
-    }
-
-    pub fn set_home_selection(&mut self, index: usize) {
-        if self.workspaces.is_empty() {
-            self.home_selected = 0;
-        } else {
-            self.home_selected = index.min(self.workspaces.len() - 1);
-        }
-        self.ensure_home_selected_visible();
-    }
-
     /// Adjusts `home_scroll_offset` so the selected tile is visible.
     pub fn ensure_home_selected_visible(&mut self) {
         if self.last_grid_height == 0 {
@@ -699,17 +877,6 @@ impl TuiApp {
         if y + tile_h > self.home_scroll_offset + self.last_grid_height {
             self.home_scroll_offset = (y + tile_h).saturating_sub(self.last_grid_height);
         }
-    }
-
-    /// Scroll the home tile list by `delta` rows (positive = down).
-    pub fn scroll_home(&mut self, delta: i16) {
-        let expanded_h = tile_grid::tile_h_expanded(self.settings.preview_lines);
-        let total =
-            tile_grid::total_height(self.workspaces.len(), &self.home_expanded_tiles, expanded_h);
-        let max_offset = total.saturating_sub(self.last_grid_height);
-        let new_offset =
-            (self.home_scroll_offset as i32 + delta as i32).clamp(0, max_offset as i32);
-        self.home_scroll_offset = new_offset as u16;
     }
 
     pub fn active_tab(&self) -> &TerminalTab {
@@ -1005,10 +1172,6 @@ impl TuiApp {
         self.dir_browser.as_mut()
     }
 
-    pub fn begin_delete_workspace(&mut self) {
-        self.pending_delete_workspace = self.selected_workspace_id();
-    }
-
     pub fn cancel_delete_workspace(&mut self) {
         self.pending_delete_workspace = None;
     }
@@ -1019,17 +1182,6 @@ impl TuiApp {
 
     pub fn take_delete_workspace(&mut self) -> Option<WorkspaceId> {
         self.pending_delete_workspace.take()
-    }
-
-    pub fn begin_rename_workspace_home(&mut self) {
-        let Some(id) = self.selected_workspace_id() else {
-            return;
-        };
-        self.rename_workspace_input = self
-            .workspaces
-            .iter()
-            .find(|w| w.id == id)
-            .map(|w| w.name.clone());
     }
 
     pub fn cancel_rename_workspace(&mut self) {
@@ -2613,6 +2765,9 @@ mod tests {
             shell_running: false,
             last_activity_unix_ms: 0,
             ssh_host: None,
+            repository_id: None,
+            base_branch: None,
+            ready_for_review: false,
         }
     }
 
@@ -2825,51 +2980,6 @@ mod tests {
     // ===== Navigation =====
 
     #[test]
-    fn move_home_selection_down() {
-        let mut app = app_with_workspaces(6);
-        app.home_selected = 0;
-        app.move_home_selection(1);
-        assert_eq!(app.home_selected, 1);
-    }
-
-    #[test]
-    fn move_home_selection_up_clamps() {
-        let mut app = app_with_workspaces(6);
-        app.home_selected = 0;
-        app.move_home_selection(-1);
-        assert_eq!(app.home_selected, 0);
-    }
-
-    #[test]
-    fn move_home_selection_down_clamps_to_last() {
-        let mut app = app_with_workspaces(4);
-        app.home_selected = 3;
-        app.move_home_selection(1);
-        assert_eq!(app.home_selected, 3);
-    }
-
-    #[test]
-    fn move_home_selection_empty() {
-        let mut app = TuiApp::default();
-        app.move_home_selection(1);
-        assert_eq!(app.home_selected, 0);
-    }
-
-    #[test]
-    fn set_home_selection_clamps() {
-        let mut app = app_with_workspaces(3);
-        app.set_home_selection(10);
-        assert_eq!(app.home_selected, 2);
-    }
-
-    #[test]
-    fn set_home_selection_empty() {
-        let mut app = TuiApp::default();
-        app.set_home_selection(5);
-        assert_eq!(app.home_selected, 0);
-    }
-
-    #[test]
     fn open_workspace_sets_route_and_focus() {
         let mut app = app_with_workspaces(2);
         let id = app.workspaces[1].id;
@@ -2887,7 +2997,7 @@ mod tests {
         assert!(app.terminal_fullscreen());
         app.go_home();
         assert!(matches!(app.route, Route::Home));
-        assert_eq!(app.focus, Focus::HomeGrid);
+        assert_eq!(app.focus, Focus::Sidebar);
     }
 
     // ===== Terminal tab management =====
@@ -3099,7 +3209,7 @@ mod tests {
     fn delete_workspace_flow() {
         let mut app = app_with_workspaces(2);
         assert!(!app.is_confirming_delete());
-        app.begin_delete_workspace();
+        app.pending_delete_workspace = app.selected_workspace_id();
         assert!(app.is_confirming_delete());
         let id = app.take_delete_workspace();
         assert!(id.is_some());
@@ -3109,7 +3219,7 @@ mod tests {
     #[test]
     fn cancel_delete_workspace() {
         let mut app = app_with_workspaces(2);
-        app.begin_delete_workspace();
+        app.pending_delete_workspace = app.selected_workspace_id();
         app.cancel_delete_workspace();
         assert!(!app.is_confirming_delete());
     }
@@ -3117,7 +3227,7 @@ mod tests {
     #[test]
     fn rename_workspace_flow() {
         let mut app = app_with_workspaces(1);
-        app.begin_rename_workspace_home();
+        app.rename_workspace_input = Some("ws-0".to_string());
         assert!(app.is_renaming_workspace());
         app.cancel_rename_workspace();
         assert!(!app.is_renaming_workspace());

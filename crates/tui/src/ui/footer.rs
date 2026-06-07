@@ -61,7 +61,22 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     desc(" cancel"),
                 ]
             } else if app.is_adding_workspace() {
-                vec![key("Esc"), desc(" cancel")]
+                vec![
+                    key("j/k"),
+                    desc(" navigate"),
+                    gap(),
+                    key("Tab"),
+                    desc(" enter dir"),
+                    gap(),
+                    key("Enter"),
+                    desc(" add repo"),
+                    gap(),
+                    key("/"),
+                    desc(" edit path"),
+                    gap(),
+                    key("Esc"),
+                    desc(" cancel"),
+                ]
             } else if app.is_settings_open() {
                 vec![
                     key("j/k"),
@@ -108,23 +123,23 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key("n"),
                     desc(" new"),
                     gap(),
-                    key("R"),
-                    desc(" ssh"),
+                    key("N"),
+                    desc(" repo"),
                     gap(),
-                    key("e"),
-                    desc(" rename"),
+                    key("R"),
+                    desc(" review"),
+                    gap(),
+                    key("Space"),
+                    desc(" ready"),
                     gap(),
                     key("D"),
                     desc(" delete"),
                     gap(),
-                    key("Space"),
-                    desc(" expand"),
+                    key("f"),
+                    desc(" filter"),
                     gap(),
-                    key("!"),
-                    desc(" attention"),
-                    gap(),
-                    key("M"),
-                    desc(" move"),
+                    key("A"),
+                    desc(" ssh"),
                     gap(),
                     key("S"),
                     desc(" settings"),
@@ -474,6 +489,9 @@ mod tests {
             shell_running: false,
             last_activity_unix_ms: 0,
             ssh_host: None,
+            repository_id: None,
+            base_branch: None,
+            ready_for_review: false,
         }
     }
 

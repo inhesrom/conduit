@@ -3,7 +3,10 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-use conduit_core::workspace::git::{commit, diff_file, refresh_git, stage_file, unstage_file};
+use conduit_core::workspace::git::{
+    commit, create_worktree, detect_default_branch, diff_branch_files, diff_file, list_worktrees,
+    refresh_git, remove_worktree, repo_root, stage_file, unstage_file,
+};
 
 // ---------------------------------------------------------------------------
 // Helper: initialise a throwaway git repo inside a TempDir
@@ -268,4 +271,82 @@ async fn diff_file_clean_committed() {
         diff.trim().is_empty(),
         "expected empty diff for clean committed file, got:\n{diff}"
     );
+}
+
+// ===========================================================================
+// Worktrees — create / list / branch-diff / remove
+// ===========================================================================
+
+#[tokio::test]
+async fn worktree_create_list_diff_remove() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+
+    git_init(dir);
+    write_file(dir, "hello.txt", "hello");
+    git_add_all(dir);
+    git_commit(dir, "initial commit");
+
+    let base = refresh_git(dir, None).await.unwrap().branch.unwrap();
+
+    // Create a worktree on a new branch from current HEAD.
+    let wt_path = dir.join(".conduit-worktrees").join("feature-x");
+    create_worktree(dir, &wt_path, "feature-x", "HEAD", None)
+        .await
+        .unwrap();
+    assert!(
+        wt_path.join("hello.txt").exists(),
+        "worktree should contain the committed file"
+    );
+
+    let worktrees = list_worktrees(dir, None).await.unwrap();
+    assert!(
+        worktrees
+            .iter()
+            .any(|(p, b)| p.ends_with("feature-x") && b == "feature-x"),
+        "list_worktrees should include the new worktree: {worktrees:?}"
+    );
+
+    // Commit a change on the branch and verify whole-branch diff vs base.
+    write_file(&wt_path, "new.txt", "added");
+    git_add_all(&wt_path);
+    git_commit(&wt_path, "add new file");
+    let changed = diff_branch_files(&wt_path, &base, None).await.unwrap();
+    assert!(
+        changed.iter().any(|c| c.path == "new.txt"),
+        "branch diff should list new.txt: {changed:?}"
+    );
+
+    // Remove the worktree.
+    remove_worktree(dir, &wt_path, None).await.unwrap();
+    let after = list_worktrees(dir, None).await.unwrap();
+    assert!(
+        !after.iter().any(|(p, _)| p.ends_with("feature-x")),
+        "worktree should be gone after remove: {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn repo_root_and_default_branch() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+
+    git_init(dir);
+    write_file(dir, "f.txt", "x");
+    git_add_all(dir);
+    git_commit(dir, "initial commit");
+
+    // repo_root resolves from a subdirectory back to the toplevel.
+    let sub = dir.join("subdir");
+    std::fs::create_dir_all(&sub).unwrap();
+    let root = repo_root(&sub, None).await.unwrap();
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        dir.canonicalize().unwrap(),
+        "repo_root should resolve to the repo toplevel"
+    );
+
+    // No remote configured -> falls back to "main".
+    let default = detect_default_branch(dir, None).await.unwrap();
+    assert_eq!(default, "main");
 }

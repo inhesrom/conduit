@@ -15,46 +15,95 @@ use tile_grid::ORANGE;
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let chunks = home_chunks(area);
     render_dashboard(frame, chunks[0], app);
-
-    let grid_area = chunks[1];
-    let body_max = (grid_area.width as usize).saturating_sub(6);
-    let expanded = &app.home_expanded_tiles;
-    let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
-    let preview_lines = app.settings.preview_lines;
-    let tile_data: Vec<tile_grid::TileData> = app
-        .workspaces
-        .iter()
-        .enumerate()
-        .map(|(i, ws)| {
-            let num_lines = if expanded.contains(&i) {
-                preview_lines
-            } else {
-                0 // collapsed tiles don't show preview
-            };
-            tile_grid::TileData {
-                summary: ws,
-                preview: if num_lines > 0 {
-                    app.tile_preview_lines(ws.id, body_max as u16, num_lines)
-                } else {
-                    Vec::new()
-                },
-            }
-        })
-        .collect();
-
-    tile_grid::render(
-        frame,
-        grid_area,
-        &tile_data,
-        app.home_selected,
-        app.spinner_tick % 2 == 0,
-        app.settings.attention_notifications,
-        expanded,
-        expanded_h,
-        app.home_scroll_offset,
-    );
+    render_welcome_body(frame, chunks[1], app);
     footer::render(frame, chunks[2], app);
     render_modals(frame, area, app);
+}
+
+/// The detail pane shown while the Sidebar is focused (no workspace open):
+/// a short keymap and details of the sidebar-selected item.
+fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let key = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(Color::DarkGray);
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Select a workspace in the sidebar, Enter to open.",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  n", key),
+            Span::styled(" new workspace    ", desc),
+            Span::styled("N", key),
+            Span::styled(" add repository    ", desc),
+            Span::styled("ctrl+b", key),
+            Span::styled(" toggle sidebar", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter", key),
+            Span::styled(" open    ", desc),
+            Span::styled("R", key),
+            Span::styled(" review    ", desc),
+            Span::styled("Space", key),
+            Span::styled(" mark ready    ", desc),
+            Span::styled("D", key),
+            Span::styled(" delete    ", desc),
+            Span::styled("f", key),
+            Span::styled(" filter ready", desc),
+        ]),
+        Line::from(""),
+    ];
+
+    match app.selected_sidebar_row() {
+        Some(crate::app::SidebarRow::Repo(id)) => {
+            if let Some(repo) = app.repositories.iter().find(|r| r.id == id) {
+                lines.push(Line::from(Span::styled(
+                    format!("  Repository: {}", repo.name),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", repo.path),
+                    desc,
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  default branch: {}    workspaces: {}",
+                        repo.default_branch.as_deref().unwrap_or("?"),
+                        repo.workspace_count
+                    ),
+                    desc,
+                )));
+            }
+        }
+        Some(crate::app::SidebarRow::Workspace(wid)) => {
+            if let Some(ws) = app.workspaces.iter().find(|w| w.id == wid) {
+                lines.push(Line::from(Span::styled(
+                    format!("  Workspace: {}", ws.name),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  branch: {}", ws.branch.as_deref().unwrap_or("?")),
+                    desc,
+                )));
+                if ws.ready_for_review {
+                    lines.push(Line::from(Span::styled(
+                        "  ◆ ready for review",
+                        Style::default().fg(Color::Magenta),
+                    )));
+                }
+            }
+        }
+        None => {}
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Conduit ");
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Renders the rounded dashboard box with anvil ASCII art and colored status badges.
@@ -126,12 +175,16 @@ fn dashboard_badge(count: usize, icon: &str, label: &str, color: Color) -> Vec<S
 
 /// Renders the add-workspace and delete-confirmation modals when active.
 fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    if let Some(qc) = &app.quick_create {
+        render_quick_create(frame, area, qc);
+        return;
+    }
     if let Some(browser) = &app.dir_browser {
         let modal = centered_rect(area, 70, 20);
         frame.render_widget(Clear, modal);
 
         let outer_block = Block::default()
-            .title(" Browse Directory ")
+            .title(" Add Repository ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Cyan));
@@ -693,6 +746,89 @@ fn render_toggle(enabled: bool) -> Span<'static> {
 }
 
 /// Returns a centered rectangle within `area` at `width_pct` width and fixed `height`.
+fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCreateState) {
+    use crate::app::QuickCreateField;
+    let height = if qc.expanded { 14 } else { 9 };
+    let modal = centered_rect(area, 60, height);
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(format!(" New Workspace — {} ", qc.repo_name))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let key = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(Color::DarkGray);
+    let label = Style::default().fg(Color::Gray);
+    let focused = Style::default()
+        .fg(Color::LightBlue)
+        .add_modifier(Modifier::BOLD);
+
+    let slug = protocol::branch_slug(&qc.name);
+    let slug_display = if slug.is_empty() {
+        "ws-…".to_string()
+    } else {
+        slug
+    };
+
+    let field_line = |active: bool, lbl: &str, val: &str| -> Line<'static> {
+        let lstyle = if active { focused } else { label };
+        Line::from(vec![
+            Span::styled(format!("  {lbl:<8}"), lstyle),
+            Span::styled(val.to_string(), Style::default().fg(Color::White)),
+            if active {
+                Span::styled("▏", focused)
+            } else {
+                Span::raw("")
+            },
+        ])
+    };
+
+    let mut lines = vec![
+        Line::from(""),
+        field_line(matches!(qc.field, QuickCreateField::Name), "task", &qc.name),
+        Line::from(vec![
+            Span::styled("           branch: ", desc),
+            Span::styled(slug_display, Style::default().fg(Color::Green)),
+        ]),
+    ];
+    if qc.expanded {
+        lines.push(field_line(
+            matches!(qc.field, QuickCreateField::BaseBranch),
+            "base",
+            if qc.base_branch.is_empty() {
+                "(repo default)"
+            } else {
+                &qc.base_branch
+            },
+        ));
+        lines.push(field_line(
+            matches!(qc.field, QuickCreateField::Prompt),
+            "prompt",
+            &qc.initial_prompt,
+        ));
+    }
+    lines.push(Line::from(""));
+    let more = if qc.expanded {
+        " next field"
+    } else {
+        " more options"
+    };
+    lines.push(Line::from(vec![
+        Span::styled("Enter", key),
+        Span::styled(" create  ", desc),
+        Span::styled("Tab", key),
+        Span::styled(more, desc),
+        Span::styled("  Esc", key),
+        Span::styled(" cancel", desc),
+    ]));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn centered_rect(area: Rect, width_pct: u16, height: u16) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -726,49 +862,6 @@ pub fn delete_modal_rect(area: Rect) -> Rect {
 /// Returns the rectangle occupied by the tile grid on the home screen.
 pub fn grid_rect(area: Rect) -> Rect {
     home_chunks(area)[1]
-}
-
-/// Returns the `Rect` of the pane containing the given point, if any.
-pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
-    let chunks = home_chunks(area);
-    let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
-
-    if point_inside(chunks[0]) {
-        return Some(chunks[0]);
-    }
-    if point_inside(chunks[2]) {
-        return Some(chunks[2]);
-    }
-
-    // Check individual tile rects (use index_at for scroll-aware hit testing)
-    let grid_area = chunks[1];
-    let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
-    if let Some(i) = tile_grid::index_at(
-        grid_area,
-        x,
-        y,
-        app.workspaces.len(),
-        &app.home_expanded_tiles,
-        expanded_h,
-        app.home_scroll_offset,
-    ) {
-        let r = tile_grid::tile_rect(
-            grid_area,
-            i,
-            &app.home_expanded_tiles,
-            expanded_h,
-            app.home_scroll_offset,
-        );
-        if r.width > 0 && r.height > 0 {
-            return Some(r);
-        }
-    }
-
-    // Fall back to the whole grid area
-    if point_inside(grid_area) {
-        return Some(grid_area);
-    }
-    None
 }
 
 /// Splits the home screen area into dashboard header, grid, and footer chunks.
@@ -833,6 +926,9 @@ mod tests {
             shell_running: false,
             last_activity_unix_ms: 0,
             ssh_host: None,
+            repository_id: None,
+            base_branch: None,
+            ready_for_review: false,
         }
     }
 

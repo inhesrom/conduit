@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use protocol::{
     BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo, SshTarget, TagInfo,
@@ -664,6 +664,69 @@ pub async fn unstage_all(repo: &Path, ssh: Option<&SshTarget>) -> Result<()> {
     Ok(())
 }
 
+/// Returns the absolute toplevel of the git repository containing `path`,
+/// erroring if `path` is not inside a git work tree. Used to validate a
+/// Repository before registering it.
+pub async fn repo_root(path: &Path, ssh: Option<&SshTarget>) -> Result<PathBuf> {
+    let out = ssh::build_command(ssh, path, "git", &["rev-parse", "--show-toplevel"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "not a git repository: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if root.is_empty() {
+        anyhow::bail!(
+            "git rev-parse --show-toplevel returned empty for {}",
+            path.display()
+        );
+    }
+    Ok(PathBuf::from(root))
+}
+
+/// Detects the default branch of `repo`: prefers `origin/HEAD`, then probes
+/// `origin/main`/`origin/master`, finally falls back to `"main"`.
+pub async fn detect_default_branch(repo: &Path, ssh: Option<&SshTarget>) -> Result<String> {
+    let out = ssh::build_command(
+        ssh,
+        repo,
+        "git",
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .output()
+    .await?;
+    if out.status.success() {
+        let full = String::from_utf8_lossy(&out.stdout);
+        if let Some(name) = full.trim().rsplit('/').next() {
+            if !name.is_empty() {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    for candidate in ["main", "master"] {
+        let probe = ssh::build_command(
+            ssh,
+            repo,
+            "git",
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/origin/{candidate}"),
+            ],
+        )
+        .output()
+        .await?;
+        if probe.status.success() && !String::from_utf8_lossy(&probe.stdout).trim().is_empty() {
+            return Ok(candidate.to_string());
+        }
+    }
+    Ok("main".to_string())
+}
+
 pub async fn create_branch(repo: &Path, branch: &str, ssh: Option<&SshTarget>) -> Result<()> {
     let out = ssh::build_command(ssh, repo, "git", &["checkout", "-b", branch])
         .output()
@@ -675,6 +738,194 @@ pub async fn create_branch(repo: &Path, branch: &str, ssh: Option<&SshTarget>) -
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Worktrees
+// ---------------------------------------------------------------------------
+
+/// Creates a git worktree at `worktree_path` on a NEW branch `branch` based on
+/// `base_ref` (e.g. "origin/main"). Runs from the base `repo`. Single SSH
+/// invocation (cannot be batched).
+pub async fn create_worktree(
+    repo: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    base_ref: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    let wt = worktree_path.display().to_string();
+    let out = ssh::build_command(
+        ssh,
+        repo,
+        "git",
+        &["worktree", "add", &wt, "-b", branch, base_ref],
+    )
+    .output()
+    .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Lists existing worktrees of `repo` as `(path, branch)` pairs.
+pub async fn list_worktrees(repo: &Path, ssh: Option<&SshTarget>) -> Result<Vec<(PathBuf, String)>> {
+    let out = ssh::build_command(ssh, repo, "git", &["worktree", "list", "--porcelain"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut result = Vec::new();
+    let mut cur_path: Option<PathBuf> = None;
+    let mut cur_branch = String::new();
+    for line in text.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            cur_path = Some(PathBuf::from(p.trim()));
+            cur_branch.clear();
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            cur_branch = b.trim().rsplit('/').next().unwrap_or("").to_string();
+        } else if line.is_empty() {
+            if let Some(p) = cur_path.take() {
+                result.push((p, std::mem::take(&mut cur_branch)));
+            }
+        }
+    }
+    if let Some(p) = cur_path.take() {
+        result.push((p, cur_branch));
+    }
+    Ok(result)
+}
+
+/// Removes the worktree at `worktree_path` (force) then prunes stale entries.
+/// Must run from the base `repo`, never from inside the worktree itself.
+pub async fn remove_worktree(
+    repo: &Path,
+    worktree_path: &Path,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    let wt = worktree_path.display().to_string();
+    let out = ssh::build_command(ssh, repo, "git", &["worktree", "remove", "--force", &wt])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let _ = ssh::build_command(ssh, repo, "git", &["worktree", "prune"])
+        .output()
+        .await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Branch diff (whole-branch review): changes on this branch since `base`
+// ---------------------------------------------------------------------------
+
+/// Returns the files changed on the current branch relative to `base`
+/// (`git diff --name-status <base>...HEAD`).
+pub async fn diff_branch_files(
+    repo: &Path,
+    base: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<Vec<ChangedFile>> {
+    let range = format!("{base}...HEAD");
+    let out = ssh::build_command(ssh, repo, "git", &["diff", "--name-status", &range])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git diff --name-status failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(parse_name_status(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Returns the diff of a single `file` on this branch relative to `base`
+/// (`git diff <base>...HEAD -- <file>`).
+pub async fn diff_branch_file(
+    repo: &Path,
+    base: &str,
+    file: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<String> {
+    let range = format!("{base}...HEAD");
+    let out = ssh::build_command(ssh, repo, "git", &["diff", &range, "--", file])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!("git diff failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn parse_name_status(text: &str) -> Vec<ChangedFile> {
+    let mut files = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split('\t');
+        let Some(status) = parts.next() else { continue };
+        let status_char = status.chars().next().unwrap_or(' ');
+        // For renames (e.g. `R100`) the new path is the last tab field.
+        let path = parts.last().unwrap_or("").to_string();
+        if path.is_empty() {
+            continue;
+        }
+        files.push(ChangedFile {
+            path,
+            index_status: status_char,
+            worktree_status: ' ',
+        });
+    }
+    files
+}
+
+// ---------------------------------------------------------------------------
+// Pull request helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the URL of the `origin` remote, or errors if there is none.
+pub async fn remote_origin_url(repo: &Path, ssh: Option<&SshTarget>) -> Result<String> {
+    let out = ssh::build_command(ssh, repo, "git", &["remote", "get-url", "origin"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "no origin remote: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Runs `gh pr create --fill --head <branch>` in `repo`, returning the created
+/// PR URL on success. Requires the GitHub CLI; over SSH it runs on the remote.
+pub async fn gh_create_pr(repo: &Path, branch: &str, ssh: Option<&SshTarget>) -> Result<String> {
+    let out = ssh::build_command(
+        ssh,
+        repo,
+        "gh",
+        &["pr", "create", "--fill", "--head", branch],
+    )
+    .output()
+    .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "gh pr create failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 pub async fn checkout_branch(repo: &Path, branch: &str, ssh: Option<&SshTarget>) -> Result<()> {

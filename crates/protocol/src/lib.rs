@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub type WorkspaceId = Uuid;
+pub type RepositoryId = Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SshTarget {
@@ -51,6 +52,30 @@ pub struct WorkspaceSummary {
     pub last_activity_unix_ms: u64,
     #[serde(default)]
     pub ssh_host: Option<String>,
+    #[serde(default)]
+    pub repository_id: Option<RepositoryId>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub ready_for_review: bool,
+}
+
+/// Summary of a base Repository sent to clients for the sidebar tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepositorySummary {
+    pub id: RepositoryId,
+    pub name: String,
+    pub path: String,
+    pub default_branch: Option<String>,
+    #[serde(default)]
+    pub worktree_root: Option<String>,
+    #[serde(default)]
+    pub default_agent: Option<String>,
+    #[serde(default)]
+    pub ssh_host: Option<String>,
+    pub workspace_count: usize,
+    #[serde(default)]
+    pub ready_for_review_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -251,6 +276,41 @@ pub enum Command {
         id: WorkspaceId,
         tab_id: String,
     },
+    // --- Repository registry + worktree-workspace lifecycle ---
+    RegisterRepository {
+        name: String,
+        path: String,
+        #[serde(default)]
+        ssh: Option<SshTarget>,
+        #[serde(default)]
+        default_agent: Option<String>,
+        #[serde(default)]
+        worktree_root: Option<String>,
+    },
+    RemoveRepository {
+        repo_id: RepositoryId,
+    },
+    CreateWorkspace {
+        repo_id: RepositoryId,
+        name: String,
+        #[serde(default)]
+        base_branch: Option<String>,
+    },
+    // --- Review ---
+    SetReadyForReview {
+        id: WorkspaceId,
+        ready: bool,
+    },
+    LoadBranchDiff {
+        id: WorkspaceId,
+    },
+    LoadBranchFileDiff {
+        id: WorkspaceId,
+        file: String,
+    },
+    OpenPullRequest {
+        id: WorkspaceId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -327,6 +387,58 @@ pub enum Event {
     Error {
         message: String,
     },
+    // --- Repository registry + worktree-workspace lifecycle ---
+    RepositoryList {
+        items: Vec<RepositorySummary>,
+    },
+    WorkspaceCreated {
+        id: WorkspaceId,
+        repo_id: RepositoryId,
+        slug: String,
+    },
+    WorktreeCreateProgress {
+        repo_id: RepositoryId,
+        stage: String,
+    },
+    // --- Review ---
+    WorkspaceReviewChanged {
+        id: WorkspaceId,
+        ready: bool,
+    },
+    BranchDiffFilesLoaded {
+        id: WorkspaceId,
+        base: String,
+        files: Vec<ChangedFile>,
+    },
+}
+
+/// Slugify a free-form workspace/task name into a git-branch- and
+/// directory-safe slug: lowercase, any run of non-alphanumerics becomes a
+/// single dash, leading/trailing dashes trimmed, truncated to 50 chars.
+/// Returns an empty string when the input has no usable characters — the
+/// caller is expected to substitute a generated fallback (e.g. `ws-<short>`).
+pub fn branch_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for c in name.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_lowercase());
+            prev_dash = false;
+        } else if !out.is_empty() && !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.len() > 50 {
+        out.truncate(50);
+        while out.ends_with('-') {
+            out.pop();
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -397,7 +509,38 @@ mod tests {
             shell_running: false,
             last_activity_unix_ms: 12345,
             ssh_host: Some("remote".into()),
+            repository_id: Some(Uuid::new_v4()),
+            base_branch: Some("main".into()),
+            ready_for_review: true,
         });
+    }
+
+    #[test]
+    fn repository_summary_round_trip() {
+        round_trip(&RepositorySummary {
+            id: Uuid::new_v4(),
+            name: "conduit".into(),
+            path: "/home/u/repo/conduit".into(),
+            default_branch: Some("main".into()),
+            worktree_root: None,
+            default_agent: Some("claude".into()),
+            ssh_host: None,
+            workspace_count: 2,
+            ready_for_review_count: 1,
+        });
+    }
+
+    #[test]
+    fn branch_slug_basic() {
+        assert_eq!(
+            branch_slug("fix the auth token refresh bug"),
+            "fix-the-auth-token-refresh-bug"
+        );
+        assert_eq!(branch_slug("Fix Auth!!"), "fix-auth");
+        assert_eq!(branch_slug("  spaces  "), "spaces");
+        assert_eq!(branch_slug("feature/foo bar"), "feature-foo-bar");
+        assert_eq!(branch_slug(""), "");
+        assert_eq!(branch_slug("---"), "");
     }
 
     #[test]

@@ -1257,6 +1257,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     if let Some(command) = app.workspace_command() {
         render_workspace_command_modal(frame, area, command);
     }
+
+    if matches!(
+        app.focus,
+        crate::app::Focus::ReviewFiles | crate::app::Focus::ReviewDiff
+    ) {
+        render_review_overlay(frame, area, app);
+    }
 }
 
 fn render_workspace_command_modal(
@@ -1371,6 +1378,91 @@ fn command_input_view(input: &crate::app::EditableText, width: u16) -> (String, 
     let end = (start + available).min(chars.len());
     let visible = chars[start..end].iter().collect::<String>();
     (visible, (cursor - start) as u16)
+}
+
+/// Whole-branch review overlay: changed-file list + scrollable diff vs base.
+fn render_review_overlay(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let Route::Workspace { id } = app.route else {
+        return;
+    };
+    let w = area.width.saturating_mul(86) / 100;
+    let h = area.height.saturating_mul(80) / 100;
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    let modal = Rect::new(x, y, w, h);
+    frame.render_widget(Clear, modal);
+    let outer = Block::default()
+        .title(" Review — whole branch ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(Color::Magenta));
+    let inner = outer.inner(modal);
+    frame.render_widget(outer, modal);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .split(inner);
+
+    let files = app.review_files.get(&id).cloned().unwrap_or_default();
+    let files_focused = app.focus == crate::app::Focus::ReviewFiles;
+    let file_items: Vec<ListItem> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let style = if i == app.review_file_selected && files_focused {
+                Style::default().bg(Color::Rgb(40, 44, 72)).fg(Color::White)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            ListItem::new(Line::from(Span::styled(format!(" {f}"), style)))
+        })
+        .collect();
+    let files_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if files_focused {
+            Color::LightBlue
+        } else {
+            Color::DarkGray
+        }))
+        .title(format!(" Files ({}) ", files.len()));
+    frame.render_widget(List::new(file_items).block(files_block), cols[0]);
+
+    let diff_focused = app.focus == crate::app::Focus::ReviewDiff;
+    let diff_text = app
+        .workspace_diff
+        .get(&id)
+        .map(|(_, d)| d.clone())
+        .unwrap_or_default();
+    let diff_lines: Vec<Line> = diff_text
+        .lines()
+        .map(|l| {
+            let style = if l.starts_with('+') && !l.starts_with("+++") {
+                Style::default().fg(Color::Green)
+            } else if l.starts_with('-') && !l.starts_with("---") {
+                Style::default().fg(Color::Red)
+            } else if l.starts_with("@@") {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(l.to_string(), style))
+        })
+        .collect();
+    let diff_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if diff_focused {
+            Color::LightBlue
+        } else {
+            Color::DarkGray
+        }))
+        .title(" Diff   j/k file · J/K scroll · Tab · P push · O PR · Esc ");
+    frame.render_widget(
+        Paragraph::new(diff_lines)
+            .block(diff_block)
+            .scroll((app.review_diff_scroll, 0)),
+        cols[1],
+    );
 }
 
 pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit> {
@@ -1661,6 +1753,9 @@ mod tests {
             shell_running: false,
             last_activity_unix_ms: 0,
             ssh_host: None,
+            repository_id: None,
+            base_branch: None,
+            ready_for_review: false,
         }
     }
 

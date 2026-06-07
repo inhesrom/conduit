@@ -24,7 +24,11 @@ use crossterm::{
     ExecutableCommand,
 };
 use protocol::{AttentionLevel, Command, Event as CoreEvent, Route, TerminalKind, WorkspaceId};
-use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout, Rect},
+    Terminal,
+};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
@@ -576,6 +580,7 @@ struct WorkspaceState {
 /// Keyed state store for non-terminal events. No eviction needed — each workspace
 /// stores only the latest of each event type.
 struct EventHistory {
+    repository_list: Option<Vec<u8>>,
     workspace_list: Option<Vec<u8>>,
     per_workspace: HashMap<Uuid, WorkspaceState>,
 }
@@ -583,6 +588,7 @@ struct EventHistory {
 impl EventHistory {
     fn new() -> Self {
         Self {
+            repository_list: None,
             workspace_list: None,
             per_workspace: HashMap::new(),
         }
@@ -590,6 +596,9 @@ impl EventHistory {
 
     fn update(&mut self, evt: &CoreEvent, payload: Vec<u8>) {
         match evt {
+            CoreEvent::RepositoryList { .. } => {
+                self.repository_list = Some(payload);
+            }
             CoreEvent::WorkspaceList { .. } => {
                 self.workspace_list = Some(payload);
             }
@@ -617,6 +626,11 @@ impl EventHistory {
 
     fn snapshot(&self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
+        // Repositories first so the client populates the sidebar tree before
+        // workspaces are slotted into it.
+        if let Some(ref frame) = self.repository_list {
+            out.push(frame.clone());
+        }
         if let Some(ref frame) = self.workspace_list {
             out.push(frame.clone());
         }
@@ -761,7 +775,8 @@ async fn run_daemon(name: &str) -> Result<()> {
                                 let tab = tab_id.clone().unwrap_or_else(|| "default".to_string());
                                 history.lock().await.terminals.reset(*id, tab);
                             }
-                            CoreEvent::WorkspaceList { .. }
+                            CoreEvent::RepositoryList { .. }
+                            | CoreEvent::WorkspaceList { .. }
                             | CoreEvent::WorkspaceGitUpdated { .. }
                             | CoreEvent::WorkspaceAttentionChanged { .. } => {
                                 if let Ok(payload) = serde_json::to_vec(evt) {
@@ -1188,6 +1203,33 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
+        // Open + start terminals for a freshly created workspace (auto-agent),
+        // and deliver any queued initial prompt once the agent has spun up.
+        if let Some(id) = app.pending_open_created.take() {
+            app.open_workspace(id);
+            start_workspace_tab_terminals(&backend.cmd_tx, id, &app.ws_tabs, &app.settings).await;
+            let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+        }
+        if let Some((id, prompt)) = app.pending_prompt_send.take() {
+            let mut data = prompt.into_bytes();
+            data.push(b'\r');
+            let _ = backend
+                .cmd_tx
+                .send(Command::SendTerminalInput {
+                    id,
+                    kind: TerminalKind::Agent,
+                    tab_id: None,
+                    data_b64: base64::engine::general_purpose::STANDARD.encode(data),
+                })
+                .await;
+        }
+        if let Some((id, file)) = app.pending_review_diff.take() {
+            let _ = backend
+                .cmd_tx
+                .send(Command::LoadBranchFileDiff { id, file })
+                .await;
+        }
+
         // Send any pending CPR (Cursor Position Report) responses back to the
         // PTY so programs like fzf that query the cursor position don't hang.
         for (id, tab_id, kind, response) in app.pending_cpr_responses.drain(..) {
@@ -1258,18 +1300,31 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         }
         let mut pending_clipboard_text: Option<String> = None;
         terminal.draw(|frame| {
+            let full = frame.area();
+            // Persistent sidebar on the left + detail pane on the right.
+            let detail_area = if app.sidebar_visible {
+                let chunks = Layout::horizontal([
+                    Constraint::Length(ui::widgets::sidebar::WIDTH),
+                    Constraint::Min(0),
+                ])
+                .split(full);
+                ui::widgets::sidebar::render(frame, chunks[0], &app);
+                chunks[1]
+            } else {
+                full
+            };
             match app.route {
-                Route::Home => ui::screens::home::render(frame, frame.area(), &app),
+                Route::Home => ui::screens::home::render(frame, detail_area, &app),
                 Route::Workspace { .. } => {
-                    ui::screens::workspace::render(frame, frame.area(), &app)
+                    ui::screens::workspace::render(frame, detail_area, &app)
                 }
             }
             // Extract selected text from the rendered buffer before applying highlights.
             if let Some(sel) = &app.pending_copy_selection {
                 let borders = match app.route {
-                    Route::Home => ui::screens::home::border_rects(frame.area(), &app),
+                    Route::Home => ui::screens::home::border_rects(detail_area, &app),
                     Route::Workspace { .. } => {
-                        ui::screens::workspace::border_rects(frame.area(), &app)
+                        ui::screens::workspace::border_rects(detail_area, &app)
                     }
                 };
                 pending_clipboard_text = Some(extract_selected_text_from_buf(
@@ -1338,6 +1393,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_confirming_delete_branch()
                         && !app.is_stashing()
                         && !app.is_settings_open()
+                        && !app.is_quick_creating()
                         && !matches!(app.focus, app::Focus::WsTerminal)
                     {
                         break 'main;
@@ -1494,10 +1550,14 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         {
                                             let _ = backend
                                                 .cmd_tx
-                                                .send(Command::AddWorkspace {
+                                                .send(Command::RegisterRepository {
                                                     name,
                                                     path,
                                                     ssh: Some(target),
+                                                    default_agent: Some(
+                                                        app.settings.default_agent.clone(),
+                                                    ),
+                                                    worktree_root: None,
                                                 })
                                                 .await;
                                         }
@@ -1563,10 +1623,14 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             {
                                                 let _ = backend
                                                     .cmd_tx
-                                                    .send(Command::AddWorkspace {
+                                                    .send(Command::RegisterRepository {
                                                         name,
                                                         path,
                                                         ssh: None,
+                                                        default_agent: Some(
+                                                            app.settings.default_agent.clone(),
+                                                        ),
+                                                        worktree_root: None,
                                                     })
                                                     .await;
                                             }
@@ -1602,10 +1666,14 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 {
                                                     let _ = backend
                                                         .cmd_tx
-                                                        .send(Command::AddWorkspace {
+                                                        .send(Command::RegisterRepository {
                                                             name,
                                                             path,
                                                             ssh: None,
+                                                            default_agent: Some(
+                                                                app.settings.default_agent.clone(),
+                                                            ),
+                                                            worktree_root: None,
                                                         })
                                                         .await;
                                                 }
@@ -1660,32 +1728,135 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     _ => {}
                                 }
-                            } else {
-                                // Shift+Enter: send Enter to the agent terminal
-                                // without leaving the home screen.
-                                if key.code == KeyCode::Enter
-                                    && key.modifiers.contains(KeyModifiers::SHIFT)
-                                {
-                                    if let Some(id) = app.selected_workspace_id() {
-                                        let _ = backend
-                                            .cmd_tx
-                                            .send(Command::SendTerminalInput {
-                                                id,
-                                                kind: TerminalKind::Agent,
-                                                tab_id: None,
-                                                data_b64: base64::engine::general_purpose::STANDARD
-                                                    .encode(b"\r"),
-                                            })
-                                            .await;
-                                    }
-                                    continue;
-                                }
+                            } else if app.is_quick_creating() {
                                 match key.code {
-                                    KeyCode::Esc => {
-                                        app.go_home();
+                                    KeyCode::Esc => app.cancel_quick_create(),
+                                    KeyCode::Tab => {
+                                        if let Some(qc) = app.quick_create.as_mut() {
+                                            if !qc.expanded {
+                                                qc.expanded = true;
+                                                qc.field = app::QuickCreateField::BaseBranch;
+                                            } else {
+                                                qc.next_field();
+                                            }
+                                        }
                                     }
                                     KeyCode::Enter => {
-                                        if let Some(id) = app.selected_workspace_id() {
+                                        if let Some(qc) = app.quick_create.take() {
+                                            let base_branch = if qc.base_branch.trim().is_empty() {
+                                                None
+                                            } else {
+                                                Some(qc.base_branch.trim().to_string())
+                                            };
+                                            let prompt = qc.initial_prompt.trim().to_string();
+                                            if !prompt.is_empty() {
+                                                app.pending_create_prompt = Some(prompt);
+                                            }
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::CreateWorkspace {
+                                                    repo_id: qc.repo_id,
+                                                    name: qc.name.clone(),
+                                                    base_branch,
+                                                })
+                                                .await;
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(qc) = app.quick_create.as_mut() {
+                                            qc.active_input_mut().pop();
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(qc) = app.quick_create.as_mut() {
+                                            qc.active_input_mut().push(c);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                // Sidebar (Repository -> Workspace tree) is focused.
+                                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                                match key.code {
+                                    KeyCode::Char('b') if ctrl => {
+                                        app.sidebar_visible = !app.sidebar_visible;
+                                    }
+                                    // `n` (or ctrl+n) — new workspace under the selected repo.
+                                    KeyCode::Char('n') => match app.sidebar_context_repo() {
+                                        Some(repo_id) => app.begin_quick_create(repo_id),
+                                        None => {
+                                            app.git_action_message = Some((
+                                                "No repositories — press N to add one first"
+                                                    .to_string(),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                    },
+                                    // `N` — add (register) a new repository.
+                                    KeyCode::Char('N') => {
+                                        let cwd = std::env::current_dir()
+                                            .unwrap_or_else(|_| PathBuf::from("."))
+                                            .display()
+                                            .to_string();
+                                        app.begin_add_workspace(cwd);
+                                    }
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        app.move_sidebar_selection(1)
+                                    }
+                                    KeyCode::Up | KeyCode::Char('k') => {
+                                        app.move_sidebar_selection(-1)
+                                    }
+                                    KeyCode::Left | KeyCode::Char('h') => {
+                                        if let Some(app::SidebarRow::Repo(id)) =
+                                            app.selected_sidebar_row()
+                                        {
+                                            app.collapsed_repos.insert(id);
+                                        }
+                                    }
+                                    KeyCode::Right => {
+                                        if let Some(app::SidebarRow::Repo(id)) =
+                                            app.selected_sidebar_row()
+                                        {
+                                            app.collapsed_repos.remove(&id);
+                                        }
+                                    }
+                                    KeyCode::Enter | KeyCode::Char('l') => {
+                                        match app.selected_sidebar_row() {
+                                            Some(app::SidebarRow::Repo(_)) => {
+                                                app.toggle_collapse_selected();
+                                            }
+                                            Some(app::SidebarRow::Workspace(id)) => {
+                                                app.open_workspace(id);
+                                                start_workspace_tab_terminals(
+                                                    &backend.cmd_tx,
+                                                    id,
+                                                    &app.ws_tabs,
+                                                    &app.settings,
+                                                )
+                                                .await;
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::RefreshGit { id })
+                                                    .await;
+                                            }
+                                            None => {}
+                                        }
+                                    }
+                                    KeyCode::Char('a') => {
+                                        let cwd = std::env::current_dir()
+                                            .unwrap_or_else(|_| PathBuf::from("."))
+                                            .display()
+                                            .to_string();
+                                        app.begin_add_workspace(cwd);
+                                    }
+                                    KeyCode::Char('A') => app.begin_add_ssh_workspace(),
+                                    KeyCode::Char('D') => {
+                                        if let Some(id) = app.selected_sidebar_workspace_id() {
+                                            app.pending_delete_workspace = Some(id);
+                                        }
+                                    }
+                                    KeyCode::Char('R') => {
+                                        if let Some(id) = app.selected_sidebar_workspace_id() {
                                             app.open_workspace(id);
                                             start_workspace_tab_terminals(
                                                 &backend.cmd_tx,
@@ -1694,92 +1865,42 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 &app.settings,
                                             )
                                             .await;
+                                            app.enter_review_mode();
                                             let _ = backend
                                                 .cmd_tx
-                                                .send(Command::RefreshGit { id })
-                                                .await;
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::ClearAttention { id })
+                                                .send(Command::LoadBranchDiff { id })
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Down | KeyCode::Char('j') => {
-                                        app.move_home_selection(1)
-                                    }
-                                    KeyCode::Up | KeyCode::Char('k') => app.move_home_selection(-1),
-                                    KeyCode::Left | KeyCode::Char('h') => {
-                                        if let Some(id) = app.selected_workspace_id() {
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::SendTerminalInput {
-                                                    id,
-                                                    kind: TerminalKind::Agent,
-                                                    tab_id: None,
-                                                    data_b64:
-                                                        base64::engine::general_purpose::STANDARD
-                                                            .encode(b"\x1b[A"),
-                                                })
-                                                .await;
-                                        }
-                                    }
-                                    KeyCode::Right | KeyCode::Char('l') => {
-                                        if let Some(id) = app.selected_workspace_id() {
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::SendTerminalInput {
-                                                    id,
-                                                    kind: TerminalKind::Agent,
-                                                    tab_id: None,
-                                                    data_b64:
-                                                        base64::engine::general_purpose::STANDARD
-                                                            .encode(b"\x1b[B"),
-                                                })
-                                                .await;
-                                        }
-                                    }
-                                    KeyCode::Char(' ') => app.toggle_home_expanded_tile(),
-                                    KeyCode::Char('n') => {
-                                        let cwd = std::env::current_dir()
-                                            .unwrap_or_else(|_| PathBuf::from("."))
-                                            .display()
-                                            .to_string();
-                                        app.begin_add_workspace(cwd);
-                                    }
-                                    KeyCode::Char('M') => app.begin_move_workspace(),
-                                    KeyCode::Char('R') => app.begin_add_ssh_workspace(),
-                                    KeyCode::Char('D') => app.begin_delete_workspace(),
-                                    KeyCode::Char('e') => app.begin_rename_workspace_home(),
-                                    KeyCode::Char('S') => app.open_settings(),
-                                    KeyCode::Char('!') => {
-                                        if let Some(id) = app.selected_workspace_id() {
-                                            let level = app
+                                    KeyCode::Char(' ') => {
+                                        if let Some(id) = app.selected_sidebar_workspace_id() {
+                                            let ready = app
                                                 .workspaces
-                                                .get(app.home_selected)
-                                                .map(|w| w.attention)
-                                                .unwrap_or(AttentionLevel::None);
-                                            let cmd = if matches!(
-                                                level,
-                                                AttentionLevel::NeedsInput | AttentionLevel::Error
-                                            ) {
-                                                Command::ClearAttention { id }
-                                            } else {
-                                                Command::SetAttention {
+                                                .iter()
+                                                .find(|w| w.id == id)
+                                                .map(|w| w.ready_for_review)
+                                                .unwrap_or(false);
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::SetReadyForReview {
                                                     id,
-                                                    level: AttentionLevel::NeedsInput,
-                                                }
-                                            };
-                                            let _ = backend.cmd_tx.send(cmd).await;
+                                                    ready: !ready,
+                                                })
+                                                .await;
                                         }
+                                    }
+                                    KeyCode::Char('f') => {
+                                        app.sidebar_review_filter = !app.sidebar_review_filter;
                                     }
                                     KeyCode::Char('g') => {
-                                        if let Some(id) = app.selected_workspace_id() {
+                                        if let Some(id) = app.selected_sidebar_workspace_id() {
                                             let _ = backend
                                                 .cmd_tx
                                                 .send(Command::RefreshGit { id })
                                                 .await;
                                         }
                                     }
+                                    KeyCode::Char('S') => app.open_settings(),
                                     _ => {}
                                 }
                             }
@@ -1789,6 +1910,90 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
+                            if matches!(
+                                app.focus,
+                                app::Focus::ReviewFiles | app::Focus::ReviewDiff
+                            ) {
+                                let file_count =
+                                    app.review_files.get(&id).map(|f| f.len()).unwrap_or(0);
+                                let load_selected =
+                                    |app: &mut app::TuiApp| -> Option<(protocol::WorkspaceId, String)> {
+                                        app.review_files
+                                            .get(&id)
+                                            .and_then(|f| f.get(app.review_file_selected))
+                                            .cloned()
+                                            .map(|file| (id, file))
+                                    };
+                                match key.code {
+                                    KeyCode::Esc => app.exit_review_mode(),
+                                    KeyCode::Tab => {
+                                        app.focus = if app.focus == app::Focus::ReviewFiles {
+                                            app::Focus::ReviewDiff
+                                        } else {
+                                            app::Focus::ReviewFiles
+                                        };
+                                    }
+                                    KeyCode::Char('P') => {
+                                        let _ = backend.cmd_tx.send(Command::GitPush { id }).await;
+                                    }
+                                    KeyCode::Char('O') => {
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::OpenPullRequest { id })
+                                            .await;
+                                    }
+                                    KeyCode::Char('J') => {
+                                        app.review_diff_scroll =
+                                            app.review_diff_scroll.saturating_add(10);
+                                    }
+                                    KeyCode::Char('K') => {
+                                        app.review_diff_scroll =
+                                            app.review_diff_scroll.saturating_sub(10);
+                                    }
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        if app.focus == app::Focus::ReviewDiff {
+                                            app.review_diff_scroll =
+                                                app.review_diff_scroll.saturating_add(1);
+                                        } else if file_count > 0 {
+                                            app.review_file_selected =
+                                                (app.review_file_selected + 1).min(file_count - 1);
+                                            app.review_diff_scroll = 0;
+                                            if let Some((id, file)) = load_selected(&mut app) {
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::LoadBranchFileDiff { id, file })
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Up | KeyCode::Char('k') => {
+                                        if app.focus == app::Focus::ReviewDiff {
+                                            app.review_diff_scroll =
+                                                app.review_diff_scroll.saturating_sub(1);
+                                        } else if app.review_file_selected > 0 {
+                                            app.review_file_selected -= 1;
+                                            app.review_diff_scroll = 0;
+                                            if let Some((id, file)) = load_selected(&mut app) {
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::LoadBranchFileDiff { id, file })
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Some((id, file)) = load_selected(&mut app) {
+                                            app.review_diff_scroll = 0;
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::LoadBranchFileDiff { id, file })
+                                                .await;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
                             if app.is_renaming_tab() {
                                 match key.code {
                                     KeyCode::Esc => app.cancel_rename_tab(),
@@ -2813,6 +3018,12 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
                 let tid = tab_id.unwrap_or_else(|| "shell".to_string());
                 app.append_terminal_bytes(id, &tid, kind, &bytes);
             }
+            // Deliver a queued initial prompt once the agent has produced output.
+            if kind == protocol::TerminalKind::Agent {
+                if matches!(&app.pending_agent_prompt, Some((pid, _)) if *pid == id) {
+                    app.pending_prompt_send = app.pending_agent_prompt.take();
+                }
+            }
         }
         CoreEvent::TerminalExited {
             id,
@@ -2887,6 +3098,34 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
         }
         CoreEvent::Error { message } => {
             app.git_action_message = Some((message, Instant::now()));
+        }
+        // --- Repository registry + review ---
+        CoreEvent::RepositoryList { items } => app.set_repositories(items),
+        CoreEvent::WorkspaceCreated { id, .. } => {
+            // Defer the open + agent-start until after WorkspaceList is applied
+            // (it arrives in the same drain), so the workspace is in the list.
+            app.pending_open_created = Some(id);
+            if let Some(prompt) = app.pending_create_prompt.take() {
+                if !prompt.trim().is_empty() {
+                    app.pending_agent_prompt = Some((id, prompt));
+                }
+            }
+        }
+        CoreEvent::WorktreeCreateProgress { stage, .. } => {
+            app.git_action_message = Some((format!("creating worktree: {stage}"), Instant::now()));
+        }
+        CoreEvent::WorkspaceReviewChanged { id, ready } => {
+            if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {
+                ws.ready_for_review = ready;
+            }
+        }
+        CoreEvent::BranchDiffFilesLoaded { id, files, .. } => {
+            let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+            if let Some(first) = paths.first() {
+                app.pending_review_diff = Some((id, first.clone()));
+            }
+            app.review_files.insert(id, paths);
+            app.review_file_selected = 0;
         }
     }
 }
@@ -3160,9 +3399,22 @@ async fn handle_mouse(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     mouse: MouseEvent,
 ) {
-    let area = match terminal.size() {
+    let full = match terminal.size() {
         Ok(s) => ratatui::layout::Rect::new(0, 0, s.width, s.height),
         Err(_) => return,
+    };
+    // Mirror the draw split: `area` is the detail pane (offset right by the
+    // sidebar), `sidebar_rect` is the tree on the left. Hit-tests below run
+    // against `area`, so detail clicks line up with what's rendered.
+    let (sidebar_rect, area) = if app.sidebar_visible {
+        let chunks = Layout::horizontal([
+            Constraint::Length(ui::widgets::sidebar::WIDTH),
+            Constraint::Min(0),
+        ])
+        .split(full);
+        (Some(chunks[0]), chunks[1])
+    } else {
+        (None, full)
     };
 
     if matches!(app.route, Route::Workspace { .. }) && app.is_workspace_command_open() {
@@ -3216,13 +3468,31 @@ async fn handle_mouse(
     match app.route {
         Route::Home => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.mouse_selection = if let Some(r) =
-                    ui::screens::home::pane_rect_at(area, app, mouse.column, mouse.row)
-                {
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
-                } else {
-                    Some(app::MouseSelection::at(mouse.column, mouse.row))
-                };
+                // Click on a sidebar row: select + open (workspace) / collapse (repo).
+                if let Some(sr) = sidebar_rect {
+                    if let Some(idx) =
+                        ui::widgets::sidebar::row_index_at(sr, app, mouse.column, mouse.row)
+                    {
+                        app.sidebar_selected = idx;
+                        app.focus = app::Focus::Sidebar;
+                        match app.sidebar_rows()[idx] {
+                            app::SidebarRow::Repo(_) => app.toggle_collapse_selected(),
+                            app::SidebarRow::Workspace(id) => {
+                                app.open_workspace(id);
+                                start_workspace_tab_terminals(
+                                    cmd_tx,
+                                    id,
+                                    &app.ws_tabs,
+                                    &app.settings,
+                                )
+                                .await;
+                                let _ = cmd_tx.send(Command::RefreshGit { id }).await;
+                            }
+                        }
+                        return;
+                    }
+                }
+                // Home modals render within the detail pane (`area`).
                 if app.is_confirming_delete() {
                     let rect = ui::screens::home::delete_modal_rect(area);
                     if point_in_rect(rect, mouse.column, mouse.row) {
@@ -3246,34 +3516,18 @@ async fn handle_mouse(
                     }
                     return;
                 }
-
-                let grid = ui::screens::home::grid_rect(area);
-                let expanded_h =
-                    ui::widgets::tile_grid::tile_h_expanded(app.settings.preview_lines);
-                if let Some(idx) = ui::widgets::tile_grid::index_at(
-                    grid,
-                    mouse.column,
-                    mouse.row,
-                    app.workspaces.len(),
-                    &app.home_expanded_tiles,
-                    expanded_h,
-                    app.home_scroll_offset,
-                ) {
-                    app.set_home_selection(idx);
-                    if let Some(id) = app.selected_workspace_id() {
-                        app.open_workspace(id);
-                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, &app.settings)
-                            .await;
-                        let _ = cmd_tx.send(Command::RefreshGit { id }).await;
-                        let _ = cmd_tx.send(Command::ClearAttention { id }).await;
-                    }
-                }
+                // Otherwise start a text selection on the detail pane.
+                app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
             }
             MouseEventKind::ScrollUp => {
-                app.scroll_home(-3);
+                if sidebar_rect.map_or(false, |sr| point_in_rect(sr, mouse.column, mouse.row)) {
+                    app.move_sidebar_selection(-1);
+                }
             }
             MouseEventKind::ScrollDown => {
-                app.scroll_home(3);
+                if sidebar_rect.map_or(false, |sr| point_in_rect(sr, mouse.column, mouse.row)) {
+                    app.move_sidebar_selection(1);
+                }
             }
             _ => {}
         },

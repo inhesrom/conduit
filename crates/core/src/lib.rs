@@ -17,9 +17,10 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{broadcast, mpsc};
 
 use protocol::{
-    AttentionLevel, Command, Event, GitState, SavedCommand, SshTarget, WorkspaceSummary,
+    AttentionLevel, Command, Event, GitState, RepositoryId, RepositorySummary, SavedCommand,
+    SshTarget, WorkspaceSummary,
 };
-use state::{AppState, Workspace};
+use state::{AppState, Repository, Workspace};
 use uuid::Uuid;
 
 use foreground_commands::{ForegroundCommandKey, ForegroundCommandStore};
@@ -125,12 +126,37 @@ async fn run_workspace_shell_command(
         .await;
 }
 
+/// Signal from an agent's output task to the event loop about review state.
+/// The loop owns `AppState` (and thus git state), so it makes the final
+/// ready-for-review decision; the task only reports agent activity.
+enum ReviewSignal {
+    /// Agent terminal went quiet past the settle window without a prompt.
+    AgentSettled(Uuid),
+    /// Agent terminal produced new output (it's actively working).
+    AgentActive(Uuid),
+}
+
+/// Result of a background worktree-create task, sent back to the event loop so
+/// the new Workspace is registered on the state-owning thread.
+struct WorkspaceCreateOutcome {
+    id: Uuid,
+    repo_id: RepositoryId,
+    name: String,
+    path: PathBuf,
+    branch: String,
+    base_branch: String,
+    ssh: Option<SshTarget>,
+    result: Result<(), anyhow::Error>,
+}
+
 use workspace::attention::AttentionDetector;
 use workspace::git::{
-    checkout_branch, checkout_remote_branch, commit, create_branch, delete_local_branch,
-    delete_remote_branch, diff_commit, diff_commit_file, diff_file, discard_all, discard_file,
-    git_fetch, git_pull, git_push, git_stash, git_stash_all, git_stash_pull_pop, list_commit_files,
-    refresh_git, stage_all, stage_file, unstage_all, unstage_file,
+    checkout_branch, checkout_remote_branch, commit, create_branch, create_worktree,
+    delete_local_branch, delete_remote_branch, detect_default_branch, diff_branch_file,
+    diff_branch_files, diff_commit, diff_commit_file, diff_file, discard_all, discard_file,
+    gh_create_pr, git_fetch, git_pull, git_push, git_stash, git_stash_all, git_stash_pull_pop,
+    list_commit_files, refresh_git, remote_origin_url, remove_worktree, repo_root, stage_all,
+    stage_file, unstage_all, unstage_file,
 };
 use workspace::process_info;
 use workspace::ssh;
@@ -150,7 +176,11 @@ pub fn spawn_core() -> CoreHandle {
 
     tokio::spawn(async move {
         let mut state = AppState::default();
+        restore_repositories(&mut state).await;
         restore_workspaces(&mut state, &evt_tx_task).await;
+        let _ = evt_tx_task.send(Event::RepositoryList {
+            items: repository_summaries(&state),
+        });
         let _ = evt_tx_task.send(Event::WorkspaceList {
             items: workspace_summaries(&state),
         });
@@ -166,6 +196,8 @@ pub fn spawn_core() -> CoreHandle {
             .unwrap_or_default();
         let mut pending_resurrections: HashSet<ForegroundCommandKey> =
             foreground_commands.keys().collect();
+        let (created_ws_tx, mut created_ws_rx) = mpsc::channel::<WorkspaceCreateOutcome>(16);
+        let (review_tx, mut review_rx) = mpsc::channel::<ReviewSignal>(64);
 
         loop {
             tokio::select! {
@@ -173,6 +205,218 @@ pub fn spawn_core() -> CoreHandle {
                     let Some(cmd) = maybe_cmd else { break; };
                     match cmd {
                 Command::SetRoute(route) => state.route = route,
+                // --- Repository registry + worktree lifecycle ---
+                Command::RegisterRepository {
+                    name,
+                    path,
+                    ssh,
+                    default_agent,
+                    worktree_root,
+                } => {
+                    let candidate = PathBuf::from(&path);
+                    match repo_root(&candidate, ssh.as_ref()).await {
+                        Ok(root) => {
+                            let default_branch =
+                                detect_default_branch(&root, ssh.as_ref()).await.ok();
+                            let id = Uuid::new_v4();
+                            let repo = Repository {
+                                id,
+                                name,
+                                path: root,
+                                default_branch,
+                                worktree_root: worktree_root.map(PathBuf::from),
+                                default_agent,
+                                ssh,
+                            };
+                            state.ordered_repo_ids.push(id);
+                            state.repositories.insert(id, repo);
+                            save_repositories(&state);
+                            let _ = evt_tx_task.send(Event::RepositoryList {
+                                items: repository_summaries(&state),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = evt_tx_task.send(Event::Error {
+                                message: format!("Cannot register repository: {e}"),
+                            });
+                        }
+                    }
+                }
+                Command::RemoveRepository { repo_id } => {
+                    state.repositories.remove(&repo_id);
+                    state.ordered_repo_ids.retain(|rid| *rid != repo_id);
+                    save_repositories(&state);
+                    let _ = evt_tx_task.send(Event::RepositoryList {
+                        items: repository_summaries(&state),
+                    });
+                }
+                Command::CreateWorkspace {
+                    repo_id,
+                    name,
+                    base_branch,
+                } => {
+                    if let Some(repo) = state.repositories.get(&repo_id) {
+                        let id = Uuid::new_v4();
+                        let slug = {
+                            let s = protocol::branch_slug(&name);
+                            if s.is_empty() {
+                                format!("ws-{}", &id.simple().to_string()[..8])
+                            } else {
+                                s
+                            }
+                        };
+                        let base = base_branch
+                            .or_else(|| repo.default_branch.clone())
+                            .unwrap_or_else(|| "main".to_string());
+                        let wt_path = worktree_path_for(repo, &slug);
+                        let repo_path = repo.path.clone();
+                        let ssh = repo.ssh.clone();
+                        let display_name = if name.trim().is_empty() {
+                            slug.clone()
+                        } else {
+                            name
+                        };
+
+                        let _ = evt_tx_task.send(Event::WorktreeCreateProgress {
+                            repo_id,
+                            stage: "fetch".to_string(),
+                        });
+
+                        let tx = created_ws_tx.clone();
+                        let evt_progress = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            // Best-effort fetch so the worktree starts from latest upstream.
+                            let _ = git_fetch(&repo_path, ssh.as_ref()).await;
+                            let _ = evt_progress.send(Event::WorktreeCreateProgress {
+                                repo_id,
+                                stage: "worktree-add".to_string(),
+                            });
+                            let remote_ref = format!("origin/{base}");
+                            let mut result =
+                                create_worktree(&repo_path, &wt_path, &slug, &remote_ref, ssh.as_ref())
+                                    .await;
+                            if result.is_err() {
+                                // Repo may have no `origin` remote — fall back to a local base ref.
+                                result =
+                                    create_worktree(&repo_path, &wt_path, &slug, &base, ssh.as_ref())
+                                        .await;
+                            }
+                            let _ = tx
+                                .send(WorkspaceCreateOutcome {
+                                    id,
+                                    repo_id,
+                                    name: display_name,
+                                    path: wt_path,
+                                    branch: slug,
+                                    base_branch: base,
+                                    ssh,
+                                    result,
+                                })
+                                .await;
+                        });
+                    } else {
+                        let _ = evt_tx_task.send(Event::Error {
+                            message: "Cannot create workspace: unknown repository".to_string(),
+                        });
+                    }
+                }
+                Command::SetReadyForReview { id, ready } => {
+                    if let Some(ws) = state.workspaces.get_mut(&id) {
+                        ws.review_manual = true;
+                        ws.ready_for_review = ready;
+                        let _ = evt_tx_task.send(Event::WorkspaceReviewChanged { id, ready });
+                    }
+                }
+                Command::LoadBranchDiff { id } => {
+                    if let Some((path, ssh, base)) = workspace_base_for_diff(&state, id) {
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match diff_branch_files(&path, &base, ssh.as_ref()).await {
+                                Ok(files) => {
+                                    let _ = evt.send(Event::BranchDiffFilesLoaded { id, base, files });
+                                }
+                                Err(e) => {
+                                    let _ = evt.send(Event::Error {
+                                        message: format!("branch diff failed: {e}"),
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+                Command::LoadBranchFileDiff { id, file } => {
+                    if let Some((path, ssh, base)) = workspace_base_for_diff(&state, id) {
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match diff_branch_file(&path, &base, &file, ssh.as_ref()).await {
+                                Ok(diff) => {
+                                    let _ = evt.send(Event::WorkspaceDiffUpdated { id, file, diff });
+                                }
+                                Err(e) => {
+                                    let _ = evt.send(Event::Error {
+                                        message: format!("branch file diff failed: {e}"),
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+                Command::OpenPullRequest { id } => {
+                    let info = state.workspaces.get(&id).map(|ws| {
+                        (
+                            ws.path.clone(),
+                            ws.ssh.clone(),
+                            ws.branch.clone().unwrap_or_default(),
+                        )
+                    });
+                    if let Some((path, ssh, branch)) = info {
+                        let base = workspace_base_for_diff(&state, id)
+                            .map(|(_, _, b)| b)
+                            .unwrap_or_else(|| "main".to_string());
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            // 1. Push the branch (reuses existing push-to-origin).
+                            if let Err(e) = git_push(&path, ssh.as_ref()).await {
+                                let _ = evt.send(Event::GitActionResult {
+                                    id,
+                                    action: "open_pr".to_string(),
+                                    success: false,
+                                    message: format!("push failed: {e}"),
+                                });
+                                return;
+                            }
+                            // 2. Try to open a PR via gh; fall back to a compare URL.
+                            match gh_create_pr(&path, &branch, ssh.as_ref()).await {
+                                Ok(url) => {
+                                    let _ = evt.send(Event::GitActionResult {
+                                        id,
+                                        action: "open_pr".to_string(),
+                                        success: true,
+                                        message: url,
+                                    });
+                                }
+                                Err(_) => {
+                                    let message = match remote_origin_url(&path, ssh.as_ref()).await {
+                                        Ok(origin) => github_compare_url(&origin, &base, &branch)
+                                            .map(|u| format!("pushed — open PR: {u}"))
+                                            .unwrap_or_else(|| {
+                                                "pushed — create PR manually (gh unavailable)"
+                                                    .to_string()
+                                            }),
+                                        Err(_) => "pushed — create PR manually (gh unavailable)"
+                                            .to_string(),
+                                    };
+                                    let _ = evt.send(Event::GitActionResult {
+                                        id,
+                                        action: "open_pr".to_string(),
+                                        success: true,
+                                        message,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
                 Command::AddWorkspace { name, path, ssh } => {
                     let id = Uuid::new_v4();
                     let repo_path = std::path::PathBuf::from(&path);
@@ -186,6 +430,12 @@ pub fn spawn_core() -> CoreHandle {
                         attention: AttentionLevel::None,
                         terminals: Default::default(),
                         last_activity: Instant::now(),
+                        repository_id: None,
+                        branch: None,
+                        base_branch: None,
+                        ready_for_review: false,
+                        review_manual: false,
+                        agent_idle: false,
                     };
                     state.ordered_ids.push(id);
                     state.workspaces.insert(id, ws);
@@ -202,7 +452,8 @@ pub fn spawn_core() -> CoreHandle {
                     });
                 }
                 Command::RemoveWorkspace { id } => {
-                    if let Some(ws) = state.workspaces.remove(&id) {
+                    let removed = state.workspaces.remove(&id);
+                    if let Some(ws) = &removed {
                         let removed_path = ws.path.to_string_lossy().into_owned();
                         let changed = foreground_commands.remove_workspace(&ws.path);
                         pending_resurrections.retain(|key| key.workspace_path != removed_path);
@@ -214,6 +465,23 @@ pub fn spawn_core() -> CoreHandle {
                         }
                     }
                     state.ordered_ids.retain(|wid| *wid != id);
+                    if let Some(ws) = removed {
+                        // Tear down the git worktree for worktree-backed Workspaces.
+                        if let Some(repo_id) = ws.repository_id {
+                            if let Some(repo) = state.repositories.get(&repo_id) {
+                                let repo_path = repo.path.clone();
+                                let wt_path = ws.path.clone();
+                                let ssh = ws.ssh.clone();
+                                tokio::spawn(async move {
+                                    let _ =
+                                        remove_worktree(&repo_path, &wt_path, ssh.as_ref()).await;
+                                });
+                            }
+                            let _ = evt_tx_task.send(Event::RepositoryList {
+                                items: repository_summaries(&state),
+                            });
+                        }
+                    }
                 }
                 Command::RenameWorkspace { id, name } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
@@ -235,7 +503,13 @@ pub fn spawn_core() -> CoreHandle {
                 Command::SetAttention { id, level } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
                         ws.attention = level;
+                        let review_changed = recompute_review(ws);
+                        let ready = ws.ready_for_review;
                         let _ = evt_tx_task.send(Event::WorkspaceAttentionChanged { id, level });
+                        if review_changed {
+                            let _ = evt_tx_task
+                                .send(Event::WorkspaceReviewChanged { id, ready });
+                        }
                     }
                 }
                 Command::ClearAttention { id } => {
@@ -846,6 +1120,7 @@ pub fn spawn_core() -> CoreHandle {
 
                                     let evt_tx_outputs = evt_tx_task.clone();
                                     let cmd_tx_outputs = cmd_tx_internal.clone();
+                                    let review_outputs = review_tx.clone();
                                     let out_tab_id = tid.clone();
                                     tokio::spawn(async move {
                                     let mut detector = AttentionDetector::new();
@@ -872,10 +1147,17 @@ pub fn spawn_core() -> CoreHandle {
                                                                     })
                                                                     .await;
                                                             }
-                                                        } else if attention_active {
-                                                            attention_active = false;
-                                                            let _ = cmd_tx_outputs
-                                                                .send(Command::ClearAttention { id })
+                                                        } else {
+                                                            if attention_active {
+                                                                attention_active = false;
+                                                                let _ = cmd_tx_outputs
+                                                                    .send(Command::ClearAttention { id })
+                                                                    .await;
+                                                            }
+                                                            // Agent went quiet without a prompt —
+                                                            // a candidate for ready-for-review.
+                                                            let _ = review_outputs
+                                                                .send(ReviewSignal::AgentSettled(id))
                                                                 .await;
                                                         }
                                                         continue;
@@ -905,6 +1187,9 @@ pub fn spawn_core() -> CoreHandle {
                                                                 .send(Command::ClearAttention { id })
                                                                 .await;
                                                         }
+                                                        let _ = review_outputs
+                                                            .send(ReviewSignal::AgentActive(id))
+                                                            .await;
                                                     }
                                                     // ANSI-only: has_content=false → settle_deadline unchanged
                                                 }
@@ -920,6 +1205,11 @@ pub fn spawn_core() -> CoreHandle {
                                                     });
                                             }
                                             TerminalOutput::Exited(code) => {
+                                                if is_agent {
+                                                    let _ = review_outputs
+                                                        .send(ReviewSignal::AgentSettled(id))
+                                                        .await;
+                                                }
                                                 let _ = evt_tx_outputs.send(Event::TerminalExited {
                                                     id,
                                                     kind,
@@ -1084,11 +1374,21 @@ pub fn spawn_core() -> CoreHandle {
                 }
                 Some(gr) = git_result_rx.recv() => {
                     if let Ok(git) = gr.result {
+                        let mut review_changed = false;
                         if let Some(ws) = state.workspaces.get_mut(&gr.id) {
                             ws.git = git.clone();
                             ws.last_activity = Instant::now();
+                            review_changed = recompute_review(ws);
                         }
                         let _ = evt_tx_task.send(Event::WorkspaceGitUpdated { id: gr.id, git });
+                        if review_changed {
+                            if let Some(ws) = state.workspaces.get(&gr.id) {
+                                let _ = evt_tx_task.send(Event::WorkspaceReviewChanged {
+                                    id: gr.id,
+                                    ready: ws.ready_for_review,
+                                });
+                            }
+                        }
                     }
                     // When channel is drained (no more pending), clear in-flight flag
                     if git_result_rx.is_empty() {
@@ -1157,6 +1457,86 @@ pub fn spawn_core() -> CoreHandle {
                         }
                     }
                     last_fg.retain(|key, _| current_keys.contains(key));
+                }
+                Some(outcome) = created_ws_rx.recv() => {
+                    match outcome.result {
+                        Ok(()) => {
+                            let id = outcome.id;
+                            let ssh = outcome.ssh.clone();
+                            let path = outcome.path.clone();
+                            let ws = Workspace {
+                                id,
+                                name: outcome.name,
+                                path: outcome.path,
+                                ssh: outcome.ssh,
+                                git: GitState::default(),
+                                attention: AttentionLevel::None,
+                                terminals: Default::default(),
+                                last_activity: Instant::now(),
+                                repository_id: Some(outcome.repo_id),
+                                branch: Some(outcome.branch.clone()),
+                                base_branch: Some(outcome.base_branch),
+                                ready_for_review: false,
+                                review_manual: false,
+                                agent_idle: false,
+                            };
+                            state.ordered_ids.push(id);
+                            state.workspaces.insert(id, ws);
+                            save_workspaces(&state);
+                            let _ = evt_tx_task.send(Event::WorkspaceCreated {
+                                id,
+                                repo_id: outcome.repo_id,
+                                slug: outcome.branch,
+                            });
+                            let _ = evt_tx_task.send(Event::RepositoryList {
+                                items: repository_summaries(&state),
+                            });
+                            let _ = evt_tx_task.send(Event::WorkspaceList {
+                                items: workspace_summaries(&state),
+                            });
+                            let git_tx = git_result_tx.clone();
+                            tokio::spawn(async move {
+                                let _ = git_tx.send(GitRefreshResult {
+                                    id,
+                                    result: refresh_git(&path, ssh.as_ref()).await,
+                                }).await;
+                            });
+                        }
+                        Err(e) => {
+                            let _ = evt_tx_task.send(Event::Error {
+                                message: format!("Failed to create workspace: {e}"),
+                            });
+                        }
+                    }
+                }
+                Some(sig) = review_rx.recv() => {
+                    let result = match sig {
+                        ReviewSignal::AgentActive(id) => {
+                            state.workspaces.get_mut(&id).map(|ws| {
+                                ws.agent_idle = false;
+                                ws.review_manual = false;
+                                let changed = ws.ready_for_review;
+                                ws.ready_for_review = false;
+                                (id, changed, false)
+                            })
+                        }
+                        ReviewSignal::AgentSettled(id) => {
+                            state.workspaces.get_mut(&id).map(|ws| {
+                                ws.agent_idle = true;
+                                let changed = recompute_review(ws);
+                                (id, changed, ws.ready_for_review)
+                            })
+                        }
+                    };
+                    if let Some((id, changed, ready)) = result {
+                        if changed {
+                            let _ = evt_tx_task
+                                .send(Event::WorkspaceReviewChanged { id, ready });
+                            let _ = evt_tx_task.send(Event::WorkspaceList {
+                                items: workspace_summaries(&state),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1237,6 +1617,24 @@ fn save_foreground_commands(path: &Option<PathBuf>, store: &ForegroundCommandSto
     }
 }
 
+/// Recomputes a workspace's heuristic `ready_for_review`. Returns true if the
+/// value changed. A manual override (`review_manual`) suppresses the heuristic
+/// until the agent becomes active again. Ready = agent went idle AND the
+/// worktree has uncommitted-or-ahead changes AND it isn't awaiting input.
+fn recompute_review(ws: &mut Workspace) -> bool {
+    if ws.review_manual {
+        return false;
+    }
+    let has_changes = !ws.git.changed.is_empty() || ws.git.ahead.unwrap_or(0) > 0;
+    let should = ws.agent_idle && has_changes && ws.attention != AttentionLevel::NeedsInput;
+    if should != ws.ready_for_review {
+        ws.ready_for_review = should;
+        true
+    } else {
+        false
+    }
+}
+
 fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
     state
         .ordered_ids
@@ -1257,6 +1655,9 @@ fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
                 shell_running: !ws.terminals.shells.is_empty(),
                 last_activity_unix_ms: unix_ms_now(),
                 ssh_host,
+                repository_id: ws.repository_id,
+                base_branch: ws.base_branch.clone(),
+                ready_for_review: ws.ready_for_review,
             }
         })
         .collect::<Vec<_>>()
@@ -1292,6 +1693,12 @@ struct PersistedWorkspace {
     path: String,
     #[serde(default)]
     ssh: Option<SshTarget>,
+    #[serde(default)]
+    repository_id: Option<RepositoryId>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    base_branch: Option<String>,
 }
 
 fn persist_file() -> Option<PathBuf> {
@@ -1358,6 +1765,9 @@ fn save_workspaces(state: &AppState) {
             name: ws.name.clone(),
             path: ws.path.display().to_string(),
             ssh: ws.ssh.clone(),
+            repository_id: ws.repository_id,
+            branch: ws.branch.clone(),
+            base_branch: ws.base_branch.clone(),
         })
         .collect::<Vec<_>>();
     if let Ok(json) = serde_json::to_string_pretty(&items) {
@@ -1390,6 +1800,12 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
             attention: AttentionLevel::None,
             terminals: Default::default(),
             last_activity: Instant::now(),
+            repository_id: item.repository_id,
+            branch: item.branch.clone().or_else(|| initial_git.branch.clone()),
+            base_branch: item.base_branch.clone(),
+            ready_for_review: false,
+            review_manual: false,
+            agent_idle: false,
         };
         state.ordered_ids.push(id);
         state.workspaces.insert(id, ws);
@@ -1397,6 +1813,228 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
             id,
             git: initial_git,
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Repository registry — global (above sessions), persisted to repositories.json
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedRepository {
+    id: RepositoryId,
+    name: String,
+    path: String,
+    #[serde(default)]
+    default_branch: Option<String>,
+    #[serde(default)]
+    worktree_root: Option<String>,
+    #[serde(default)]
+    default_agent: Option<String>,
+    #[serde(default)]
+    ssh: Option<SshTarget>,
+}
+
+/// XDG-aware config base (`$XDG_CONFIG_HOME` or `~/.config`) joined with
+/// `conduit`. Used for machine-global files like the repository registry.
+fn config_base() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.trim().is_empty() {
+            return Some(PathBuf::from(xdg).join("conduit"));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".config/conduit"))
+}
+
+/// Path to the machine-global repository registry. NOT session-scoped — base
+/// repos are registered once and available in every session.
+fn repositories_file() -> Option<PathBuf> {
+    Some(config_base()?.join("repositories.json"))
+}
+
+fn repository_summaries(state: &AppState) -> Vec<RepositorySummary> {
+    state
+        .ordered_repo_ids
+        .iter()
+        .filter_map(|id| state.repositories.get(id))
+        .map(|repo| {
+            let workspaces: Vec<&Workspace> = state
+                .workspaces
+                .values()
+                .filter(|w| w.repository_id == Some(repo.id))
+                .collect();
+            RepositorySummary {
+                id: repo.id,
+                name: repo.name.clone(),
+                path: repo.path.display().to_string(),
+                default_branch: repo.default_branch.clone(),
+                worktree_root: repo.worktree_root.as_ref().map(|p| p.display().to_string()),
+                default_agent: repo.default_agent.clone(),
+                ssh_host: repo.ssh.as_ref().map(ssh::ssh_destination),
+                workspace_count: workspaces.len(),
+                ready_for_review_count: workspaces.iter().filter(|w| w.ready_for_review).count(),
+            }
+        })
+        .collect()
+}
+
+/// Computes the on-disk worktree path for a new Workspace `slug` of `repo`.
+/// Honors a per-repo `worktree_root` override; otherwise uses the default
+/// `<repo_parent>/.conduit-worktrees/<repo_name>/<slug>` scheme (works locally
+/// and over SSH since it is relative to wherever the repo lives).
+fn worktree_path_for(repo: &Repository, slug: &str) -> PathBuf {
+    match &repo.worktree_root {
+        Some(root) => root.join(slug),
+        None => {
+            let parent = repo.path.parent().unwrap_or(repo.path.as_path());
+            parent
+                .join(".conduit-worktrees")
+                .join(&repo.name)
+                .join(slug)
+        }
+    }
+}
+
+/// Resolves `(worktree_path, ssh, base_branch)` for a workspace's branch diff /
+/// PR. The base falls back: workspace `base_branch` → repo `default_branch` →
+/// `"main"`.
+fn workspace_base_for_diff(
+    state: &AppState,
+    id: Uuid,
+) -> Option<(PathBuf, Option<SshTarget>, String)> {
+    let ws = state.workspaces.get(&id)?;
+    let base = ws
+        .base_branch
+        .clone()
+        .or_else(|| {
+            ws.repository_id
+                .and_then(|rid| state.repositories.get(&rid))
+                .and_then(|r| r.default_branch.clone())
+        })
+        .unwrap_or_else(|| "main".to_string());
+    Some((ws.path.clone(), ws.ssh.clone(), base))
+}
+
+/// Builds a GitHub-style compare URL from an `origin` remote URL, supporting
+/// `git@host:owner/repo(.git)`, `ssh://git@…`, and `http(s)://…` forms.
+fn github_compare_url(origin: &str, base: &str, branch: &str) -> Option<String> {
+    let s = origin.trim();
+    let path = if let Some(rest) = s.strip_prefix("git@") {
+        rest.replacen(':', "/", 1)
+    } else if let Some(rest) = s.strip_prefix("ssh://git@") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("https://") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("http://") {
+        rest.to_string()
+    } else {
+        return None;
+    };
+    let path = path.strip_suffix(".git").unwrap_or(&path);
+    Some(format!("https://{path}/compare/{base}...{branch}?expand=1"))
+}
+
+fn save_repositories(state: &AppState) {
+    let Some(path) = repositories_file() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let items = state
+        .ordered_repo_ids
+        .iter()
+        .filter_map(|id| state.repositories.get(id))
+        .map(|repo| PersistedRepository {
+            id: repo.id,
+            name: repo.name.clone(),
+            path: repo.path.display().to_string(),
+            default_branch: repo.default_branch.clone(),
+            worktree_root: repo.worktree_root.as_ref().map(|p| p.display().to_string()),
+            default_agent: repo.default_agent.clone(),
+            ssh: repo.ssh.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Ok(json) = serde_json::to_string_pretty(&items) {
+        // Write-temp-then-rename: the registry is shared across session daemons,
+        // so avoid torn files. Last-writer-wins is acceptable for one user.
+        let tmp = path.with_extension("json.tmp");
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(&tmp, &path);
+        }
+    }
+}
+
+/// Loads the persisted repository registry. Returns `None` when the file does
+/// not exist yet (first launch) so the caller can trigger migration.
+fn load_repositories() -> Option<Vec<PersistedRepository>> {
+    let path = repositories_file()?;
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Vec<PersistedRepository>>(&raw).ok()
+}
+
+/// Populates `state.repositories` from the persisted registry, or — on first
+/// launch (no registry file) — migrates legacy `workspaces.json` entries into
+/// Repositories.
+async fn restore_repositories(state: &mut AppState) {
+    if let Some(items) = load_repositories() {
+        for item in items {
+            let repo = Repository {
+                id: item.id,
+                name: item.name,
+                path: PathBuf::from(item.path),
+                default_branch: item.default_branch,
+                worktree_root: item.worktree_root.map(PathBuf::from),
+                default_agent: item.default_agent,
+                ssh: item.ssh,
+            };
+            state.ordered_repo_ids.push(repo.id);
+            state.repositories.insert(repo.id, repo);
+        }
+        return;
+    }
+    migrate_legacy_workspaces(state).await;
+    save_repositories(state);
+}
+
+/// First-launch migration: each legacy `workspaces.json` entry that is a git
+/// repository becomes a Repository. Non-git entries are skipped. No Workspaces
+/// are created (source-only model — the user spawns worktree-Workspaces).
+async fn migrate_legacy_workspaces(state: &mut AppState) {
+    let Some(base) = config_base() else {
+        return;
+    };
+    // Migrate from the default (non-session) legacy file.
+    let legacy = base.join("workspaces.json");
+    let Ok(raw) = fs::read_to_string(&legacy) else {
+        return;
+    };
+    let Ok(items) = serde_json::from_str::<Vec<PersistedWorkspace>>(&raw) else {
+        return;
+    };
+    for item in items {
+        let path = PathBuf::from(&item.path);
+        match repo_root(&path, item.ssh.as_ref()).await {
+            Ok(root) => {
+                let default_branch = detect_default_branch(&root, item.ssh.as_ref()).await.ok();
+                let id = Uuid::new_v4();
+                let repo = Repository {
+                    id,
+                    name: item.name,
+                    path: root,
+                    default_branch,
+                    worktree_root: None,
+                    default_agent: None,
+                    ssh: item.ssh,
+                };
+                state.ordered_repo_ids.push(id);
+                state.repositories.insert(id, repo);
+            }
+            Err(_) => {
+                // Not a git repo — skip (the file stays on disk untouched).
+            }
+        }
     }
 }
 
@@ -1429,6 +2067,80 @@ mod tests {
     #[test]
     fn sanitize_special_chars() {
         assert_eq!(sanitize_session_name("a@b#c.d"), "a_b_c_d");
+    }
+
+    fn test_workspace() -> Workspace {
+        Workspace {
+            id: Uuid::new_v4(),
+            name: "ws".into(),
+            path: PathBuf::from("/tmp/ws"),
+            ssh: None,
+            git: GitState::default(),
+            attention: AttentionLevel::None,
+            terminals: Default::default(),
+            last_activity: Instant::now(),
+            repository_id: None,
+            branch: None,
+            base_branch: None,
+            ready_for_review: false,
+            review_manual: false,
+            agent_idle: false,
+        }
+    }
+
+    #[test]
+    fn compare_url_forms() {
+        assert_eq!(
+            github_compare_url("git@github.com:o/r.git", "main", "feat"),
+            Some("https://github.com/o/r/compare/main...feat?expand=1".to_string())
+        );
+        assert_eq!(
+            github_compare_url("https://github.com/o/r.git", "main", "feat"),
+            Some("https://github.com/o/r/compare/main...feat?expand=1".to_string())
+        );
+        assert_eq!(
+            github_compare_url("https://github.com/o/r", "dev", "x"),
+            Some("https://github.com/o/r/compare/dev...x?expand=1".to_string())
+        );
+        assert_eq!(github_compare_url("file:///tmp/repo", "main", "x"), None);
+    }
+
+    #[test]
+    fn review_heuristic_transitions() {
+        let mut ws = test_workspace();
+
+        // Idle but no changes -> not ready.
+        ws.agent_idle = true;
+        assert!(!recompute_review(&mut ws));
+        assert!(!ws.ready_for_review);
+
+        // Idle + dirty -> ready.
+        ws.git.changed.push(protocol::ChangedFile {
+            path: "a.rs".into(),
+            index_status: 'M',
+            worktree_status: ' ',
+        });
+        assert!(recompute_review(&mut ws));
+        assert!(ws.ready_for_review);
+
+        // Awaiting input -> not ready.
+        ws.attention = AttentionLevel::NeedsInput;
+        assert!(recompute_review(&mut ws));
+        assert!(!ws.ready_for_review);
+
+        // Ahead-of-upstream also counts as changes.
+        ws.attention = AttentionLevel::None;
+        ws.git.changed.clear();
+        ws.git.ahead = Some(2);
+        assert!(recompute_review(&mut ws));
+        assert!(ws.ready_for_review);
+
+        // Manual override suppresses the heuristic and sticks.
+        ws.review_manual = true;
+        ws.git.ahead = None;
+        ws.git.changed.clear();
+        assert!(!recompute_review(&mut ws));
+        assert!(ws.ready_for_review);
     }
 
     #[test]
