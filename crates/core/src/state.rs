@@ -69,6 +69,12 @@ pub struct Workspace {
     /// When true, `ready_for_review` was set manually and the heuristic won't
     /// override it until the agent produces new output.
     pub review_manual: bool,
+    /// Whether the agent terminal has produced content inside the settle window.
+    pub agent_active: bool,
     /// Whether the agent terminal has settled (gone quiet past the window).
     pub agent_idle: bool,
+    /// Transient grace window: while `now < until`, terminal output is treated as
+    /// local typing echo and ignored for the spinner / review / prompt heuristics.
+    /// Not persisted (always `None` on load) — see `USER_TYPING_GRACE_MS`.
+    pub agent_input_suppress_until: Option<Instant>,
 }

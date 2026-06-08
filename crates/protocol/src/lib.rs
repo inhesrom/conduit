@@ -48,6 +48,8 @@ pub struct WorkspaceSummary {
     pub dirty_files: usize,
     pub attention: AttentionLevel,
     pub agent_running: bool,
+    #[serde(default)]
+    pub agent_active: bool,
     pub shell_running: bool,
     pub last_activity_unix_ms: u64,
     #[serde(default)]
@@ -524,6 +526,7 @@ mod tests {
             dirty_files: 3,
             attention: AttentionLevel::None,
             agent_running: true,
+            agent_active: true,
             shell_running: false,
             last_activity_unix_ms: 12345,
             ssh_host: Some("remote".into()),
@@ -532,6 +535,26 @@ mod tests {
             ready_for_review: true,
             agent: Some("claude".into()),
         });
+    }
+
+    #[test]
+    fn workspace_summary_defaults_agent_active() {
+        let json = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "name": "test",
+            "path": "/tmp/test",
+            "branch": "main",
+            "ahead": 1,
+            "behind": 2,
+            "dirty_files": 3,
+            "attention": "None",
+            "agent_running": true,
+            "shell_running": false,
+            "last_activity_unix_ms": 12345
+        });
+
+        let ws: WorkspaceSummary = serde_json::from_value(json).unwrap();
+        assert!(!ws.agent_active);
     }
 
     #[test]
