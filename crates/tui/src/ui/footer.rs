@@ -56,6 +56,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
             desc(" cancel"),
         ]);
     }
+    let fullscreen_key = app.settings.terminal_fullscreen_key.as_str();
     let spans = match app.route {
         Route::Home => {
             if app.ssh_history_picker.is_some() {
@@ -273,7 +274,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 key("Y"),
                 desc(" yolo"),
                 gap(),
-                key("F"),
+                key(fullscreen_key),
                 desc(" fullscreen"),
                 gap(),
                 key("Tab"),
@@ -294,7 +295,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 key(":"),
                 desc(" command"),
                 gap(),
-                key("F"),
+                key(fullscreen_key),
                 desc(" fullscreen"),
                 gap(),
                 key(&app.settings.scroll_to_bottom_key),
@@ -343,7 +344,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 key(":"),
                 desc(" command"),
                 gap(),
-                key("F"),
+                key(fullscreen_key),
                 desc(" fullscreen"),
                 gap(),
                 key("Tab"),
@@ -384,7 +385,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key(":"),
                     desc(" command"),
                     gap(),
-                    key("F"),
+                    key(fullscreen_key),
                     desc(" fullscreen"),
                     gap(),
                     key("Tab"),
@@ -430,7 +431,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key(":"),
                     desc(" command"),
                     gap(),
-                    key("F"),
+                    key(fullscreen_key),
                     desc(" fullscreen"),
                     gap(),
                     key("Tab"),
@@ -476,7 +477,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key(":"),
                     desc(" command"),
                     gap(),
-                    key("F"),
+                    key(fullscreen_key),
                     desc(" fullscreen"),
                     gap(),
                     key("Tab"),
@@ -501,7 +502,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key(":"),
                     desc(" command"),
                     gap(),
-                    key("F"),
+                    key(fullscreen_key),
                     desc(" fullscreen"),
                     gap(),
                     key("Tab"),
@@ -526,7 +527,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     key(":"),
                     desc(" command"),
                     gap(),
-                    key("F"),
+                    key(fullscreen_key),
                     desc(" fullscreen"),
                     gap(),
                     key("Tab"),
@@ -546,7 +547,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 key(":"),
                 desc(" command"),
                 gap(),
-                key("F"),
+                key(fullscreen_key),
                 desc(" fullscreen"),
                 gap(),
                 key("Tab"),
@@ -559,7 +560,7 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 desc(" home"),
             ],
             _ => vec![
-                key("F"),
+                key(fullscreen_key),
                 desc(" fullscreen"),
                 gap(),
                 key("Tab"),
@@ -768,5 +769,16 @@ mod tests {
         assert!(hints_contain(&line, "checkout"));
         assert!(hints_contain(&line, "pull"));
         assert!(hints_contain(&line, "push"));
+    }
+
+    #[test]
+    fn workspace_fullscreen_hint_uses_configured_key() {
+        let (mut app, _id) = app_with_workspace();
+        app.focus = Focus::WsBranches;
+        app.settings.terminal_fullscreen_key = "alt+enter".to_string();
+
+        let line = build_footer_hints(&app);
+
+        assert!(hints_contain(&line, "alt+enter"));
     }
 }

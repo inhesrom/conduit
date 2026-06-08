@@ -12,6 +12,7 @@ use crate::app::{
     SETTINGS_ROW_NEXT_WORKSPACE_KEY, SETTINGS_ROW_PASSTHROUGH_KEY, SETTINGS_ROW_PREVIEW_LINES,
     SETTINGS_ROW_PREV_WORKSPACE_KEY, SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY,
     SETTINGS_ROW_SHOW_FRAME_COUNTER, SETTINGS_ROW_TERMINAL_CORE,
+    SETTINGS_ROW_TERMINAL_FULLSCREEN_KEY,
 };
 use crate::ui::footer;
 use crate::ui::widgets::tile_grid;
@@ -582,8 +583,21 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             ),
         ]);
 
-        // Row 10: Terminal parser core
+        // Row 10: Fullscreen hotkey
         let row10 = Line::from(vec![
+            Span::styled(
+                cursor_str(SETTINGS_ROW_TERMINAL_FULLSCREEN_KEY),
+                cursor_style,
+            ),
+            Span::raw("Fullscreen key            "),
+            keybind_val(
+                SETTINGS_ROW_TERMINAL_FULLSCREEN_KEY,
+                &app.settings.terminal_fullscreen_key,
+            ),
+        ]);
+
+        // Row 11: Terminal parser core
+        let row11 = Line::from(vec![
             Span::styled(cursor_str(SETTINGS_ROW_TERMINAL_CORE), cursor_style),
             Span::raw("Terminal core            "),
             Span::styled(
@@ -716,6 +730,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row8,
                     row9,
                     row10,
+                    row11,
                     Line::from(""),
                     hint,
                 ],
@@ -932,7 +947,10 @@ pub fn render_delete_modal(frame: &mut Frame, area: Rect, app: &TuiApp) {
             .find(|r| r.id == repo_id)
             .map(|r| r.name.clone())
             .unwrap_or_else(|| repo_id.to_string());
-        format!("Remove from sidebar?\n\n{}\n\n(unregisters only — files on disk are untouched)", name)
+        format!(
+            "Remove from sidebar?\n\n{}\n\n(unregisters only — files on disk are untouched)",
+            name
+        )
     } else {
         return;
     };
