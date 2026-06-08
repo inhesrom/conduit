@@ -1207,18 +1207,31 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         // and deliver any queued initial prompt once the agent has spun up.
         if let Some(id) = app.pending_open_created.take() {
             app.open_workspace(id);
-            start_workspace_tab_terminals(
-                &backend.cmd_tx,
-                id,
-                &app.ws_tabs,
-                &app.settings,
-                app.workspace_agent(id).as_deref(),
-                app.terminal_content_size,
-            )
-            .await;
+            let size = app.terminal_content_size;
+            start_workspace_tab_terminals(&backend.cmd_tx, &mut app, id, size).await;
             let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
         }
+        if let Some((id, prompt)) = app.pending_agent_fallback.take() {
+            let agent_choice = app.workspace_agent(id);
+            let cmd = agent_vanilla_cmd_for(&app.settings, agent_choice.as_deref());
+            app.queue_agent_startup(id, true);
+            let _ = backend
+                .cmd_tx
+                .send(Command::StartTerminal {
+                    id,
+                    kind: TerminalKind::Agent,
+                    tab_id: Some("agent".to_string()),
+                    cmd,
+                    cols: app.terminal_content_size.0,
+                    rows: app.terminal_content_size.1,
+                })
+                .await;
+            if let Some(prompt) = prompt {
+                app.pending_agent_prompt = Some((id, prompt));
+            }
+        }
         if let Some((id, prompt)) = app.pending_prompt_send.take() {
+            app.record_agent_prompt_sent(id, &prompt);
             let mut data = prompt.into_bytes();
             data.push(b'\r');
             let _ = backend
@@ -1829,10 +1842,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            if matches!(
-                                app.focus,
-                                app::Focus::ReviewFiles | app::Focus::ReviewDiff
-                            ) {
+                            if matches!(app.focus, app::Focus::ReviewFiles | app::Focus::ReviewDiff)
+                            {
                                 let file_count =
                                     app.review_files.get(&id).map(|f| f.len()).unwrap_or(0);
                                 let load_selected =
@@ -2266,13 +2277,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     if let Some(target) = app.workspaces.get(next_idx) {
                                         let target_id = target.id;
                                         app.open_workspace(target_id);
+                                        let size = app.terminal_content_size;
                                         start_workspace_tab_terminals(
                                             &backend.cmd_tx,
+                                            &mut app,
                                             target_id,
-                                            &app.ws_tabs,
-                                            &app.settings,
-                                            app.workspace_agent(target_id).as_deref(),
-                                            app.terminal_content_size,
+                                            size,
                                         )
                                         .await;
                                         let _ = backend
@@ -2305,6 +2315,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             // Shift+Y toggles YOLO mode from any workspace pane.
                             if key.code == KeyCode::Char('Y') {
                                 app.toggle_yolo_mode();
+                                if app.workspace_agent_running(id) {
+                                    app.suppress_next_agent_exit(id);
+                                }
                                 let _ = backend
                                     .cmd_tx
                                     .send(Command::StopTerminal {
@@ -2313,13 +2326,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         tab_id: Some("agent".to_string()),
                                     })
                                     .await;
+                                let agent_choice = app.workspace_agent(id);
+                                let cmd =
+                                    agent_cmd_continue_for(&app.settings, agent_choice.as_deref());
+                                app.queue_agent_startup(id, false);
                                 let _ = backend
                                     .cmd_tx
                                     .send(Command::StartTerminal {
                                         id,
                                         kind: TerminalKind::Agent,
                                         tab_id: Some("agent".to_string()),
-                                        cmd: agent_cmd_continue(&app.settings),
+                                        cmd,
                                         cols: app.terminal_content_size.0,
                                         rows: app.terminal_content_size.1,
                                     })
@@ -2728,11 +2745,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 KeyCode::Char('A')
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
+                                    let kind = app.active_tab_kind();
+                                    if kind == TerminalKind::Agent
+                                        && app.workspace_agent_running(id)
+                                    {
+                                        app.suppress_next_agent_exit(id);
+                                    }
                                     let _ = backend
                                         .cmd_tx
                                         .send(Command::StopTerminal {
                                             id,
-                                            kind: app.active_tab_kind(),
+                                            kind,
                                             tab_id: Some(app.active_tab_id()),
                                         })
                                         .await;
@@ -2755,11 +2778,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 KeyCode::Char('S')
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
+                                    let kind = app.active_tab_kind();
+                                    if kind == TerminalKind::Agent
+                                        && app.workspace_agent_running(id)
+                                    {
+                                        app.suppress_next_agent_exit(id);
+                                    }
                                     let _ = backend
                                         .cmd_tx
                                         .send(Command::StopTerminal {
                                             id,
-                                            kind: app.active_tab_kind(),
+                                            kind,
                                             tab_id: Some(app.active_tab_id()),
                                         })
                                         .await;
@@ -2963,15 +2992,8 @@ async fn handle_sidebar_key(
                 if let Some(id) = app.selected_popout_workspace_id() {
                     app.close_sidebar_popout();
                     app.open_workspace(id);
-                    start_workspace_tab_terminals(
-                        &backend.cmd_tx,
-                        id,
-                        &app.ws_tabs,
-                        &app.settings,
-                        app.workspace_agent(id).as_deref(),
-                        app.terminal_content_size,
-                    )
-                    .await;
+                    let size = app.terminal_content_size;
+                    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
                     let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
                 }
             }
@@ -3055,15 +3077,8 @@ async fn handle_sidebar_key(
                 Some(app::SidebarRow::Repo(_)) => app.toggle_collapse_selected(),
                 Some(app::SidebarRow::Workspace(id)) => {
                     app.open_workspace(id);
-                    start_workspace_tab_terminals(
-                        &backend.cmd_tx,
-                        id,
-                        &app.ws_tabs,
-                        &app.settings,
-                        app.workspace_agent(id).as_deref(),
-                        app.terminal_content_size,
-                    )
-                    .await;
+                    let size = app.terminal_content_size;
+                    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
                     let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
                 }
                 None => {}
@@ -3089,15 +3104,8 @@ async fn handle_sidebar_key(
             KeyCode::Char('R') => {
                 if let Some(id) = app.selected_sidebar_workspace_id() {
                     app.open_workspace(id);
-                    start_workspace_tab_terminals(
-                        &backend.cmd_tx,
-                        id,
-                        &app.ws_tabs,
-                        &app.settings,
-                        app.workspace_agent(id).as_deref(),
-                        app.terminal_content_size,
-                    )
-                    .await;
+                    let size = app.terminal_content_size;
+                    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
                     app.enter_review_mode();
                     let _ = backend.cmd_tx.send(Command::LoadBranchDiff { id }).await;
                 }
@@ -3251,14 +3259,25 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
             let tid = tab_id.clone().unwrap_or_else(|| "shell".to_string());
             app.append_terminal_bytes(id, &tid, kind, msg.as_bytes());
 
-            // Queue agent tab respawn as shell so user can manually run another agent
             if kind == protocol::TerminalKind::Agent {
-                app.pending_agent_respawn = Some((id, tab_id));
+                match app.handle_agent_exit(id, code) {
+                    app::AgentExitAction::Fallback { prompt } => {
+                        app.pending_agent_fallback = Some((id, prompt));
+                    }
+                    app::AgentExitAction::RespawnShell => {
+                        // Keep existing behavior once fallback is not applicable.
+                        app.pending_agent_respawn = Some((id, tab_id));
+                    }
+                    app::AgentExitAction::None => {}
+                }
             }
         }
         CoreEvent::TerminalStarted {
             id, kind, tab_id, ..
         } => {
+            if kind == protocol::TerminalKind::Agent {
+                app.record_agent_started(id);
+            }
             let tid = tab_id.unwrap_or_else(|| "shell".to_string());
             app.reset_terminal(id, &tid);
             app.append_terminal_bytes(id, &tid, kind, b"[terminal started]\r\n");
@@ -3643,15 +3662,8 @@ async fn handle_mouse(
                     app.close_sidebar_popout();
                     if Some(id) != app.active_workspace_id() {
                         app.open_workspace(id);
-                        start_workspace_tab_terminals(
-                            cmd_tx,
-                            id,
-                            &app.ws_tabs,
-                            &app.settings,
-                            app.workspace_agent(id).as_deref(),
-                            app.terminal_content_size,
-                        )
-                        .await;
+                        let size = app.terminal_content_size;
+                        start_workspace_tab_terminals(cmd_tx, app, id, size).await;
                         let _ = cmd_tx.send(Command::RefreshGit { id }).await;
                         let _ = cmd_tx.send(Command::ClearAttention { id }).await;
                     }
@@ -3693,15 +3705,8 @@ async fn handle_mouse(
                             app::SidebarRow::Workspace(id) => {
                                 if Some(id) != app.active_workspace_id() {
                                     app.open_workspace(id);
-                                    start_workspace_tab_terminals(
-                                        cmd_tx,
-                                        id,
-                                        &app.ws_tabs,
-                                        &app.settings,
-                                        app.workspace_agent(id).as_deref(),
-                                        app.terminal_content_size,
-                                    )
-                                    .await;
+                                    let size = app.terminal_content_size;
+                                    start_workspace_tab_terminals(cmd_tx, app, id, size).await;
                                     let _ = cmd_tx.send(Command::RefreshGit { id }).await;
                                     let _ = cmd_tx.send(Command::ClearAttention { id }).await;
                                 }
@@ -4213,11 +4218,8 @@ mod tests {
         for mode in [Expanded, Rail, Hidden] {
             // Sizing path: the geometry the resize loop sends to the PTY.
             let area = detail_area(full, mode);
-            let content = ui::screens::workspace::terminal_content_rect(
-                area,
-                app::Focus::WsTerminal,
-                false,
-            );
+            let content =
+                ui::screens::workspace::terminal_content_rect(area, app::Focus::WsTerminal, false);
             // Draw path: the carve `terminal.draw` actually renders the workspace
             // into. These must be identical so the PTY can never be told it is
             // wider than the pane on screen.
@@ -4228,8 +4230,14 @@ mod tests {
             } else {
                 full
             };
-            assert_eq!(area, drawn, "sizing carve must match drawn carve in {mode:?}");
-            assert!(content.right() <= drawn.right(), "{mode:?} overflows right edge");
+            assert_eq!(
+                area, drawn,
+                "sizing carve must match drawn carve in {mode:?}"
+            );
+            assert!(
+                content.right() <= drawn.right(),
+                "{mode:?} overflows right edge"
+            );
             assert!(content.x >= drawn.x, "{mode:?} starts left of the pane");
         }
     }
@@ -4306,14 +4314,20 @@ mod tests {
         let settings = app::Settings::default();
         // None / empty → the global default agent (claude).
         assert_eq!(agent_cmd_for(&settings, None), vec!["claude".to_string()]);
-        assert_eq!(agent_cmd_for(&settings, Some("  ")), vec!["claude".to_string()]);
+        assert_eq!(
+            agent_cmd_for(&settings, Some("  ")),
+            vec!["claude".to_string()]
+        );
     }
 
     #[test]
     fn agent_cmd_for_uses_named_profile_and_yolo_flags() {
         let mut settings = app::Settings::default();
         // A configured profile name resolves to its command (no yolo by default).
-        assert_eq!(agent_cmd_for(&settings, Some("codex")), vec!["codex".to_string()]);
+        assert_eq!(
+            agent_cmd_for(&settings, Some("codex")),
+            vec!["codex".to_string()]
+        );
         // With yolo_mode on, the profile's yolo flags are appended.
         settings.yolo_mode = true;
         assert_eq!(
@@ -4328,7 +4342,11 @@ mod tests {
         // Not a known profile → split the raw command on whitespace into argv.
         assert_eq!(
             agent_cmd_for(&settings, Some("aider --model gpt-4")),
-            vec!["aider".to_string(), "--model".to_string(), "gpt-4".to_string()],
+            vec![
+                "aider".to_string(),
+                "--model".to_string(),
+                "gpt-4".to_string()
+            ],
         );
     }
 
@@ -4350,6 +4368,44 @@ mod tests {
                 "--model".to_string(),
                 "o3".to_string(),
             ],
+        );
+    }
+
+    #[test]
+    fn agent_vanilla_cmd_for_ignores_claude_yolo_continue_flag() {
+        let mut settings = app::Settings::default();
+        settings.yolo_mode = true;
+        let claude = settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.name == "claude")
+            .expect("claude profile");
+        claude.yolo_flags = vec!["-c".to_string()];
+
+        assert_eq!(
+            agent_vanilla_cmd_for(&settings, Some("claude")),
+            vec!["claude".to_string()],
+        );
+    }
+
+    #[test]
+    fn agent_vanilla_cmd_for_codex_profile_ignores_yolo_flags() {
+        let mut settings = app::Settings::default();
+        settings.yolo_mode = true;
+
+        assert_eq!(
+            agent_vanilla_cmd_for(&settings, Some("codex")),
+            vec!["codex".to_string()],
+        );
+    }
+
+    #[test]
+    fn agent_vanilla_cmd_for_custom_command_uses_first_argv_token() {
+        let settings = app::Settings::default();
+
+        assert_eq!(
+            agent_vanilla_cmd_for(&settings, Some("claude -c")),
+            vec!["claude".to_string()],
         );
     }
 
@@ -4655,14 +4711,7 @@ fn extract_selected_text_from_buf(
 }
 
 fn agent_cmd(settings: &app::Settings) -> Vec<String> {
-    let Some(agent) = settings.active_agent() else {
-        return vec!["claude".to_string()];
-    };
-    let mut cmd = vec![agent.command.clone()];
-    if settings.yolo_mode {
-        cmd.extend(agent.yolo_flags.iter().cloned());
-    }
-    cmd
+    agent_profile_cmd(settings.active_agent(), settings.yolo_mode)
 }
 
 /// Resolves the command to launch in a Workspace's agent terminal, honoring a
@@ -4674,27 +4723,69 @@ fn agent_cmd_for(settings: &app::Settings, agent_choice: Option<&str>) -> Vec<St
         return agent_cmd(settings);
     };
     if let Some(profile) = settings.agents.iter().find(|a| a.name == choice) {
-        let mut cmd = vec![profile.command.clone()];
-        if settings.yolo_mode {
-            cmd.extend(profile.yolo_flags.iter().cloned());
-        }
-        cmd
+        agent_profile_cmd(Some(profile), settings.yolo_mode)
     } else {
-        // Custom command: split on whitespace into argv.
-        choice.split_whitespace().map(str::to_string).collect()
+        split_raw_agent_cmd(choice)
     }
 }
 
-fn agent_cmd_continue(settings: &app::Settings) -> Vec<String> {
-    let Some(agent) = settings.active_agent() else {
+fn agent_vanilla_cmd_for(settings: &app::Settings, agent_choice: Option<&str>) -> Vec<String> {
+    let Some(choice) = agent_choice.map(str::trim).filter(|c| !c.is_empty()) else {
+        return agent_vanilla_profile_cmd(settings.active_agent());
+    };
+    if let Some(profile) = settings.agents.iter().find(|a| a.name == choice) {
+        agent_vanilla_profile_cmd(Some(profile))
+    } else {
+        choice
+            .split_whitespace()
+            .next()
+            .map(|program| vec![program.to_string()])
+            .unwrap_or_else(|| agent_vanilla_profile_cmd(settings.active_agent()))
+    }
+}
+
+fn agent_cmd_continue_for(settings: &app::Settings, agent_choice: Option<&str>) -> Vec<String> {
+    let Some(choice) = agent_choice.map(str::trim).filter(|c| !c.is_empty()) else {
+        return agent_profile_continue_cmd(settings.active_agent(), settings.yolo_mode);
+    };
+    if let Some(profile) = settings.agents.iter().find(|a| a.name == choice) {
+        agent_profile_continue_cmd(Some(profile), settings.yolo_mode)
+    } else {
+        split_raw_agent_cmd(choice)
+    }
+}
+
+fn agent_profile_cmd(agent: Option<&app::AgentProfile>, yolo_mode: bool) -> Vec<String> {
+    let Some(agent) = agent else {
+        return vec!["claude".to_string()];
+    };
+    let mut cmd = vec![agent.command.clone()];
+    if yolo_mode {
+        cmd.extend(agent.yolo_flags.iter().cloned());
+    }
+    cmd
+}
+
+fn agent_profile_continue_cmd(agent: Option<&app::AgentProfile>, yolo_mode: bool) -> Vec<String> {
+    let Some(agent) = agent else {
         return vec!["claude".to_string()];
     };
     let mut cmd = vec![agent.command.clone()];
     cmd.extend(agent.continue_flags.iter().cloned());
-    if settings.yolo_mode {
+    if yolo_mode {
         cmd.extend(agent.yolo_flags.iter().cloned());
     }
     cmd
+}
+
+fn agent_vanilla_profile_cmd(agent: Option<&app::AgentProfile>) -> Vec<String> {
+    agent
+        .map(|agent| vec![agent.command.clone()])
+        .unwrap_or_else(|| vec!["claude".to_string()])
+}
+
+fn split_raw_agent_cmd(choice: &str) -> Vec<String> {
+    choice.split_whitespace().map(str::to_string).collect()
 }
 
 fn open_url(url: &str) {
@@ -4731,18 +4822,22 @@ fn detail_area(full: Rect, sidebar_mode: app::SidebarMode) -> Rect {
 
 async fn start_workspace_tab_terminals(
     cmd_tx: &tokio::sync::mpsc::Sender<Command>,
+    app: &mut TuiApp,
     id: protocol::WorkspaceId,
-    tabs: &[app::TerminalTab],
-    settings: &app::Settings,
-    agent_choice: Option<&str>,
     size: (u16, u16),
 ) {
-    for tab in tabs {
+    let tabs = app.ws_tabs.clone();
+    let settings = app.settings.clone();
+    let agent_choice = app.workspace_agent(id);
+    for tab in &tabs {
         let cmd = if tab.kind == protocol::TerminalKind::Agent {
-            agent_cmd_for(settings, agent_choice)
+            agent_cmd_for(&settings, agent_choice.as_deref())
         } else {
             Vec::new()
         };
+        if tab.kind == protocol::TerminalKind::Agent && !cmd.is_empty() {
+            app.queue_agent_startup(id, false);
+        }
         let _ = cmd_tx
             .send(Command::StartTerminal {
                 id,
