@@ -564,9 +564,16 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             keybind_val(9, &app.settings.scroll_to_bottom_key),
         ]);
 
-        // Row 10: Terminal parser core
+        // Row 10: Fullscreen hotkey
         let row10 = Line::from(vec![
             Span::styled(cursor_str(10), cursor_style),
+            Span::raw("Fullscreen key            "),
+            keybind_val(10, &app.settings.terminal_fullscreen_key),
+        ]);
+
+        // Row 11: Terminal parser core
+        let row11 = Line::from(vec![
+            Span::styled(cursor_str(11), cursor_style),
             Span::raw("Terminal core            "),
             Span::styled(
                 format!("\u{25C2} {} \u{25B8}", app.settings.terminal_core.label()),
@@ -698,6 +705,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row8,
                     row9,
                     row10,
+                    row11,
                     Line::from(""),
                     hint,
                 ],

@@ -64,7 +64,14 @@ pub fn matches_keybinding(key: KeyEvent, binding: &str) -> bool {
     let Some((code, modifiers)) = parse_keybinding(binding) else {
         return false;
     };
-    key.code == code && key.modifiers.contains(modifiers)
+    key_code_matches(key.code, code) && key.modifiers.contains(modifiers)
+}
+
+fn key_code_matches(actual: KeyCode, expected: KeyCode) -> bool {
+    match (actual, expected) {
+        (KeyCode::Char(actual), KeyCode::Char(expected)) => actual.eq_ignore_ascii_case(&expected),
+        _ => actual == expected,
+    }
 }
 
 /// Convert a live `KeyEvent` into a canonical keybinding string like
@@ -111,4 +118,19 @@ pub fn keybind_from_event(key: KeyEvent) -> Option<String> {
     }
     out.push_str(&base);
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fullscreen_default_binding_matches_ctrl_f_not_shift_f() {
+        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        let shift_f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
+
+        assert!(matches_keybinding(ctrl_f, "ctrl+f"));
+        assert!(!matches_keybinding(shift_f, "ctrl+f"));
+        assert!(matches_keybinding(shift_f, "shift+f"));
+    }
 }

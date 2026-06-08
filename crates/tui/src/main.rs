@@ -2306,8 +2306,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            // Shift+F toggles terminal fullscreen from any workspace pane.
-                            if key.code == KeyCode::Char('F') {
+                            // Configurable fullscreen hotkey. Works from any
+                            // workspace pane once terminal passthrough has
+                            // yielded command mode or focus is elsewhere.
+                            if keymap::matches_keybinding(
+                                key,
+                                &app.settings.terminal_fullscreen_key,
+                            ) {
                                 app.toggle_terminal_fullscreen();
                                 continue;
                             }

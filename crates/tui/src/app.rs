@@ -2437,7 +2437,10 @@ impl TuiApp {
             9 => {
                 self.settings_edit_buffer = Some(self.settings.scroll_to_bottom_key.clone());
             }
-            10 => {}
+            10 => {
+                self.settings_edit_buffer = Some(self.settings.terminal_fullscreen_key.clone());
+            }
+            11 => {}
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -2467,7 +2470,7 @@ impl TuiApp {
                 let val = self.settings.preview_lines as i16 + delta;
                 self.settings.preview_lines = val.clamp(4, 30) as u16;
             }
-            10 => {
+            11 => {
                 let next = self.settings.terminal_core.cycle(delta);
                 self.set_terminal_core(next);
                 return;
@@ -2478,7 +2481,7 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        11
+        12
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -2531,6 +2534,11 @@ impl TuiApp {
                         self.settings.scroll_to_bottom_key = trimmed;
                     }
                 }
+                10 => {
+                    if !trimmed.is_empty() {
+                        self.settings.terminal_fullscreen_key = trimmed;
+                    }
+                }
                 _ => {}
             }
             let _ = save_settings(&self.settings);
@@ -2544,7 +2552,7 @@ impl TuiApp {
     /// True when the currently-edited settings row is a keybinding field
     /// (captures a raw key press instead of text input).
     pub fn is_editing_keybind(&self) -> bool {
-        self.settings_edit_buffer.is_some() && matches!(self.settings_selected, 6 | 7 | 8 | 9)
+        self.settings_edit_buffer.is_some() && matches!(self.settings_selected, 6 | 7 | 8 | 9 | 10)
     }
 
     /// Apply a captured keybinding string to the current keybinding row and
@@ -2558,6 +2566,7 @@ impl TuiApp {
             7 => self.settings.next_workspace_key = binding,
             8 => self.settings.passthrough_key = binding,
             9 => self.settings.scroll_to_bottom_key = binding,
+            10 => self.settings.terminal_fullscreen_key = binding,
             _ => return,
         }
         self.settings_edit_buffer = None;
@@ -3143,6 +3152,8 @@ pub struct Settings {
     pub passthrough_key: String,
     #[serde(default = "default_scroll_to_bottom_key")]
     pub scroll_to_bottom_key: String,
+    #[serde(default = "default_terminal_fullscreen_key")]
+    pub terminal_fullscreen_key: String,
     #[serde(default = "default_terminal_core")]
     pub terminal_core: TerminalCoreKind,
 }
@@ -3192,6 +3203,10 @@ fn default_scroll_to_bottom_key() -> String {
     "ctrl+end".to_string()
 }
 
+fn default_terminal_fullscreen_key() -> String {
+    "ctrl+f".to_string()
+}
+
 fn default_terminal_core() -> TerminalCoreKind {
     TerminalCoreKind::Alacritty
 }
@@ -3219,6 +3234,7 @@ impl Default for Settings {
             next_workspace_key: default_next_workspace_key(),
             passthrough_key: default_passthrough_key(),
             scroll_to_bottom_key: default_scroll_to_bottom_key(),
+            terminal_fullscreen_key: default_terminal_fullscreen_key(),
             terminal_core: default_terminal_core(),
         }
     }
@@ -4154,6 +4170,12 @@ mod tests {
     }
 
     #[test]
+    fn settings_default_terminal_fullscreen_key_is_ctrl_f() {
+        let settings = Settings::default();
+        assert_eq!(settings.terminal_fullscreen_key, "ctrl+f");
+    }
+
+    #[test]
     fn settings_persistence_can_use_test_config_root() {
         let root = std::env::temp_dir().join(format!("conduit-config-test-{}", Uuid::new_v4()));
         let _guard = use_test_config_root(root.clone());
@@ -4164,6 +4186,25 @@ mod tests {
 
         assert_eq!(load_settings().passthrough_key, "ctrl+shift+p");
         assert!(root.join("conduit").join("settings.json").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn older_settings_json_loads_default_terminal_fullscreen_key() {
+        let root = std::env::temp_dir().join(format!("conduit-config-test-{}", Uuid::new_v4()));
+        let _guard = use_test_config_root(root.clone());
+        let settings_dir = root.join("conduit");
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(
+            settings_dir.join("settings.json"),
+            r#"{"passthrough_key":"ctrl+p"}"#,
+        )
+        .unwrap();
+
+        let settings = load_settings();
+
+        assert_eq!(settings.passthrough_key, "ctrl+p");
+        assert_eq!(settings.terminal_fullscreen_key, "ctrl+f");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4195,6 +4236,32 @@ mod tests {
         assert!(keymap::matches_keybinding(
             pressed,
             &app.settings.scroll_to_bottom_key
+        ));
+    }
+
+    #[test]
+    fn fullscreen_key_captures_and_applies_immediately() {
+        use crate::keymap;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::default();
+        app.open_settings();
+        app.settings_selected = 10;
+        app.toggle_selected_setting();
+        assert!(app.is_editing_keybind());
+
+        let pressed = KeyEvent::new(
+            KeyCode::Char('m'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let captured = keymap::keybind_from_event(pressed).expect("key produces a binding");
+        app.apply_captured_keybind(captured.clone());
+
+        assert_eq!(app.settings.terminal_fullscreen_key, captured);
+        assert!(!app.is_editing_keybind());
+        assert!(keymap::matches_keybinding(
+            pressed,
+            &app.settings.terminal_fullscreen_key
         ));
     }
 
