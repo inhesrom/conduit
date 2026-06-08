@@ -28,7 +28,7 @@ async fn refresh_git_ssh(repo: &Path, target: &SshTarget) -> Result<GitState> {
         // 0: branch
         "git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ''".to_string(),
         // 1: status
-        "git status --porcelain=v1 2>/dev/null || echo ''".to_string(),
+        "git status --porcelain=v1 -uall 2>/dev/null || echo ''".to_string(),
         // 2: upstream name
         "git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null || echo ''"
             .to_string(),
@@ -77,7 +77,8 @@ async fn refresh_git_local(repo: &Path) -> Result<GitState> {
     let branch_fut =
         ssh::build_command(None, repo, "git", &["rev-parse", "--abbrev-ref", "HEAD"]).output();
 
-    let status_fut = ssh::build_command(None, repo, "git", &["status", "--porcelain=v1"]).output();
+    let status_fut =
+        ssh::build_command(None, repo, "git", &["status", "--porcelain=v1", "-uall"]).output();
 
     let upstream_fut = get_upstream_status(repo);
     let commits_fut = get_recent_commits(repo, 20);

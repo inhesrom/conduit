@@ -2371,6 +2371,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                         .await;
                                                 }
                                             }
+                                            app::LogItem::ChangedDirectory(_) => {
+                                                app.toggle_selected_uncommitted_directory();
+                                            }
                                             app::LogItem::Commit(ci) => {
                                                 if app.ws_expanded_commit == Some(ci) {
                                                     app.ws_expanded_commit = None;
@@ -2494,25 +2497,20 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         && matches!(
                                             app.log_item_at(app.ws_selected_commit),
                                             app::LogItem::ChangedFile(_)
+                                                | app::LogItem::ChangedDirectory(_)
                                         ) =>
                                 {
-                                    // Toggle stage/unstage selected file
-                                    if let app::LogItem::ChangedFile(fi) =
-                                        app.log_item_at(app.ws_selected_commit)
+                                    // Toggle stage/unstage selected uncommitted path.
+                                    if let Some((file, index_status, _)) =
+                                        app.selected_uncommitted_status()
                                     {
-                                        if let Some(git) = app.workspace_git.get(&id) {
-                                            if let Some(f) = git.changed.get(fi) {
-                                                let file = f.path.clone();
-                                                let is_staged =
-                                                    f.index_status != ' ' && f.index_status != '?';
-                                                let cmd = if is_staged {
-                                                    Command::GitUnstageFile { id, file }
-                                                } else {
-                                                    Command::GitStageFile { id, file }
-                                                };
-                                                let _ = backend.cmd_tx.send(cmd).await;
-                                            }
-                                        }
+                                        let is_staged = index_status != ' ' && index_status != '?';
+                                        let cmd = if is_staged {
+                                            Command::GitUnstageFile { id, file }
+                                        } else {
+                                            Command::GitStageFile { id, file }
+                                        };
+                                        let _ = backend.cmd_tx.send(cmd).await;
                                     }
                                 }
                                 KeyCode::Char('+')
@@ -2539,6 +2537,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         && matches!(
                                             app.log_item_at(app.ws_selected_commit),
                                             app::LogItem::ChangedFile(_)
+                                                | app::LogItem::ChangedDirectory(_)
                                         ) =>
                                 {
                                     app.begin_discard();
@@ -3856,6 +3855,9 @@ async fn handle_mouse(
                                     if let Some(file) = app.selected_log_file() {
                                         let _ = cmd_tx.send(Command::LoadDiff { id, file }).await;
                                     }
+                                }
+                                app::LogItem::ChangedDirectory(_) => {
+                                    app.toggle_selected_uncommitted_directory();
                                 }
                                 app::LogItem::Commit(ci) => {
                                     if app.ws_expanded_commit == Some(ci) {

@@ -17,8 +17,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{broadcast, mpsc};
 
 use protocol::{
-    AttentionLevel, Command, Event, GitState, RepositoryId, RepositorySummary, SavedCommand,
-    SshTarget, WorkspaceId, WorkspaceSummary,
+    AttentionLevel, ChangedFile, Command, Event, GitState, RepositoryId, RepositorySummary,
+    SavedCommand, SshTarget, WorkspaceId, WorkspaceSummary,
 };
 use state::{AppState, Repository, Workspace};
 use uuid::Uuid;
@@ -29,6 +29,46 @@ use foreground_commands::{ForegroundCommandKey, ForegroundCommandStore};
 struct GitRefreshResult {
     id: Uuid,
     result: Result<GitState, anyhow::Error>,
+}
+
+fn discard_status_for_path(changed: &[ChangedFile], path: &str) -> (char, char) {
+    if let Some(file) = changed.iter().find(|c| c.path == path) {
+        return (file.index_status, file.worktree_status);
+    }
+
+    let prefix = format!("{}/", path.trim_end_matches('/'));
+    let descendants: Vec<&ChangedFile> = changed
+        .iter()
+        .filter(|c| c.path.starts_with(&prefix))
+        .collect();
+    if descendants.is_empty() {
+        return (' ', ' ');
+    }
+
+    if descendants
+        .iter()
+        .all(|c| c.index_status == '?' && c.worktree_status == '?')
+    {
+        return ('?', '?');
+    }
+
+    let index_status = if descendants
+        .iter()
+        .any(|c| c.index_status != ' ' && c.index_status != '?')
+    {
+        'M'
+    } else {
+        ' '
+    };
+    let worktree_status = if descendants
+        .iter()
+        .any(|c| c.worktree_status != ' ' && c.worktree_status != '?')
+    {
+        'M'
+    } else {
+        ' '
+    };
+    (index_status, worktree_status)
 }
 
 async fn forward_workspace_command_output<R>(
@@ -975,10 +1015,8 @@ pub fn spawn_core() -> CoreHandle {
                     if let Some(ws) = state.workspaces.get(&id) {
                         let path = ws.path.clone();
                         let ssh = ws.ssh.clone();
-                        let (idx_status, wt_status) = ws.git.changed.iter()
-                            .find(|c| c.path == file)
-                            .map(|c| (c.index_status, c.worktree_status))
-                            .unwrap_or((' ', ' '));
+                        let (idx_status, wt_status) =
+                            discard_status_for_path(&ws.git.changed, &file);
                         let evt_tx = evt_tx_task.clone();
                         let git_tx = git_result_tx.clone();
                         tokio::spawn(async move {
@@ -2199,6 +2237,34 @@ mod tests {
             argv: argv.iter().map(|s| (*s).to_string()).collect(),
             cwd: cwd.to_string(),
         }
+    }
+
+    fn changed(path: &str, index_status: char, worktree_status: char) -> ChangedFile {
+        ChangedFile {
+            path: path.to_string(),
+            index_status,
+            worktree_status,
+        }
+    }
+
+    #[test]
+    fn discard_status_for_directory_all_untracked() {
+        let files = vec![
+            changed("agent-skills/SKILL.md", '?', '?'),
+            changed("agent-skills/docs/reference.md", '?', '?'),
+        ];
+
+        assert_eq!(discard_status_for_path(&files, "agent-skills"), ('?', '?'));
+    }
+
+    #[test]
+    fn discard_status_for_directory_with_tracked_descendant_is_not_untracked() {
+        let files = vec![
+            changed("src/lib.rs", ' ', 'M'),
+            changed("src/main.rs", '?', '?'),
+        ];
+
+        assert_eq!(discard_status_for_path(&files, "src"), (' ', 'M'));
     }
 
     #[test]

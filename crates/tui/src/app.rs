@@ -480,12 +480,204 @@ impl QuickCreateState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogItem {
     UncommittedHeader,
     ChangedFile(usize),
+    ChangedDirectory(String),
     Commit(usize),
     CommitFile(usize, usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UncommittedRow {
+    File {
+        file_index: usize,
+        path: String,
+        name: String,
+        depth: usize,
+        index_status: char,
+        worktree_status: char,
+    },
+    Directory {
+        path: String,
+        name: String,
+        depth: usize,
+        collapsed: bool,
+        index_status: char,
+        worktree_status: char,
+    },
+}
+
+impl UncommittedRow {
+    pub fn status(&self) -> (char, char) {
+        match self {
+            UncommittedRow::File {
+                index_status,
+                worktree_status,
+                ..
+            }
+            | UncommittedRow::Directory {
+                index_status,
+                worktree_status,
+                ..
+            } => (*index_status, *worktree_status),
+        }
+    }
+}
+
+fn build_uncommitted_rows(
+    git: &GitState,
+    collapsed_dirs: Option<&HashSet<String>>,
+) -> Vec<UncommittedRow> {
+    let mut rows = Vec::new();
+    let mut emitted_dirs = HashSet::new();
+    let mut descendant_statuses: HashMap<String, Vec<(char, char)>> = HashMap::new();
+
+    for f in &git.changed {
+        let parts: Vec<&str> = f.path.split('/').filter(|part| !part.is_empty()).collect();
+        if parts.len() <= 1 {
+            continue;
+        }
+
+        let mut prefix = String::new();
+        for part in parts.iter().take(parts.len() - 1) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            descendant_statuses
+                .entry(prefix.clone())
+                .or_default()
+                .push((f.index_status, f.worktree_status));
+        }
+    }
+
+    for (file_index, f) in git.changed.iter().enumerate() {
+        let parts: Vec<&str> = f.path.split('/').filter(|part| !part.is_empty()).collect();
+        if parts.len() <= 1 {
+            rows.push(UncommittedRow::File {
+                file_index,
+                path: f.path.clone(),
+                name: f.path.clone(),
+                depth: 0,
+                index_status: f.index_status,
+                worktree_status: f.worktree_status,
+            });
+            continue;
+        }
+
+        let mut prefix = String::new();
+        let mut hidden_by_collapsed_parent = false;
+        for (depth, part) in parts.iter().take(parts.len() - 1).enumerate() {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+
+            if hidden_by_collapsed_parent {
+                continue;
+            }
+
+            let collapsed = collapsed_dirs
+                .map(|dirs| dirs.contains(&prefix))
+                .unwrap_or(false);
+            if emitted_dirs.insert(prefix.clone()) {
+                let (index_status, worktree_status) =
+                    aggregate_directory_status(descendant_statuses.get(&prefix));
+                rows.push(UncommittedRow::Directory {
+                    path: prefix.clone(),
+                    name: (*part).to_string(),
+                    depth,
+                    collapsed,
+                    index_status,
+                    worktree_status,
+                });
+            }
+            if collapsed {
+                hidden_by_collapsed_parent = true;
+            }
+        }
+
+        if !hidden_by_collapsed_parent {
+            rows.push(UncommittedRow::File {
+                file_index,
+                path: f.path.clone(),
+                name: parts.last().copied().unwrap_or(&f.path).to_string(),
+                depth: parts.len() - 1,
+                index_status: f.index_status,
+                worktree_status: f.worktree_status,
+            });
+        }
+    }
+
+    rows
+}
+
+fn aggregate_directory_status(statuses: Option<&Vec<(char, char)>>) -> (char, char) {
+    let Some(statuses) = statuses else {
+        return (' ', ' ');
+    };
+    if statuses.is_empty() {
+        return (' ', ' ');
+    }
+
+    (
+        aggregate_index_status(statuses),
+        aggregate_worktree_status(statuses),
+    )
+}
+
+fn aggregate_index_status(statuses: &[(char, char)]) -> char {
+    if statuses
+        .iter()
+        .all(|(index_status, worktree_status)| *index_status == '?' && *worktree_status == '?')
+    {
+        return '?';
+    }
+
+    let mut staged = statuses
+        .iter()
+        .map(|(index_status, _)| *index_status)
+        .filter(|status| *status != ' ' && *status != '?');
+    let Some(first) = staged.next() else {
+        return ' ';
+    };
+    if staged.all(|status| status == first)
+        && statuses
+            .iter()
+            .all(|(index_status, _)| *index_status == first)
+    {
+        first
+    } else {
+        '*'
+    }
+}
+
+fn aggregate_worktree_status(statuses: &[(char, char)]) -> char {
+    if statuses
+        .iter()
+        .all(|(index_status, worktree_status)| *index_status == '?' && *worktree_status == '?')
+    {
+        return '?';
+    }
+
+    let mut changed = statuses
+        .iter()
+        .map(|(_, worktree_status)| *worktree_status)
+        .filter(|status| *status != ' ');
+    let Some(first) = changed.next() else {
+        return ' ';
+    };
+    if changed.all(|status| status == first)
+        && statuses
+            .iter()
+            .all(|(_, worktree_status)| *worktree_status == first)
+    {
+        first
+    } else {
+        '*'
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -554,6 +746,7 @@ pub struct TuiApp {
     pub ws_next_shell_tab: u32,
     pub home_selected: usize,
     pub ws_uncommitted_expanded: bool,
+    pub collapsed_uncommitted_dirs: HashMap<WorkspaceId, HashSet<String>>,
     pub ws_selected_commit: usize,
     pub ws_selected_local_branch: usize,
     pub ws_selected_remote_branch: usize,
@@ -660,6 +853,7 @@ impl Default for TuiApp {
             ws_next_shell_tab: 2,
             home_selected: 0,
             ws_uncommitted_expanded: false,
+            collapsed_uncommitted_dirs: HashMap::new(),
             ws_selected_commit: 0,
             ws_selected_local_branch: 0,
             ws_selected_remote_branch: 0,
@@ -1638,6 +1832,43 @@ impl TuiApp {
         map
     }
 
+    pub fn uncommitted_rows(&self) -> Vec<UncommittedRow> {
+        let Some(id) = self.active_workspace_id() else {
+            return Vec::new();
+        };
+        let Some(git) = self.workspace_git.get(&id) else {
+            return Vec::new();
+        };
+        self.uncommitted_rows_for_workspace(id, git)
+    }
+
+    fn uncommitted_rows_for_workspace(
+        &self,
+        id: WorkspaceId,
+        git: &GitState,
+    ) -> Vec<UncommittedRow> {
+        build_uncommitted_rows(git, self.collapsed_uncommitted_dirs.get(&id))
+    }
+
+    pub fn toggle_uncommitted_directory(&mut self, path: &str) {
+        let Some(id) = self.active_workspace_id() else {
+            return;
+        };
+        let collapsed_dirs = self.collapsed_uncommitted_dirs.entry(id).or_default();
+        if !collapsed_dirs.insert(path.to_string()) {
+            collapsed_dirs.remove(path);
+        }
+        self.clamp_log_selection();
+    }
+
+    pub fn toggle_selected_uncommitted_directory(&mut self) -> bool {
+        let LogItem::ChangedDirectory(path) = self.log_item_at(self.ws_selected_commit) else {
+            return false;
+        };
+        self.toggle_uncommitted_directory(&path);
+        true
+    }
+
     pub fn total_log_items(&self) -> usize {
         let Some(id) = self.active_workspace_id() else {
             return 1; // just the header
@@ -1645,14 +1876,14 @@ impl TuiApp {
         let Some(git) = self.workspace_git.get(&id) else {
             return 1;
         };
-        let file_count = if self.ws_uncommitted_expanded && !git.changed.is_empty() {
-            git.changed.len()
+        let uncommitted_count = if self.ws_uncommitted_expanded && !git.changed.is_empty() {
+            self.uncommitted_rows_for_workspace(id, git).len()
         } else {
             0
         };
         if self.ws_tag_filter {
             let tag_map = self.tag_map();
-            let mut count = 1 + file_count; // header + uncommitted files
+            let mut count = 1 + uncommitted_count; // header + visible uncommitted rows
             for (i, c) in git.recent_commits.iter().enumerate() {
                 if !tag_map.contains_key(&c.hash) {
                     continue;
@@ -1667,7 +1898,7 @@ impl TuiApp {
             count
         } else {
             let expanded_commit_files = self.expanded_commit_file_count(git);
-            1 + file_count + git.recent_commits.len() + expanded_commit_files
+            1 + uncommitted_count + git.recent_commits.len() + expanded_commit_files
         }
     }
 
@@ -1694,16 +1925,21 @@ impl TuiApp {
             Some(g) => g,
             None => return LogItem::UncommittedHeader,
         };
-        let file_count = if self.ws_uncommitted_expanded && !git.changed.is_empty() {
-            git.changed.len()
+        let uncommitted_rows = if self.ws_uncommitted_expanded && !git.changed.is_empty() {
+            self.uncommitted_rows_for_workspace(id, git)
         } else {
-            0
+            Vec::new()
         };
         let mut offset = index - 1; // subtract header
-        if offset < file_count {
-            return LogItem::ChangedFile(offset);
+        if offset < uncommitted_rows.len() {
+            return match &uncommitted_rows[offset] {
+                UncommittedRow::File { file_index, .. } => LogItem::ChangedFile(*file_index),
+                UncommittedRow::Directory { path, .. } => {
+                    LogItem::ChangedDirectory(path.clone())
+                }
+            };
         }
-        offset -= file_count;
+        offset -= uncommitted_rows.len();
 
         // Commits with optional expanded file lists
         let tag_map = if self.ws_tag_filter {
@@ -1737,7 +1973,7 @@ impl TuiApp {
     pub fn log_item_is_file_context(&self) -> bool {
         matches!(
             self.log_item_at(self.ws_selected_commit),
-            LogItem::UncommittedHeader | LogItem::ChangedFile(_)
+            LogItem::UncommittedHeader | LogItem::ChangedFile(_) | LogItem::ChangedDirectory(_)
         )
     }
 
@@ -1748,6 +1984,38 @@ impl TuiApp {
             git.changed.get(i).map(|c| c.path.clone())
         } else {
             None
+        }
+    }
+
+    pub fn selected_uncommitted_path(&self) -> Option<String> {
+        match self.log_item_at(self.ws_selected_commit) {
+            LogItem::ChangedFile(i) => {
+                let id = self.active_workspace_id()?;
+                let git = self.workspace_git.get(&id)?;
+                git.changed.get(i).map(|c| c.path.clone())
+            }
+            LogItem::ChangedDirectory(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    pub fn selected_uncommitted_status(&self) -> Option<(String, char, char)> {
+        match self.log_item_at(self.ws_selected_commit) {
+            LogItem::ChangedFile(i) => {
+                let id = self.active_workspace_id()?;
+                let git = self.workspace_git.get(&id)?;
+                let f = git.changed.get(i)?;
+                Some((f.path.clone(), f.index_status, f.worktree_status))
+            }
+            LogItem::ChangedDirectory(path) => {
+                let row = self
+                    .uncommitted_rows()
+                    .into_iter()
+                    .find(|row| matches!(row, UncommittedRow::Directory { path: p, .. } if p == &path))?;
+                let (index_status, worktree_status) = row.status();
+                Some((path, index_status, worktree_status))
+            }
+            _ => None,
         }
     }
 
@@ -1897,7 +2165,7 @@ impl TuiApp {
     }
 
     pub fn begin_discard(&mut self) {
-        if let Some(file) = self.selected_log_file() {
+        if let Some(file) = self.selected_uncommitted_path() {
             self.confirm_discard_file = Some(file);
         }
     }
@@ -3002,6 +3270,28 @@ mod tests {
         }
     }
 
+    fn make_nested_git_state() -> GitState {
+        let mut git = make_git_state();
+        git.changed = vec![
+            ChangedFile {
+                path: "agent-skills/SKILL.md".into(),
+                index_status: '?',
+                worktree_status: '?',
+            },
+            ChangedFile {
+                path: "agent-skills/guides/setup.md".into(),
+                index_status: '?',
+                worktree_status: '?',
+            },
+            ChangedFile {
+                path: "Cargo.toml".into(),
+                index_status: 'M',
+                worktree_status: ' ',
+            },
+        ];
+        git
+    }
+
     fn app_with_workspaces(n: usize) -> TuiApp {
         let mut app = TuiApp::default();
         let ws: Vec<_> = (0..n).map(|i| make_ws(&format!("ws{i}"))).collect();
@@ -3379,6 +3669,173 @@ mod tests {
         assert_eq!(app.log_item_at(1), LogItem::ChangedFile(0));
         assert_eq!(app.log_item_at(2), LogItem::ChangedFile(1));
         assert_eq!(app.log_item_at(3), LogItem::Commit(0));
+    }
+
+    #[test]
+    fn uncommitted_rows_build_nested_tree() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_nested_git_state());
+        app.ws_uncommitted_expanded = true;
+
+        let rows = app.uncommitted_rows();
+
+        assert_eq!(
+            rows,
+            vec![
+                UncommittedRow::Directory {
+                    path: "agent-skills".into(),
+                    name: "agent-skills".into(),
+                    depth: 0,
+                    collapsed: false,
+                    index_status: '?',
+                    worktree_status: '?',
+                },
+                UncommittedRow::File {
+                    file_index: 0,
+                    path: "agent-skills/SKILL.md".into(),
+                    name: "SKILL.md".into(),
+                    depth: 1,
+                    index_status: '?',
+                    worktree_status: '?',
+                },
+                UncommittedRow::Directory {
+                    path: "agent-skills/guides".into(),
+                    name: "guides".into(),
+                    depth: 1,
+                    collapsed: false,
+                    index_status: '?',
+                    worktree_status: '?',
+                },
+                UncommittedRow::File {
+                    file_index: 1,
+                    path: "agent-skills/guides/setup.md".into(),
+                    name: "setup.md".into(),
+                    depth: 2,
+                    index_status: '?',
+                    worktree_status: '?',
+                },
+                UncommittedRow::File {
+                    file_index: 2,
+                    path: "Cargo.toml".into(),
+                    name: "Cargo.toml".into(),
+                    depth: 0,
+                    index_status: 'M',
+                    worktree_status: ' ',
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn log_item_at_expanded_uncommitted_includes_directory_rows() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_nested_git_state());
+        app.ws_uncommitted_expanded = true;
+
+        assert_eq!(app.total_log_items(), 8);
+        assert_eq!(app.log_item_at(0), LogItem::UncommittedHeader);
+        assert_eq!(
+            app.log_item_at(1),
+            LogItem::ChangedDirectory("agent-skills".into())
+        );
+        assert_eq!(app.log_item_at(2), LogItem::ChangedFile(0));
+        assert_eq!(
+            app.log_item_at(3),
+            LogItem::ChangedDirectory("agent-skills/guides".into())
+        );
+        assert_eq!(app.log_item_at(4), LogItem::ChangedFile(1));
+        assert_eq!(app.log_item_at(5), LogItem::ChangedFile(2));
+        assert_eq!(app.log_item_at(6), LogItem::Commit(0));
+    }
+
+    #[test]
+    fn log_item_at_collapsed_directory_skips_descendants() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_nested_git_state());
+        app.ws_uncommitted_expanded = true;
+
+        app.toggle_uncommitted_directory("agent-skills");
+
+        assert_eq!(app.total_log_items(), 5);
+        assert_eq!(
+            app.log_item_at(1),
+            LogItem::ChangedDirectory("agent-skills".into())
+        );
+        assert_eq!(app.log_item_at(2), LogItem::ChangedFile(2));
+        assert_eq!(app.log_item_at(3), LogItem::Commit(0));
+    }
+
+    #[test]
+    fn toggle_selected_uncommitted_directory_collapses_and_expands() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_nested_git_state());
+        app.ws_uncommitted_expanded = true;
+        app.ws_selected_commit = 1;
+
+        assert!(app.toggle_selected_uncommitted_directory());
+        assert_eq!(app.total_log_items(), 5);
+        assert!(matches!(
+            app.uncommitted_rows().first(),
+            Some(UncommittedRow::Directory {
+                path,
+                collapsed: true,
+                ..
+            }) if path == "agent-skills"
+        ));
+
+        assert!(app.toggle_selected_uncommitted_directory());
+        assert_eq!(app.total_log_items(), 8);
+        assert!(matches!(
+            app.uncommitted_rows().first(),
+            Some(UncommittedRow::Directory {
+                path,
+                collapsed: false,
+                ..
+            }) if path == "agent-skills"
+        ));
+    }
+
+    #[test]
+    fn selected_uncommitted_status_on_directory_uses_folder_path() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_nested_git_state());
+        app.ws_uncommitted_expanded = true;
+        app.ws_selected_commit = 1;
+
+        assert_eq!(
+            app.selected_uncommitted_status(),
+            Some(("agent-skills".to_string(), '?', '?'))
+        );
+        assert_eq!(app.selected_log_file(), None);
+    }
+
+    #[test]
+    fn selected_uncommitted_status_on_staged_directory_unstages() {
+        let mut git = make_nested_git_state();
+        git.changed[0].index_status = 'A';
+        git.changed[0].worktree_status = ' ';
+
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, git);
+        app.ws_uncommitted_expanded = true;
+        app.ws_selected_commit = 1;
+
+        assert_eq!(
+            app.selected_uncommitted_status(),
+            Some(("agent-skills".to_string(), '*', '*'))
+        );
     }
 
     #[test]
