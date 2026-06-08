@@ -21,6 +21,20 @@ fn url_regex() -> &'static regex::Regex {
 
 const SSH_HISTORY_MAX: usize = 20;
 
+// Settings modal row indexes shared between state handling and rendering.
+pub(crate) const SETTINGS_ROW_DEFAULT_AGENT: usize = 0;
+pub(crate) const SETTINGS_ROW_AGENT_COMMAND: usize = 1;
+pub(crate) const SETTINGS_ROW_AGENT_YOLO_FLAGS: usize = 2;
+pub(crate) const SETTINGS_ROW_ATTENTION_NOTIFICATIONS: usize = 3;
+pub(crate) const SETTINGS_ROW_PREVIEW_LINES: usize = 4;
+pub(crate) const SETTINGS_ROW_SHOW_FRAME_COUNTER: usize = 5;
+pub(crate) const SETTINGS_ROW_PREV_WORKSPACE_KEY: usize = 6;
+pub(crate) const SETTINGS_ROW_NEXT_WORKSPACE_KEY: usize = 7;
+pub(crate) const SETTINGS_ROW_PASSTHROUGH_KEY: usize = 8;
+pub(crate) const SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY: usize = 9;
+pub(crate) const SETTINGS_ROW_TERMINAL_CORE: usize = 10;
+pub(crate) const SETTINGS_ROW_COUNT: usize = 11;
+
 /// Tracks the state of the SSH workspace creation dialog.
 pub struct SshWorkspaceInput {
     pub host: String,
@@ -1199,6 +1213,24 @@ impl TuiApp {
         }
     }
 
+    /// Resolves an adjacent workspace from the active view using `workspaces` order.
+    pub(crate) fn adjacent_workspace_target_id(&self, delta: i32) -> Option<WorkspaceId> {
+        let len = self.workspaces.len();
+        if len == 0 {
+            return None;
+        }
+
+        let cur = match self.route {
+            Route::Workspace { id } => self.workspaces.iter().position(|w| w.id == id)?,
+            Route::Home => {
+                let id = self.selected_workspace_id()?;
+                self.workspaces.iter().position(|w| w.id == id)?
+            }
+        };
+        let next = ((cur as i32 + delta).rem_euclid(len as i32)) as usize;
+        self.workspaces.get(next).map(|w| w.id)
+    }
+
     /// The agent chosen for a Workspace at creation (profile name or custom
     /// command), if any. Used to launch the right agent in its terminal.
     pub fn workspace_agent(&self, id: WorkspaceId) -> Option<String> {
@@ -1293,9 +1325,70 @@ impl TuiApp {
 
     pub fn open_workspace(&mut self, id: WorkspaceId) {
         self.persist_tabs_for_active_workspace();
+        self.sync_navigation_to_workspace(id);
         self.route = Route::Workspace { id };
         self.focus = Focus::WsTerminal;
         self.load_tabs_for_workspace(id);
+    }
+
+    fn sync_navigation_to_workspace(&mut self, id: WorkspaceId) {
+        self.sidebar_popout = None;
+        self.popout_selected = 0;
+
+        let Some(workspace_idx) = self.workspaces.iter().position(|w| w.id == id) else {
+            self.clamp_sidebar_selection();
+            return;
+        };
+
+        self.home_selected = workspace_idx;
+        self.ensure_home_selected_visible();
+
+        let ready_for_review = self.workspaces[workspace_idx].ready_for_review;
+        let repo_id = self.workspaces[workspace_idx].repository_id;
+        if self.sidebar_review_filter && !ready_for_review {
+            self.sidebar_review_filter = false;
+        }
+
+        let known_repo = repo_id.and_then(|rid| {
+            self.repositories
+                .iter()
+                .position(|repo| repo.id == rid)
+                .map(|idx| (rid, idx))
+        });
+
+        if let Some((rid, repo_idx)) = known_repo {
+            self.rail_selected = repo_idx;
+            self.collapsed_repos.remove(&rid);
+        }
+
+        self.select_sidebar_row_for_workspace(id, known_repo.map(|(rid, _)| rid));
+    }
+
+    fn select_sidebar_row_for_workspace(
+        &mut self,
+        id: WorkspaceId,
+        fallback_repo: Option<RepositoryId>,
+    ) {
+        let rows = self.sidebar_rows();
+        if let Some(idx) = rows
+            .iter()
+            .position(|row| matches!(row, SidebarRow::Workspace(wid) if *wid == id))
+        {
+            self.sidebar_selected = idx;
+            return;
+        }
+
+        if let Some(repo_id) = fallback_repo {
+            if let Some(idx) = rows
+                .iter()
+                .position(|row| matches!(row, SidebarRow::Repo(rid) if *rid == repo_id))
+            {
+                self.sidebar_selected = idx;
+                return;
+            }
+        }
+
+        self.clamp_sidebar_selection();
     }
 
     pub fn go_home(&mut self) {
@@ -2404,16 +2497,16 @@ impl TuiApp {
             return; // already editing
         }
         match self.settings_selected {
-            0 => {} // default agent uses h/l to cycle
-            1 | 2 => {
+            SETTINGS_ROW_DEFAULT_AGENT => {} // default agent uses h/l to cycle
+            SETTINGS_ROW_AGENT_COMMAND | SETTINGS_ROW_AGENT_YOLO_FLAGS => {
                 // Text fields — Enter/Space starts editing
                 let current = match self.settings_selected {
-                    1 => self
+                    SETTINGS_ROW_AGENT_COMMAND => self
                         .settings
                         .active_agent()
                         .map(|a| a.command.clone())
                         .unwrap_or_default(),
-                    2 => self
+                    SETTINGS_ROW_AGENT_YOLO_FLAGS => self
                         .settings
                         .active_agent()
                         .map(|a| a.yolo_flags.join(" "))
@@ -2422,22 +2515,26 @@ impl TuiApp {
                 };
                 self.settings_edit_buffer = Some(current);
             }
-            3 => self.settings.attention_notifications = !self.settings.attention_notifications,
-            4 => {} // preview_lines uses adjust, not toggle
-            5 => self.settings.show_frame_counter = !self.settings.show_frame_counter,
-            6 => {
+            SETTINGS_ROW_ATTENTION_NOTIFICATIONS => {
+                self.settings.attention_notifications = !self.settings.attention_notifications
+            }
+            SETTINGS_ROW_PREVIEW_LINES => {} // preview_lines uses adjust, not toggle
+            SETTINGS_ROW_SHOW_FRAME_COUNTER => {
+                self.settings.show_frame_counter = !self.settings.show_frame_counter
+            }
+            SETTINGS_ROW_PREV_WORKSPACE_KEY => {
                 self.settings_edit_buffer = Some(self.settings.prev_workspace_key.clone());
             }
-            7 => {
+            SETTINGS_ROW_NEXT_WORKSPACE_KEY => {
                 self.settings_edit_buffer = Some(self.settings.next_workspace_key.clone());
             }
-            8 => {
+            SETTINGS_ROW_PASSTHROUGH_KEY => {
                 self.settings_edit_buffer = Some(self.settings.passthrough_key.clone());
             }
-            9 => {
+            SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY => {
                 self.settings_edit_buffer = Some(self.settings.scroll_to_bottom_key.clone());
             }
-            10 => {}
+            SETTINGS_ROW_TERMINAL_CORE => {}
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -2445,7 +2542,7 @@ impl TuiApp {
 
     pub fn adjust_selected_setting(&mut self, delta: i16) {
         match self.settings_selected {
-            0 => {
+            SETTINGS_ROW_DEFAULT_AGENT => {
                 // Cycle through agent profiles
                 if !self.settings.agents.is_empty() {
                     let current_idx = self
@@ -2463,11 +2560,11 @@ impl TuiApp {
                     self.settings.default_agent = self.settings.agents[new_idx].name.clone();
                 }
             }
-            4 => {
+            SETTINGS_ROW_PREVIEW_LINES => {
                 let val = self.settings.preview_lines as i16 + delta;
                 self.settings.preview_lines = val.clamp(4, 30) as u16;
             }
-            10 => {
+            SETTINGS_ROW_TERMINAL_CORE => {
                 let next = self.settings.terminal_core.cycle(delta);
                 self.set_terminal_core(next);
                 return;
@@ -2478,7 +2575,7 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        11
+        SETTINGS_ROW_COUNT
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -2489,7 +2586,7 @@ impl TuiApp {
         if let Some(buf) = self.settings_edit_buffer.take() {
             let trimmed = buf.trim().to_string();
             match self.settings_selected {
-                1 | 2 => {
+                SETTINGS_ROW_AGENT_COMMAND | SETTINGS_ROW_AGENT_YOLO_FLAGS => {
                     // Agent fields — find the active agent index
                     let idx = self
                         .settings
@@ -2498,12 +2595,12 @@ impl TuiApp {
                         .position(|a| a.name == self.settings.default_agent);
                     if let Some(idx) = idx {
                         match self.settings_selected {
-                            1 => {
+                            SETTINGS_ROW_AGENT_COMMAND => {
                                 if !trimmed.is_empty() {
                                     self.settings.agents[idx].command = trimmed;
                                 }
                             }
-                            2 => {
+                            SETTINGS_ROW_AGENT_YOLO_FLAGS => {
                                 self.settings.agents[idx].yolo_flags =
                                     trimmed.split_whitespace().map(|s| s.to_string()).collect();
                             }
@@ -2511,22 +2608,22 @@ impl TuiApp {
                         }
                     }
                 }
-                6 => {
+                SETTINGS_ROW_PREV_WORKSPACE_KEY => {
                     if !trimmed.is_empty() {
                         self.settings.prev_workspace_key = trimmed;
                     }
                 }
-                7 => {
+                SETTINGS_ROW_NEXT_WORKSPACE_KEY => {
                     if !trimmed.is_empty() {
                         self.settings.next_workspace_key = trimmed;
                     }
                 }
-                8 => {
+                SETTINGS_ROW_PASSTHROUGH_KEY => {
                     if !trimmed.is_empty() {
                         self.settings.passthrough_key = trimmed;
                     }
                 }
-                9 => {
+                SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY => {
                     if !trimmed.is_empty() {
                         self.settings.scroll_to_bottom_key = trimmed;
                     }
@@ -2544,7 +2641,14 @@ impl TuiApp {
     /// True when the currently-edited settings row is a keybinding field
     /// (captures a raw key press instead of text input).
     pub fn is_editing_keybind(&self) -> bool {
-        self.settings_edit_buffer.is_some() && matches!(self.settings_selected, 6 | 7 | 8 | 9)
+        self.settings_edit_buffer.is_some()
+            && matches!(
+                self.settings_selected,
+                SETTINGS_ROW_PREV_WORKSPACE_KEY
+                    | SETTINGS_ROW_NEXT_WORKSPACE_KEY
+                    | SETTINGS_ROW_PASSTHROUGH_KEY
+                    | SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY
+            )
     }
 
     /// Apply a captured keybinding string to the current keybinding row and
@@ -2554,10 +2658,10 @@ impl TuiApp {
             return;
         }
         match self.settings_selected {
-            6 => self.settings.prev_workspace_key = binding,
-            7 => self.settings.next_workspace_key = binding,
-            8 => self.settings.passthrough_key = binding,
-            9 => self.settings.scroll_to_bottom_key = binding,
+            SETTINGS_ROW_PREV_WORKSPACE_KEY => self.settings.prev_workspace_key = binding,
+            SETTINGS_ROW_NEXT_WORKSPACE_KEY => self.settings.next_workspace_key = binding,
+            SETTINGS_ROW_PASSTHROUGH_KEY => self.settings.passthrough_key = binding,
+            SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY => self.settings.scroll_to_bottom_key = binding,
             _ => return,
         }
         self.settings_edit_buffer = None;
@@ -3328,7 +3432,7 @@ mod tests {
     use super::*;
     use protocol::{
         AttentionLevel, BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo,
-        WorkspaceSummary,
+        RepositorySummary, WorkspaceSummary,
     };
     use uuid::Uuid;
 
@@ -3351,6 +3455,20 @@ mod tests {
             base_branch: None,
             ready_for_review: false,
             agent: None,
+        }
+    }
+
+    fn make_repo(name: &str) -> RepositorySummary {
+        RepositorySummary {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            path: format!("/repos/{name}"),
+            default_branch: Some("main".into()),
+            worktree_root: None,
+            default_agent: None,
+            ssh_host: None,
+            workspace_count: 0,
+            ready_for_review_count: 0,
         }
     }
 
@@ -3693,6 +3811,230 @@ mod tests {
         app.open_workspace(id);
         assert!(matches!(app.route, Route::Workspace { id: wid } if wid == id));
         assert_eq!(app.focus, Focus::WsTerminal);
+        assert_eq!(app.home_selected, 1);
+        assert_eq!(app.sidebar_selected, 1);
+    }
+
+    #[test]
+    fn open_workspace_syncs_sidebar_and_rail_to_cross_repo_target() {
+        let repo_a = make_repo("repo-a");
+        let repo_b = make_repo("repo-b");
+        let mut first = make_ws("first");
+        first.repository_id = Some(repo_a.id);
+        let mut second = make_ws("second");
+        second.repository_id = Some(repo_b.id);
+        let second_id = second.id;
+
+        let mut app = TuiApp::default();
+        app.set_repositories(vec![repo_a, repo_b]);
+        app.set_workspaces(vec![first, second]);
+        app.sidebar_selected = 1;
+        app.rail_selected = 0;
+
+        app.open_workspace(second_id);
+
+        assert_eq!(app.home_selected, 1);
+        assert_eq!(app.rail_selected_repo_index(), 1);
+        assert_eq!(
+            app.selected_sidebar_row(),
+            Some(SidebarRow::Workspace(second_id))
+        );
+    }
+
+    #[test]
+    fn open_workspace_expands_collapsed_repo_and_selects_target_row() {
+        let repo_a = make_repo("repo-a");
+        let repo_b = make_repo("repo-b");
+        let mut first = make_ws("first");
+        first.repository_id = Some(repo_a.id);
+        let mut second = make_ws("second");
+        second.repository_id = Some(repo_b.id);
+        let second_id = second.id;
+        let repo_b_id = repo_b.id;
+
+        let mut app = TuiApp::default();
+        app.set_repositories(vec![repo_a, repo_b]);
+        app.set_workspaces(vec![first, second]);
+        app.collapsed_repos.insert(repo_b_id);
+        app.sidebar_selected = 1;
+
+        app.open_workspace(second_id);
+
+        assert!(!app.collapsed_repos.contains(&repo_b_id));
+        assert_eq!(
+            app.selected_sidebar_row(),
+            Some(SidebarRow::Workspace(second_id))
+        );
+    }
+
+    #[test]
+    fn open_workspace_clears_review_filter_when_target_would_be_hidden() {
+        let repo_a = make_repo("repo-a");
+        let repo_b = make_repo("repo-b");
+        let mut first = make_ws("first");
+        first.repository_id = Some(repo_a.id);
+        first.ready_for_review = true;
+        let mut second = make_ws("second");
+        second.repository_id = Some(repo_b.id);
+        let second_id = second.id;
+
+        let mut app = TuiApp::default();
+        app.set_repositories(vec![repo_a, repo_b]);
+        app.set_workspaces(vec![first, second]);
+        app.sidebar_review_filter = true;
+        app.sidebar_selected = 1;
+
+        app.open_workspace(second_id);
+
+        assert!(!app.sidebar_review_filter);
+        assert_eq!(
+            app.selected_sidebar_row(),
+            Some(SidebarRow::Workspace(second_id))
+        );
+    }
+
+    #[test]
+    fn open_workspace_closes_stale_popout_and_syncs_rail_selection() {
+        let repo_a = make_repo("repo-a");
+        let repo_b = make_repo("repo-b");
+        let repo_a_id = repo_a.id;
+        let mut first = make_ws("first");
+        first.repository_id = Some(repo_a_id);
+        let mut second = make_ws("second");
+        second.repository_id = Some(repo_b.id);
+        let second_id = second.id;
+
+        let mut app = TuiApp::default();
+        app.set_repositories(vec![repo_a, repo_b]);
+        app.set_workspaces(vec![first, second]);
+        app.sidebar_mode = SidebarMode::Rail;
+        app.rail_selected = 0;
+        app.sidebar_popout = Some(repo_a_id);
+        app.popout_selected = 3;
+
+        app.open_workspace(second_id);
+
+        assert_eq!(app.sidebar_popout, None);
+        assert_eq!(app.popout_selected, 0);
+        assert_eq!(app.rail_selected_repo_index(), 1);
+    }
+
+    #[test]
+    fn open_workspace_selects_orphan_target_after_clearing_review_filter() {
+        let repo = make_repo("repo");
+        let mut repo_workspace = make_ws("repo-workspace");
+        repo_workspace.repository_id = Some(repo.id);
+        repo_workspace.ready_for_review = true;
+        let orphan = make_ws("orphan");
+        let orphan_id = orphan.id;
+
+        let mut app = TuiApp::default();
+        app.set_repositories(vec![repo]);
+        app.set_workspaces(vec![repo_workspace, orphan]);
+        app.sidebar_review_filter = true;
+
+        app.open_workspace(orphan_id);
+
+        assert!(!app.sidebar_review_filter);
+        assert_eq!(
+            app.selected_sidebar_row(),
+            Some(SidebarRow::Workspace(orphan_id))
+        );
+    }
+
+    #[test]
+    fn adjacent_workspace_target_uses_active_workspace_anchor() {
+        let mut app = app_with_workspaces(3);
+        let first = app.workspaces[0].id;
+        let second = app.workspaces[1].id;
+        let third = app.workspaces[2].id;
+
+        app.open_workspace(second);
+
+        assert_eq!(app.adjacent_workspace_target_id(-1), Some(first));
+        assert_eq!(app.adjacent_workspace_target_id(1), Some(third));
+    }
+
+    #[test]
+    fn adjacent_workspace_target_uses_home_selection_anchor() {
+        let mut app = app_with_workspaces(3);
+        let first = app.workspaces[0].id;
+        let second = app.workspaces[1].id;
+        let third = app.workspaces[2].id;
+
+        app.open_workspace(second);
+        app.go_home();
+        app.home_selected = 0;
+        app.sidebar_selected = 2;
+
+        assert_eq!(app.selected_workspace_id(), Some(first));
+        assert_eq!(app.selected_sidebar_workspace_id(), Some(third));
+        assert_eq!(app.adjacent_workspace_target_id(1), Some(second));
+    }
+
+    #[test]
+    fn adjacent_workspace_target_wraps_from_first_and_last() {
+        let mut app = app_with_workspaces(3);
+        let first = app.workspaces[0].id;
+        let second = app.workspaces[1].id;
+        let third = app.workspaces[2].id;
+
+        app.open_workspace(first);
+        assert_eq!(app.adjacent_workspace_target_id(-1), Some(third));
+
+        app.open_workspace(third);
+        assert_eq!(app.adjacent_workspace_target_id(1), Some(first));
+        assert_eq!(app.adjacent_workspace_target_id(-1), Some(second));
+    }
+
+    #[test]
+    fn adjacent_workspace_target_follows_flat_order_across_repo_boundaries() {
+        let repo_a = make_repo("repo-a");
+        let repo_b = make_repo("repo-b");
+        let mut first = make_ws("first");
+        first.repository_id = Some(repo_a.id);
+        let first_id = first.id;
+        let mut second = make_ws("second");
+        second.repository_id = Some(repo_b.id);
+        let second_id = second.id;
+        let mut third = make_ws("third");
+        third.repository_id = Some(repo_a.id);
+        let third_id = third.id;
+
+        let mut app = TuiApp::default();
+        app.set_repositories(vec![repo_a, repo_b]);
+        app.set_workspaces(vec![first, second, third]);
+
+        app.open_workspace(first_id);
+        assert_eq!(app.adjacent_workspace_target_id(1), Some(second_id));
+
+        app.open_workspace(second_id);
+        assert_eq!(app.adjacent_workspace_target_id(-1), Some(first_id));
+        assert_eq!(app.adjacent_workspace_target_id(1), Some(third_id));
+    }
+
+    #[test]
+    fn adjacent_workspace_target_uses_current_workspace_list_order() {
+        let mut app = app_with_workspaces(2);
+        let second = app.workspaces[1].id;
+        let third = make_ws("ws2");
+        let third_id = third.id;
+
+        app.open_workspace(second);
+        app.go_home();
+        let mut workspaces = app.workspaces.clone();
+        workspaces.push(third);
+        app.set_workspaces(workspaces);
+
+        assert_eq!(app.adjacent_workspace_target_id(1), Some(third_id));
+    }
+
+    #[test]
+    fn adjacent_workspace_target_returns_none_without_workspaces() {
+        let app = TuiApp::default();
+
+        assert_eq!(app.adjacent_workspace_target_id(1), None);
+        assert_eq!(app.adjacent_workspace_target_id(-1), None);
     }
 
     #[test]
@@ -4174,7 +4516,7 @@ mod tests {
 
         let mut app = TuiApp::default();
         app.open_settings();
-        app.settings_selected = 9;
+        app.settings_selected = SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY;
         // Enter capture mode for the scroll-to-bottom binding row.
         app.toggle_selected_setting();
         assert!(app.is_editing_keybind());
@@ -4205,7 +4547,7 @@ mod tests {
 
         let mut app = TuiApp::default();
         app.open_settings();
-        app.settings_selected = 8;
+        app.settings_selected = SETTINGS_ROW_PASSTHROUGH_KEY;
         app.toggle_selected_setting();
         assert!(app.is_editing_keybind());
 

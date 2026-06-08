@@ -1206,10 +1206,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         // Open + start terminals for a freshly created workspace (auto-agent),
         // and deliver any queued initial prompt once the agent has spun up.
         if let Some(id) = app.pending_open_created.take() {
-            app.open_workspace(id);
-            let size = app.terminal_content_size;
-            start_workspace_tab_terminals(&backend.cmd_tx, &mut app, id, size).await;
-            let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+            activate_workspace(&mut app, &backend, id).await;
         }
         if let Some((id, prompt)) = app.pending_agent_fallback.take() {
             let agent_choice = app.workspace_agent(id);
@@ -1475,6 +1472,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !matches!(app.focus, app::Focus::WsTerminal)
                     {
                         break 'main;
+                    }
+
+                    if handle_global_workspace_hotkey(&mut app, &backend, key).await {
+                        continue;
                     }
 
                     match app.route {
@@ -2249,55 +2250,6 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            // Workspace switching hotkeys work in Conduit command mode
-                            // or from non-terminal panes.
-                            if app.workspaces.len() > 1 {
-                                let switch_delta = if keymap::matches_keybinding(
-                                    key,
-                                    &app.settings.prev_workspace_key,
-                                ) {
-                                    Some(-1i32)
-                                } else if keymap::matches_keybinding(
-                                    key,
-                                    &app.settings.next_workspace_key,
-                                ) {
-                                    Some(1i32)
-                                } else {
-                                    None
-                                };
-                                if let Some(delta) = switch_delta {
-                                    let cur = app
-                                        .workspaces
-                                        .iter()
-                                        .position(|w| Some(w.id) == app.active_workspace_id())
-                                        .unwrap_or(0);
-                                    let len = app.workspaces.len();
-                                    let next_idx =
-                                        ((cur as i32 + delta).rem_euclid(len as i32)) as usize;
-                                    if let Some(target) = app.workspaces.get(next_idx) {
-                                        let target_id = target.id;
-                                        app.open_workspace(target_id);
-                                        let size = app.terminal_content_size;
-                                        start_workspace_tab_terminals(
-                                            &backend.cmd_tx,
-                                            &mut app,
-                                            target_id,
-                                            size,
-                                        )
-                                        .await;
-                                        let _ = backend
-                                            .cmd_tx
-                                            .send(Command::RefreshGit { id: target_id })
-                                            .await;
-                                        let _ = backend
-                                            .cmd_tx
-                                            .send(Command::ClearAttention { id: target_id })
-                                            .await;
-                                    }
-                                    continue;
-                                }
-                            }
-
                             // Configurable "scroll terminal to bottom" hotkey
                             // (resets scrollback). Works from any workspace pane.
                             if keymap::matches_keybinding(key, &app.settings.scroll_to_bottom_key) {
@@ -2963,6 +2915,64 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
     true
 }
 
+fn workspace_hotkeys_allowed(app: &TuiApp) -> bool {
+    !app.is_settings_open()
+        && !app.is_adding_workspace()
+        && !app.is_adding_ssh_workspace()
+        && app.ssh_history_picker.is_none()
+        && !app.is_confirming_delete()
+        && !app.is_renaming_workspace()
+        && !app.is_renaming_tab()
+        && !app.is_committing()
+        && !app.is_creating_branch()
+        && !app.is_workspace_command_open()
+        && !app.is_confirming_discard()
+        && !app.is_confirming_discard_all()
+        && !app.is_confirming_stash_pull_pop()
+        && !app.is_confirming_delete_branch()
+        && !app.is_stashing()
+        && !app.is_quick_creating()
+}
+
+async fn handle_global_workspace_hotkey(
+    app: &mut TuiApp,
+    backend: &Backend,
+    key: KeyEvent,
+) -> bool {
+    if !workspace_hotkeys_allowed(app) {
+        return false;
+    }
+
+    let switch_delta = if keymap::matches_keybinding(key, &app.settings.prev_workspace_key) {
+        Some(-1)
+    } else if keymap::matches_keybinding(key, &app.settings.next_workspace_key) {
+        Some(1)
+    } else {
+        None
+    };
+
+    if let Some(delta) = switch_delta {
+        if let Some(id) = app.adjacent_workspace_target_id(delta) {
+            if Some(id) == app.active_workspace_id() {
+                app.focus = app::Focus::WsTerminal;
+            } else {
+                activate_workspace(app, backend, id).await;
+            }
+        }
+        return true;
+    }
+
+    false
+}
+
+async fn activate_workspace(app: &mut TuiApp, backend: &Backend, id: WorkspaceId) {
+    app.open_workspace(id);
+    let size = app.terminal_content_size;
+    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
+    let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+    let _ = backend.cmd_tx.send(Command::ClearAttention { id }).await;
+}
+
 /// Handles a key while the left sidebar is focused (`Focus::Sidebar`). Returns
 /// `true` if the key was consumed by the sidebar; `false` lets the caller fall
 /// through to its own handling. Shared between the Home and Workspace routes so
@@ -2991,10 +3001,7 @@ async fn handle_sidebar_key(
             KeyCode::Enter | KeyCode::Char('l') => {
                 if let Some(id) = app.selected_popout_workspace_id() {
                     app.close_sidebar_popout();
-                    app.open_workspace(id);
-                    let size = app.terminal_content_size;
-                    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
-                    let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+                    activate_workspace(app, backend, id).await;
                 }
             }
             KeyCode::Char('D') => {
@@ -3076,10 +3083,7 @@ async fn handle_sidebar_key(
             KeyCode::Enter | KeyCode::Char('l') => match app.selected_sidebar_row() {
                 Some(app::SidebarRow::Repo(_)) => app.toggle_collapse_selected(),
                 Some(app::SidebarRow::Workspace(id)) => {
-                    app.open_workspace(id);
-                    let size = app.terminal_content_size;
-                    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
-                    let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+                    activate_workspace(app, backend, id).await;
                 }
                 None => {}
             },
@@ -3103,9 +3107,7 @@ async fn handle_sidebar_key(
             },
             KeyCode::Char('R') => {
                 if let Some(id) = app.selected_sidebar_workspace_id() {
-                    app.open_workspace(id);
-                    let size = app.terminal_content_size;
-                    start_workspace_tab_terminals(&backend.cmd_tx, app, id, size).await;
+                    activate_workspace(app, backend, id).await;
                     app.enter_review_mode();
                     let _ = backend.cmd_tx.send(Command::LoadBranchDiff { id }).await;
                 }

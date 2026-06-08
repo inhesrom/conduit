@@ -6,7 +6,13 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::TuiApp;
+use crate::app::{
+    TuiApp, SETTINGS_ROW_AGENT_COMMAND, SETTINGS_ROW_AGENT_YOLO_FLAGS,
+    SETTINGS_ROW_ATTENTION_NOTIFICATIONS, SETTINGS_ROW_DEFAULT_AGENT,
+    SETTINGS_ROW_NEXT_WORKSPACE_KEY, SETTINGS_ROW_PASSTHROUGH_KEY, SETTINGS_ROW_PREVIEW_LINES,
+    SETTINGS_ROW_PREV_WORKSPACE_KEY, SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY,
+    SETTINGS_ROW_SHOW_FRAME_COUNTER, SETTINGS_ROW_TERMINAL_CORE,
+};
 use crate::ui::footer;
 use crate::ui::widgets::tile_grid;
 use tile_grid::ORANGE;
@@ -458,7 +464,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         // Row 0: Default agent (cycle with h/l)
         let agent_name = active_agent.map(|a| a.name.as_str()).unwrap_or("(none)");
         let row0 = Line::from(vec![
-            Span::styled(cursor_str(0), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_DEFAULT_AGENT), cursor_style),
             Span::raw("Default agent             "),
             Span::styled(
                 format!("\u{25C2} {} \u{25B8}", agent_name),
@@ -468,7 +474,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
         // Row 1: Agent command (editable, shows active agent's command)
         let cmd_display = active_agent.map(|a| a.command.as_str()).unwrap_or("");
-        let cmd_val = if app.settings_selected == 1 {
+        let cmd_val = if app.settings_selected == SETTINGS_ROW_AGENT_COMMAND {
             if let Some(buf) = &app.settings_edit_buffer {
                 Span::styled(format!("{}▏", buf), edit_style)
             } else {
@@ -478,7 +484,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             Span::styled(cmd_display.to_string(), Style::default().fg(Color::Cyan))
         };
         let row1 = Line::from(vec![
-            Span::styled(cursor_str(1), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_AGENT_COMMAND), cursor_style),
             Span::styled("  Command                 ", sub_label_style),
             cmd_val,
         ]);
@@ -487,7 +493,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         let yolo_display = active_agent
             .map(|a| a.yolo_flags.join(" "))
             .unwrap_or_default();
-        let yolo_val = if app.settings_selected == 2 {
+        let yolo_val = if app.settings_selected == SETTINGS_ROW_AGENT_YOLO_FLAGS {
             if let Some(buf) = &app.settings_edit_buffer {
                 Span::styled(format!("{}▏", buf), edit_style)
             } else {
@@ -497,7 +503,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             Span::styled(yolo_display, Style::default().fg(Color::Cyan))
         };
         let row2 = Line::from(vec![
-            Span::styled(cursor_str(2), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_AGENT_YOLO_FLAGS), cursor_style),
             Span::styled("  YOLO flags              ", sub_label_style),
             yolo_val,
         ]);
@@ -505,14 +511,17 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         // Row 3: Attention notifications
         let toggle = render_toggle(app.settings.attention_notifications);
         let row3 = Line::from(vec![
-            Span::styled(cursor_str(3), cursor_style),
+            Span::styled(
+                cursor_str(SETTINGS_ROW_ATTENTION_NOTIFICATIONS),
+                cursor_style,
+            ),
             Span::raw("Attention notifications   "),
             toggle,
         ]);
 
         // Row 4: Preview lines
         let row4 = Line::from(vec![
-            Span::styled(cursor_str(4), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_PREVIEW_LINES), cursor_style),
             Span::raw("Preview lines             "),
             Span::styled(
                 format!("\u{25C2} {} \u{25B8}", app.settings.preview_lines),
@@ -523,7 +532,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         // Row 5: Show frame counter
         let fc_toggle = render_toggle(app.settings.show_frame_counter);
         let row5 = Line::from(vec![
-            Span::styled(cursor_str(5), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_SHOW_FRAME_COUNTER), cursor_style),
             Span::raw("Show frame counter        "),
             fc_toggle,
         ]);
@@ -538,35 +547,44 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
         // Row 6: Prev workspace hotkey
         let row6 = Line::from(vec![
-            Span::styled(cursor_str(6), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_PREV_WORKSPACE_KEY), cursor_style),
             Span::raw("Prev workspace key        "),
-            keybind_val(6, &app.settings.prev_workspace_key),
+            keybind_val(
+                SETTINGS_ROW_PREV_WORKSPACE_KEY,
+                &app.settings.prev_workspace_key,
+            ),
         ]);
 
         // Row 7: Next workspace hotkey
         let row7 = Line::from(vec![
-            Span::styled(cursor_str(7), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_NEXT_WORKSPACE_KEY), cursor_style),
             Span::raw("Next workspace key        "),
-            keybind_val(7, &app.settings.next_workspace_key),
+            keybind_val(
+                SETTINGS_ROW_NEXT_WORKSPACE_KEY,
+                &app.settings.next_workspace_key,
+            ),
         ]);
 
         // Row 8: Terminal command-mode hotkey
         let row8 = Line::from(vec![
-            Span::styled(cursor_str(8), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_PASSTHROUGH_KEY), cursor_style),
             Span::raw("Command mode key         "),
-            keybind_val(8, &app.settings.passthrough_key),
+            keybind_val(SETTINGS_ROW_PASSTHROUGH_KEY, &app.settings.passthrough_key),
         ]);
 
         // Row 9: Scroll-to-bottom hotkey
         let row9 = Line::from(vec![
-            Span::styled(cursor_str(9), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY), cursor_style),
             Span::raw("Scroll to bottom key      "),
-            keybind_val(9, &app.settings.scroll_to_bottom_key),
+            keybind_val(
+                SETTINGS_ROW_SCROLL_TO_BOTTOM_KEY,
+                &app.settings.scroll_to_bottom_key,
+            ),
         ]);
 
         // Row 10: Terminal parser core
         let row10 = Line::from(vec![
-            Span::styled(cursor_str(10), cursor_style),
+            Span::styled(cursor_str(SETTINGS_ROW_TERMINAL_CORE), cursor_style),
             Span::raw("Terminal core            "),
             Span::styled(
                 format!("\u{25C2} {} \u{25B8}", app.settings.terminal_core.label()),
