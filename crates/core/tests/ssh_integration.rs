@@ -195,6 +195,35 @@ async fn refresh_git_over_fake_ssh_preserves_changed_paths_and_branch_names() {
 }
 
 #[tokio::test]
+async fn refresh_git_over_fake_ssh_reports_untracked_directory_leaves() {
+    let _lock = SSH_ENV_LOCK.lock().unwrap();
+    let repo = TempDir::new().unwrap();
+    let fake_bin_dir = TempDir::new().unwrap();
+    let fake_ssh = write_fake_ssh_script(fake_bin_dir.path());
+
+    git_init(repo.path());
+    write_file(repo.path(), "hello.txt", "hello");
+    git_add_all(repo.path());
+    git_commit(repo.path(), "initial commit");
+
+    write_file(repo.path(), "agent-skills/SKILL.md", "skill");
+    write_file(repo.path(), "agent-skills/docs/reference.md", "reference");
+
+    let _ssh_bin = EnvVarGuard::set("CONDUIT_SSH_BIN", fake_ssh.display().to_string());
+    let _fake_mode = EnvVarGuard::set("CONDUIT_FAKE_SSH_MODE", "ok");
+    let _shell = EnvVarGuard::set("SHELL", "/bin/bash");
+
+    let state = refresh_git(repo.path(), Some(&fake_target()))
+        .await
+        .unwrap();
+    let changed: Vec<_> = state.changed.iter().map(|f| f.path.as_str()).collect();
+
+    assert!(changed.contains(&"agent-skills/SKILL.md"));
+    assert!(changed.contains(&"agent-skills/docs/reference.md"));
+    assert!(!changed.contains(&"agent-skills/"));
+}
+
+#[tokio::test]
 async fn refresh_git_over_fake_ssh_matches_local_changed_statuses() {
     let _lock = SSH_ENV_LOCK.lock().unwrap();
     let repo = TempDir::new().unwrap();

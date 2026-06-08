@@ -263,29 +263,84 @@ fn status_marker(c: char) -> char {
     }
 }
 
-fn changed_file_line(f: &protocol::ChangedFile) -> Line<'static> {
-    let idx = f.index_status;
-    let wt = f.worktree_status;
-    let idx_style = match idx {
+fn index_status_style(idx: char) -> Style {
+    match idx {
         '?' => Style::default().fg(Color::Red),
         ' ' => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::Green),
-    };
-    let wt_style = match wt {
+    }
+}
+
+fn worktree_status_style(wt: char) -> Style {
+    match wt {
         '?' => Style::default().fg(Color::Red),
         ' ' => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::Yellow),
-    };
+    }
+}
+
+fn changed_path_line(
+    index_status: char,
+    worktree_status: char,
+    depth: usize,
+    marker: Option<&str>,
+    name: &str,
+    trailing_slash: bool,
+) -> Line<'static> {
+    let indent = "  ".repeat(depth);
+    let marker = marker.map(|marker| format!("{marker} ")).unwrap_or_default();
+    let slash = if trailing_slash { "/" } else { "" };
 
     Line::from(vec![
         Span::raw("  "),
         Span::styled("I:", Style::default().fg(Color::DarkGray)),
-        Span::styled(status_marker(idx).to_string(), idx_style),
+        Span::styled(
+            status_marker(index_status).to_string(),
+            index_status_style(index_status),
+        ),
         Span::raw(" "),
         Span::styled("W:", Style::default().fg(Color::DarkGray)),
-        Span::styled(status_marker(wt).to_string(), wt_style),
-        Span::raw(format!(" {}", f.path)),
+        Span::styled(
+            status_marker(worktree_status).to_string(),
+            worktree_status_style(worktree_status),
+        ),
+        Span::raw(format!(" {indent}{marker}{name}{slash}")),
     ])
+}
+
+#[cfg(test)]
+fn changed_file_line(f: &protocol::ChangedFile) -> Line<'static> {
+    changed_path_line(f.index_status, f.worktree_status, 0, None, &f.path, false)
+}
+
+fn uncommitted_row_line(row: &crate::app::UncommittedRow) -> Line<'static> {
+    match row {
+        crate::app::UncommittedRow::File {
+            name,
+            depth,
+            index_status,
+            worktree_status,
+            ..
+        } => changed_path_line(*index_status, *worktree_status, *depth, None, name, false),
+        crate::app::UncommittedRow::Directory {
+            name,
+            depth,
+            collapsed,
+            index_status,
+            worktree_status,
+            ..
+        } => {
+            let marker = if *collapsed { "▶" } else { "▼" };
+            changed_path_line(
+                *index_status,
+                *worktree_status,
+                *depth,
+                Some(marker),
+                name,
+                true,
+            )
+        }
+    }
 }
 
 const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -317,6 +372,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             .and_then(|id| app.workspace_git.get(&id))
             .map(|g| g.changed.clone())
             .unwrap_or_default();
+        let uncommitted_rows = if app.ws_uncommitted_expanded && !changed.is_empty() {
+            app.uncommitted_rows()
+        } else {
+            Vec::new()
+        };
         let commits = ws_id
             .and_then(|id| app.workspace_git.get(&id))
             .map(|g| g.recent_commits.clone())
@@ -357,8 +417,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
         // Expanded files
         if app.ws_uncommitted_expanded && !changed.is_empty() {
-            for f in &changed {
-                log_items.push(ListItem::new(changed_file_line(f)));
+            for row in &uncommitted_rows {
+                log_items.push(ListItem::new(uncommitted_row_line(row)));
             }
         }
 
@@ -2021,6 +2081,35 @@ mod tests {
 
         assert_eq!(staged, "  I:M W:- checkpoint.pt");
         assert_eq!(unstaged, "  I:- W:M checkpoint.pt");
+    }
+
+    #[test]
+    fn uncommitted_row_line_renders_directory_and_indented_child() {
+        let dir = crate::app::UncommittedRow::Directory {
+            path: "agent-skills".into(),
+            name: "agent-skills".into(),
+            depth: 0,
+            collapsed: false,
+            index_status: '?',
+            worktree_status: '?',
+        };
+        let child = crate::app::UncommittedRow::File {
+            file_index: 0,
+            path: "agent-skills/SKILL.md".into(),
+            name: "SKILL.md".into(),
+            depth: 1,
+            index_status: '?',
+            worktree_status: '?',
+        };
+
+        assert_eq!(
+            line_to_string(uncommitted_row_line(&dir)),
+            "  I:? W:? ▼ agent-skills/"
+        );
+        assert_eq!(
+            line_to_string(uncommitted_row_line(&child)),
+            "  I:? W:?   SKILL.md"
+        );
     }
 
     // --- border_rects tests ---

@@ -31,6 +31,9 @@ fn git_init(dir: &Path) {
 }
 
 fn write_file(dir: &Path, name: &str, content: &str) {
+    if let Some(parent) = dir.join(name).parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
     std::fs::write(dir.join(name), content).unwrap();
 }
 
@@ -101,6 +104,27 @@ async fn refresh_git_dirty_worktree() {
     let state = refresh_git(dir, None).await.unwrap();
     assert_eq!(state.changed.len(), 1, "expected 1 changed file");
     assert_eq!(state.changed[0].path, "hello.txt");
+}
+
+#[tokio::test]
+async fn refresh_git_reports_untracked_directory_leaves() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+
+    git_init(dir);
+    write_file(dir, "hello.txt", "hello");
+    git_add_all(dir);
+    git_commit(dir, "initial commit");
+
+    write_file(dir, "agent-skills/SKILL.md", "skill");
+    write_file(dir, "agent-skills/docs/reference.md", "reference");
+
+    let state = refresh_git(dir, None).await.unwrap();
+    let changed: Vec<_> = state.changed.iter().map(|f| f.path.as_str()).collect();
+
+    assert!(changed.contains(&"agent-skills/SKILL.md"));
+    assert!(changed.contains(&"agent-skills/docs/reference.md"));
+    assert!(!changed.contains(&"agent-skills/"));
 }
 
 #[tokio::test]
