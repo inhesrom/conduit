@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use protocol::{
     AttentionLevel, BranchInfo, GitState, RemoteBranchInfo, RepositoryId, RepositorySummary, Route,
@@ -509,6 +509,22 @@ pub enum UncommittedRow {
     },
 }
 
+const AGENT_STARTUP_FAILURE_WINDOW: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone)]
+struct AgentStartup {
+    started_at: Instant,
+    is_fallback: bool,
+    prompt_sent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentExitAction {
+    Fallback { prompt: Option<String> },
+    RespawnShell,
+    None,
+}
+
 impl UncommittedRow {
     pub fn status(&self) -> (char, char) {
         match self {
@@ -782,8 +798,13 @@ pub struct TuiApp {
     pub mouse_selection: Option<MouseSelection>,
     /// Set on mouse-up to request clipboard copy on the next frame render.
     pub pending_copy_selection: Option<MouseSelection>,
+    /// Agent fallback restart queued after a fast startup failure.
+    pub pending_agent_fallback: Option<(protocol::WorkspaceId, Option<String>)>,
     /// When an agent tab exits, queue a shell respawn in the same tab.
     pub pending_agent_respawn: Option<(protocol::WorkspaceId, Option<String>)>,
+    agent_startups: HashMap<WorkspaceId, AgentStartup>,
+    pending_agent_startups: HashMap<WorkspaceId, bool>,
+    suppressed_agent_exits: HashSet<WorkspaceId>,
     pub ssh_workspace_input: Option<SshWorkspaceInput>,
     pub ssh_history: Vec<SshHistoryEntry>,
     pub ssh_history_picker: Option<SshHistoryPicker>,
@@ -881,7 +902,11 @@ impl Default for TuiApp {
             confirming_delete_agent: false,
             mouse_selection: None,
             pending_copy_selection: None,
+            pending_agent_fallback: None,
             pending_agent_respawn: None,
+            agent_startups: HashMap::new(),
+            pending_agent_startups: HashMap::new(),
+            suppressed_agent_exits: HashSet::new(),
             ssh_workspace_input: None,
             ssh_history: load_ssh_history(),
             ssh_history_picker: None,
@@ -919,6 +944,24 @@ impl TuiApp {
             self.workspaces.iter().map(|ws| ws.id).collect();
         self.workspace_commands
             .retain(|key, _| valid_command_workspaces.contains(&key.id));
+        self.agent_startups
+            .retain(|id, _| valid_command_workspaces.contains(id));
+        self.pending_agent_startups
+            .retain(|id, _| valid_command_workspaces.contains(id));
+        self.suppressed_agent_exits
+            .retain(|id| valid_command_workspaces.contains(id));
+        if matches!(
+            &self.pending_agent_fallback,
+            Some((id, _)) if !valid_command_workspaces.contains(id)
+        ) {
+            self.pending_agent_fallback = None;
+        }
+        if matches!(
+            &self.pending_agent_respawn,
+            Some((id, _)) if !valid_command_workspaces.contains(id)
+        ) {
+            self.pending_agent_respawn = None;
+        }
         self.reconcile_workspace_tab_state();
         self.ensure_home_selected_visible();
         self.clamp_sidebar_selection();
@@ -1163,6 +1206,89 @@ impl TuiApp {
             .iter()
             .find(|w| w.id == id)
             .and_then(|w| w.agent.clone())
+    }
+
+    pub fn workspace_agent_running(&self, id: WorkspaceId) -> bool {
+        self.workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .map(|w| w.agent_running)
+            .unwrap_or(false)
+    }
+
+    pub fn queue_agent_startup(&mut self, id: WorkspaceId, is_fallback: bool) {
+        self.pending_agent_startups.insert(id, is_fallback);
+    }
+
+    pub fn record_agent_started(&mut self, id: WorkspaceId) {
+        if let Some(is_fallback) = self.pending_agent_startups.remove(&id) {
+            self.record_agent_startup_at(id, is_fallback, Instant::now());
+        }
+    }
+
+    fn record_agent_startup_at(&mut self, id: WorkspaceId, is_fallback: bool, started_at: Instant) {
+        self.agent_startups.insert(
+            id,
+            AgentStartup {
+                started_at,
+                is_fallback,
+                prompt_sent: None,
+            },
+        );
+    }
+
+    pub fn record_agent_prompt_sent(&mut self, id: WorkspaceId, prompt: &str) {
+        if let Some(startup) = self.agent_startups.get_mut(&id) {
+            startup.prompt_sent = Some(prompt.to_string());
+        }
+    }
+
+    pub fn suppress_next_agent_exit(&mut self, id: WorkspaceId) {
+        self.suppressed_agent_exits.insert(id);
+        self.agent_startups.remove(&id);
+    }
+
+    pub fn handle_agent_exit(
+        &mut self,
+        id: WorkspaceId,
+        exit_code: Option<i32>,
+    ) -> AgentExitAction {
+        self.handle_agent_exit_at(id, exit_code, Instant::now())
+    }
+
+    fn handle_agent_exit_at(
+        &mut self,
+        id: WorkspaceId,
+        exit_code: Option<i32>,
+        now: Instant,
+    ) -> AgentExitAction {
+        if self.suppressed_agent_exits.remove(&id) {
+            self.agent_startups.remove(&id);
+            let _ = self.take_queued_agent_prompt(id);
+            return AgentExitAction::None;
+        }
+
+        self.pending_agent_startups.remove(&id);
+        let queued_prompt = self.take_queued_agent_prompt(id);
+        let Some(startup) = self.agent_startups.remove(&id) else {
+            return AgentExitAction::RespawnShell;
+        };
+
+        let failed_exit = exit_code.map(|code| code != 0).unwrap_or(true);
+        let fast_exit =
+            now.saturating_duration_since(startup.started_at) <= AGENT_STARTUP_FAILURE_WINDOW;
+        if failed_exit && fast_exit && !startup.is_fallback {
+            return AgentExitAction::Fallback {
+                prompt: queued_prompt.or(startup.prompt_sent),
+            };
+        }
+
+        AgentExitAction::RespawnShell
+    }
+
+    fn take_queued_agent_prompt(&mut self, id: WorkspaceId) -> Option<String> {
+        take_matching_prompt(&mut self.pending_prompt_send, id)
+            .or_else(|| take_matching_prompt(&mut self.pending_agent_prompt, id))
     }
 
     pub fn open_workspace(&mut self, id: WorkspaceId) {
@@ -1934,9 +2060,7 @@ impl TuiApp {
         if offset < uncommitted_rows.len() {
             return match &uncommitted_rows[offset] {
                 UncommittedRow::File { file_index, .. } => LogItem::ChangedFile(*file_index),
-                UncommittedRow::Directory { path, .. } => {
-                    LogItem::ChangedDirectory(path.clone())
-                }
+                UncommittedRow::Directory { path, .. } => LogItem::ChangedDirectory(path.clone()),
             };
         }
         offset -= uncommitted_rows.len();
@@ -2008,10 +2132,9 @@ impl TuiApp {
                 Some((f.path.clone(), f.index_status, f.worktree_status))
             }
             LogItem::ChangedDirectory(path) => {
-                let row = self
-                    .uncommitted_rows()
-                    .into_iter()
-                    .find(|row| matches!(row, UncommittedRow::Directory { path: p, .. } if p == &path))?;
+                let row = self.uncommitted_rows().into_iter().find(
+                    |row| matches!(row, UncommittedRow::Directory { path: p, .. } if p == &path),
+                )?;
                 let (index_status, worktree_status) = row.status();
                 Some((path, index_status, worktree_status))
             }
@@ -2765,6 +2888,19 @@ impl TuiApp {
     }
 }
 
+fn take_matching_prompt(
+    slot: &mut Option<(WorkspaceId, String)>,
+    id: WorkspaceId,
+) -> Option<String> {
+    match slot.take() {
+        Some((prompt_id, prompt)) if prompt_id == id => Some(prompt),
+        other => {
+            *slot = other;
+            None
+        }
+    }
+}
+
 /// Derives a workspace display name from a filesystem path,
 /// falling back to `"workspace"` if the path has no file-name component.
 fn workspace_name_from_path(path: &str) -> String {
@@ -3320,6 +3456,86 @@ mod tests {
             argv: argv.iter().map(|s| (*s).to_string()).collect(),
             cwd: cwd.to_string(),
         }
+    }
+
+    #[test]
+    fn agent_startup_fast_nonzero_exit_falls_back_once() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+
+        app.record_agent_startup_at(id, false, now);
+        assert!(matches!(
+            app.handle_agent_exit_at(id, Some(1), now + Duration::from_secs(1)),
+            AgentExitAction::Fallback { prompt: None }
+        ));
+        assert_eq!(
+            app.handle_agent_exit_at(id, Some(1), now + Duration::from_secs(1)),
+            AgentExitAction::RespawnShell
+        );
+    }
+
+    #[test]
+    fn agent_startup_zero_exit_does_not_fallback() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+
+        app.record_agent_startup_at(id, false, now);
+
+        assert_eq!(
+            app.handle_agent_exit_at(id, Some(0), now + Duration::from_secs(1)),
+            AgentExitAction::RespawnShell
+        );
+    }
+
+    #[test]
+    fn agent_startup_slow_exit_does_not_fallback() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+
+        app.record_agent_startup_at(id, false, now);
+
+        assert_eq!(
+            app.handle_agent_exit_at(
+                id,
+                Some(1),
+                now + AGENT_STARTUP_FAILURE_WINDOW + Duration::from_millis(1),
+            ),
+            AgentExitAction::RespawnShell
+        );
+    }
+
+    #[test]
+    fn agent_startup_fallback_fast_exit_does_not_retry() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+
+        app.record_agent_startup_at(id, true, now);
+
+        assert_eq!(
+            app.handle_agent_exit_at(id, None, now + Duration::from_secs(1)),
+            AgentExitAction::RespawnShell
+        );
+    }
+
+    #[test]
+    fn agent_startup_prompt_sent_during_failed_startup_is_requeued() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+
+        app.record_agent_startup_at(id, false, now);
+        app.record_agent_prompt_sent(id, "fix this");
+
+        assert_eq!(
+            app.handle_agent_exit_at(id, Some(1), now + Duration::from_secs(1)),
+            AgentExitAction::Fallback {
+                prompt: Some("fix this".to_string()),
+            }
+        );
     }
 
     #[test]
