@@ -41,9 +41,62 @@ const SELECT_BG_FOCUSED: Color = Color::Rgb(40, 44, 72);
 /// Background colour for the selected row/strip when the sidebar is unfocused.
 const SELECT_BG_UNFOCUSED: Color = Color::Rgb(32, 32, 40);
 
+/// Stronger row highlight used by expanded sidebar and pop-out selections.
+const ROW_SELECT_BG_FOCUSED: Color = Color::LightBlue;
+const ROW_SELECT_BG_UNFOCUSED: Color = Color::Blue;
+
 /// Accent colour for the "you are here" bar marking the currently-open
 /// workspace — persistent regardless of where the keyboard cursor sits.
 const ACTIVE_ACCENT: Color = Color::Cyan;
+
+fn row_selected_bg(focused: bool) -> Color {
+    if focused {
+        ROW_SELECT_BG_FOCUSED
+    } else {
+        ROW_SELECT_BG_UNFOCUSED
+    }
+}
+
+fn row_selected_fg(focused: bool) -> Color {
+    if focused {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
+fn selected_row_line(mut line: Line<'static>, focused: bool) -> Line<'static> {
+    let bg = row_selected_bg(focused);
+    for span in &mut line.spans {
+        let fg = selected_span_fg(span.style.fg, focused);
+        span.style = span.style.bg(bg).fg(fg).add_modifier(Modifier::BOLD);
+    }
+    line.style(Style::default().bg(bg))
+}
+
+fn selected_span_fg(current: Option<Color>, focused: bool) -> Color {
+    let Some(color) = current else {
+        return row_selected_fg(focused);
+    };
+    if matches!(color, Color::Yellow | Color::Red) || color == REVIEW || color == ACTIVE_ACCENT {
+        color
+    } else {
+        row_selected_fg(focused)
+    }
+}
+
+fn paint_selected_row(frame: &mut Frame, inner: Rect, selected: usize, scroll: u16, focused: bool) {
+    let Some(visible_row) = selected.checked_sub(scroll as usize) else {
+        return;
+    };
+    if visible_row >= inner.height as usize {
+        return;
+    }
+    frame.buffer_mut().set_style(
+        Rect::new(inner.x, inner.y + visible_row as u16, inner.width, 1),
+        Style::default().bg(row_selected_bg(focused)),
+    );
+}
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let focused = app.focus == Focus::Sidebar;
@@ -89,12 +142,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             SidebarRow::Workspace(wid) => workspace_line(app, *wid),
         };
         if i == app.sidebar_selected {
-            let bg = if focused {
-                SELECT_BG_FOCUSED
-            } else {
-                SELECT_BG_UNFOCUSED
-            };
-            line = line.style(Style::default().bg(bg));
+            line = selected_row_line(line, focused);
         }
         lines.push(line);
     }
@@ -103,6 +151,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let h = inner.height.max(1) as usize;
     let scroll = app.sidebar_selected.saturating_sub(h.saturating_sub(1)) as u16;
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+    paint_selected_row(frame, inner, app.sidebar_selected, scroll, focused);
 }
 
 /// Maps a click at `(x, y)` within the sidebar `area` to a flattened row index.
@@ -429,13 +478,14 @@ pub fn render_popout(frame: &mut Frame, rail: Rect, full: Rect, app: &TuiApp) {
     for (i, wid) in ids.iter().enumerate() {
         let mut line = workspace_line(app, *wid);
         if i == app.popout_selected {
-            line = line.style(Style::default().bg(SELECT_BG_FOCUSED));
+            line = selected_row_line(line, true);
         }
         lines.push(line);
     }
     let h = inner.height.max(1) as usize;
     let scroll = app.popout_selected.saturating_sub(h.saturating_sub(1)) as u16;
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+    paint_selected_row(frame, inner, app.popout_selected, scroll, true);
 }
 
 /// Maps a click to a workspace index within the open pop-out, if inside its
@@ -460,6 +510,7 @@ pub fn popout_row_index_at(rail: Rect, full: Rect, app: &TuiApp, x: u16, y: u16)
 mod tests {
     use super::*;
     use protocol::{RepositorySummary, WorkspaceSummary};
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
     use uuid::Uuid;
 
     fn repo_summary(id: protocol::RepositoryId) -> RepositorySummary {
@@ -518,6 +569,46 @@ mod tests {
             .collect()
     }
 
+    fn render_sidebar_buffer(app: &TuiApp) -> (Buffer, Rect) {
+        let area = Rect::new(0, 0, WIDTH, 6);
+        let inner = Block::default().borders(Borders::ALL).inner(area);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, area, app);
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), inner)
+    }
+
+    fn render_popout_buffer(app: &TuiApp) -> (Buffer, Rect) {
+        let full = Rect::new(0, 0, 80, 12);
+        let rail = Rect::new(0, 0, RAIL_WIDTH, full.height);
+        let popout = popout_rect(rail, full, app).unwrap();
+        let inner = Block::default().borders(Borders::ALL).inner(popout);
+        let backend = TestBackend::new(full.width, full.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_popout(frame, rail, full, app);
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), inner)
+    }
+
+    fn assert_row_bg(buffer: &Buffer, inner: Rect, row_offset: u16, expected: Color) {
+        let y = inner.y + row_offset;
+        for x in inner.left()..inner.right() {
+            assert_eq!(buffer[(x, y)].bg, expected, "x={x}, y={y}");
+        }
+        assert_eq!(buffer[(inner.right() - 1, y)].symbol(), " ");
+    }
+
+    fn assert_cell_fg(buffer: &Buffer, x: u16, y: u16, expected: Color) {
+        assert_eq!(buffer[(x, y)].fg, expected, "x={x}, y={y}");
+    }
+
     #[test]
     fn active_workspace_shows_spinner_in_status_slot() {
         let (mut app, _repo_id, ws_id) = app_with_workspace();
@@ -560,5 +651,51 @@ mod tests {
         assert_eq!(owners.first().copied(), Some(0));
         assert_eq!(text(&lines[0]).trim(), "⠹");
         assert_eq!(lines[0].spans[1].style.fg, Some(AGENT_ACTIVE));
+    }
+
+    #[test]
+    fn expanded_sidebar_selected_repo_fills_visible_row_background() {
+        let (mut app, _repo_id, _ws_id) = app_with_workspace();
+        app.sidebar_selected = 0;
+
+        let (buffer, inner) = render_sidebar_buffer(&app);
+
+        assert_row_bg(&buffer, inner, 0, ROW_SELECT_BG_FOCUSED);
+        assert_cell_fg(&buffer, inner.x + 2, inner.y, row_selected_fg(true));
+    }
+
+    #[test]
+    fn expanded_sidebar_selected_workspace_fills_visible_row_background() {
+        let (mut app, _repo_id, _ws_id) = app_with_workspace();
+        app.sidebar_selected = 1;
+
+        let (buffer, inner) = render_sidebar_buffer(&app);
+
+        assert_row_bg(&buffer, inner, 1, ROW_SELECT_BG_FOCUSED);
+        assert_cell_fg(&buffer, inner.x + 4, inner.y + 1, row_selected_fg(true));
+    }
+
+    #[test]
+    fn selected_workspace_preserves_attention_marker_color() {
+        let (mut app, _repo_id, _ws_id) = app_with_workspace();
+        app.sidebar_selected = 1;
+        app.workspaces[0].attention = AttentionLevel::NeedsInput;
+
+        let (buffer, inner) = render_sidebar_buffer(&app);
+
+        assert_row_bg(&buffer, inner, 1, ROW_SELECT_BG_FOCUSED);
+        assert_cell_fg(&buffer, inner.x + 2, inner.y + 1, Color::Yellow);
+    }
+
+    #[test]
+    fn popout_selected_workspace_fills_row_with_focused_background() {
+        let (mut app, repo_id, _ws_id) = app_with_workspace();
+        app.sidebar_popout = Some(repo_id);
+        app.focus = Focus::WsTerminal;
+
+        let (buffer, inner) = render_popout_buffer(&app);
+
+        assert_row_bg(&buffer, inner, 0, ROW_SELECT_BG_FOCUSED);
+        assert_cell_fg(&buffer, inner.x + 4, inner.y, row_selected_fg(true));
     }
 }
