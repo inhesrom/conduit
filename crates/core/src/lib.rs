@@ -166,6 +166,12 @@ async fn run_workspace_shell_command(
         .await;
 }
 
+/// Grace window after a local keystroke during which the agent terminal's
+/// echoed output is ignored for the spinner / review / prompt heuristics, so
+/// typing doesn't flash `agent_active` or trip false `NeedsInput`. Distinct from
+/// the 500 ms `SETTLE_MS` window, which still governs real agent output.
+const USER_TYPING_GRACE_MS: u64 = 3000;
+
 /// Signal from an agent's output task to the event loop about review state.
 /// The loop owns `AppState` (and thus git state), so it makes the final
 /// ready-for-review decision; the task only reports agent activity.
@@ -174,6 +180,9 @@ enum ReviewSignal {
     AgentSettled(Uuid),
     /// Agent terminal produced new output (it's actively working).
     AgentActive(Uuid),
+    /// Agent terminal process exited. Clears any typing-grace window before
+    /// settling so the final review state is always recomputed.
+    AgentExited(Uuid),
 }
 
 /// Result of a background worktree-create task, sent back to the event loop so
@@ -522,7 +531,9 @@ pub fn spawn_core() -> CoreHandle {
                         agent: None,
                         ready_for_review: false,
                         review_manual: false,
+                        agent_active: false,
                         agent_idle: false,
+                        agent_input_suppress_until: None,
                     };
                     state.ordered_ids.push(id);
                     state.workspaces.insert(id, ws);
@@ -589,6 +600,11 @@ pub fn spawn_core() -> CoreHandle {
                 }
                 Command::SetAttention { id, level } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
+                        // Drop prompt-detection `NeedsInput` triggered by local
+                        // typing echo; `Error` is always honoured.
+                        if should_suppress_attention(ws, level, Instant::now()) {
+                            continue;
+                        }
                         ws.attention = level;
                         let review_changed = recompute_review(ws);
                         let ready = ws.ready_for_review;
@@ -1170,6 +1186,9 @@ pub fn spawn_core() -> CoreHandle {
                                     if let Some(existing) = ws.terminals.agent.take() {
                                         let _ = existing.stop().await;
                                     }
+                                    ws.agent_active = false;
+                                    ws.agent_idle = false;
+                                    ws.agent_input_suppress_until = None;
                                 }
                                 protocol::TerminalKind::Shell => {
                                     if let Some(existing) = ws.terminals.shells.remove(&tid) {
@@ -1296,7 +1315,7 @@ pub fn spawn_core() -> CoreHandle {
                                             TerminalOutput::Exited(code) => {
                                                 if is_agent {
                                                     let _ = review_outputs
-                                                        .send(ReviewSignal::AgentSettled(id))
+                                                        .send(ReviewSignal::AgentExited(id))
                                                         .await;
                                                 }
                                                 let _ = evt_tx_outputs.send(Event::TerminalExited {
@@ -1333,7 +1352,11 @@ pub fn spawn_core() -> CoreHandle {
                             None
                         };
                         let stopped = match kind {
-                            protocol::TerminalKind::Agent => ws.terminals.agent.take(),
+                            protocol::TerminalKind::Agent => {
+                                ws.agent_active = false;
+                                ws.agent_input_suppress_until = None;
+                                ws.terminals.agent.take()
+                            }
                             protocol::TerminalKind::Shell => ws.terminals.shells.remove(&tid),
                         };
                         if let Some(session) = stopped {
@@ -1381,14 +1404,21 @@ pub fn spawn_core() -> CoreHandle {
                                 base64::engine::general_purpose::STANDARD.decode(data_b64)
                             {
                                 let _ = session.send_input(&bytes).await;
-                                if matches!(kind, protocol::TerminalKind::Agent)
-                                    && ws.attention == AttentionLevel::NeedsInput
-                                {
-                                    ws.attention = AttentionLevel::None;
-                                    let _ = evt_tx_task.send(Event::WorkspaceAttentionChanged {
-                                        id,
-                                        level: AttentionLevel::None,
-                                    });
+                                if matches!(kind, protocol::TerminalKind::Agent) {
+                                    // Local keystrokes echo back as agent output;
+                                    // arm a grace window so that echo doesn't flash
+                                    // the spinner or trip prompt/review heuristics.
+                                    // The per-command WorkspaceList emit below
+                                    // propagates any cleared `agent_active`.
+                                    let _ = apply_agent_input(ws, &bytes, Instant::now());
+                                    if ws.attention == AttentionLevel::NeedsInput {
+                                        ws.attention = AttentionLevel::None;
+                                        let _ =
+                                            evt_tx_task.send(Event::WorkspaceAttentionChanged {
+                                                id,
+                                                level: AttentionLevel::None,
+                                            });
+                                    }
                                 }
                             }
                         }
@@ -1568,7 +1598,9 @@ pub fn spawn_core() -> CoreHandle {
                                 agent: outcome.agent,
                                 ready_for_review: false,
                                 review_manual: false,
+                                agent_active: false,
                                 agent_idle: false,
+                                agent_input_suppress_until: None,
                             };
                             state.ordered_ids.push(id);
                             state.workspaces.insert(id, ws);
@@ -1602,26 +1634,34 @@ pub fn spawn_core() -> CoreHandle {
                 Some(sig) = review_rx.recv() => {
                     let result = match sig {
                         ReviewSignal::AgentActive(id) => {
-                            state.workspaces.get_mut(&id).map(|ws| {
-                                ws.agent_idle = false;
-                                ws.review_manual = false;
-                                let changed = ws.ready_for_review;
-                                ws.ready_for_review = false;
-                                (id, changed, false)
-                            })
+                            state
+                                .workspaces
+                                .get_mut(&id)
+                                .map(|ws| (id, apply_agent_active(ws)))
                         }
                         ReviewSignal::AgentSettled(id) => {
+                            state
+                                .workspaces
+                                .get_mut(&id)
+                                .map(|ws| (id, apply_agent_settled(ws)))
+                        }
+                        ReviewSignal::AgentExited(id) => {
                             state.workspaces.get_mut(&id).map(|ws| {
-                                ws.agent_idle = true;
-                                let changed = recompute_review(ws);
-                                (id, changed, ws.ready_for_review)
+                                // Exit ends any typing-grace window, so the final
+                                // settle/review is always recomputed.
+                                ws.agent_input_suppress_until = None;
+                                (id, apply_agent_settled(ws))
                             })
                         }
                     };
-                    if let Some((id, changed, ready)) = result {
-                        if changed {
-                            let _ = evt_tx_task
-                                .send(Event::WorkspaceReviewChanged { id, ready });
+                    if let Some((id, transition)) = result {
+                        if transition.review_changed {
+                            let _ = evt_tx_task.send(Event::WorkspaceReviewChanged {
+                                id,
+                                ready: transition.ready,
+                            });
+                        }
+                        if transition.review_changed || transition.active_changed {
                             let _ = evt_tx_task.send(Event::WorkspaceList {
                                 items: workspace_summaries(&state),
                             });
@@ -1707,6 +1747,95 @@ fn save_foreground_commands(path: &Option<PathBuf>, store: &ForegroundCommandSto
     }
 }
 
+/// Returns `true` if the input bytes submit a prompt (contain a carriage return
+/// or newline) rather than being mid-line editing.
+fn input_is_submit(bytes: &[u8]) -> bool {
+    bytes.iter().any(|&b| b == b'\r' || b == b'\n')
+}
+
+/// Whether the workspace is inside a local-typing grace window at `now`.
+fn agent_input_suppressed(ws: &Workspace, now: Instant) -> bool {
+    ws.agent_input_suppress_until
+        .map(|until| now < until)
+        .unwrap_or(false)
+}
+
+/// Whether an inbound attention level should be dropped because it was triggered
+/// by local typing echo. Only `NeedsInput` (prompt detection) is suppressed;
+/// `Error` is always honoured.
+fn should_suppress_attention(ws: &Workspace, level: AttentionLevel, now: Instant) -> bool {
+    matches!(level, AttentionLevel::NeedsInput) && agent_input_suppressed(ws, now)
+}
+
+/// Apply local input to the agent terminal's typing-grace window. A submit
+/// (Enter) ends the window immediately so the real response can show activity;
+/// any other non-empty input (re)arms a [`USER_TYPING_GRACE_MS`] window and
+/// clears the spinner. Returns `true` if `agent_active` had been visible and was
+/// cleared, so the caller can refresh the sidebar.
+fn apply_agent_input(ws: &mut Workspace, bytes: &[u8], now: Instant) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    if input_is_submit(bytes) {
+        ws.agent_input_suppress_until = None;
+        return false;
+    }
+    ws.agent_input_suppress_until = Some(now + Duration::from_millis(USER_TYPING_GRACE_MS));
+    let was_active = ws.agent_active;
+    ws.agent_active = false;
+    was_active
+}
+
+struct ReviewTransition {
+    review_changed: bool,
+    ready: bool,
+    active_changed: bool,
+}
+
+impl ReviewTransition {
+    /// A transition that changes nothing — used when a signal is dropped because
+    /// it was caused by local typing echo inside the grace window.
+    fn noop(ws: &Workspace) -> Self {
+        ReviewTransition {
+            review_changed: false,
+            ready: ws.ready_for_review,
+            active_changed: false,
+        }
+    }
+}
+
+fn apply_agent_active(ws: &mut Workspace) -> ReviewTransition {
+    if agent_input_suppressed(ws, Instant::now()) {
+        return ReviewTransition::noop(ws);
+    }
+    ws.agent_idle = false;
+    ws.review_manual = false;
+    let active_changed = !ws.agent_active;
+    ws.agent_active = true;
+    let review_changed = ws.ready_for_review;
+    ws.ready_for_review = false;
+    ReviewTransition {
+        review_changed,
+        ready: false,
+        active_changed,
+    }
+}
+
+fn apply_agent_settled(ws: &mut Workspace) -> ReviewTransition {
+    if agent_input_suppressed(ws, Instant::now()) {
+        return ReviewTransition::noop(ws);
+    }
+    ws.agent_idle = true;
+    let active_changed = ws.agent_active;
+    ws.agent_active = false;
+    let review_changed = recompute_review(ws);
+    ReviewTransition {
+        review_changed,
+        ready: ws.ready_for_review,
+        active_changed,
+    }
+}
+
 /// Recomputes a workspace's heuristic `ready_for_review`. Returns true if the
 /// value changed. A manual override (`review_manual`) suppresses the heuristic
 /// until the agent becomes active again. Ready = agent went idle AND the
@@ -1748,6 +1877,7 @@ fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
                 repository_id: ws.repository_id,
                 base_branch: ws.base_branch.clone(),
                 ready_for_review: ws.ready_for_review,
+                agent_active: ws.agent_active,
                 agent: ws.agent.clone(),
             }
         })
@@ -1910,7 +2040,9 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
             agent: item.agent.clone(),
             ready_for_review: false,
             review_manual: false,
+            agent_active: false,
             agent_idle: false,
+            agent_input_suppress_until: None,
         };
         state.ordered_ids.push(id);
         state.workspaces.insert(id, ws);
@@ -1997,7 +2129,9 @@ async fn pickup_worktrees_for_repo(state: &mut AppState, repo_id: RepositoryId) 
             agent: None,
             ready_for_review: false,
             review_manual: false,
+            agent_active: false,
             agent_idle: false,
+            agent_input_suppress_until: None,
         };
         state.ordered_ids.push(id);
         state.workspaces.insert(id, ws);
@@ -2303,7 +2437,9 @@ mod tests {
             agent: None,
             ready_for_review: false,
             review_manual: false,
+            agent_active: false,
             agent_idle: false,
+            agent_input_suppress_until: None,
         }
     }
 
@@ -2360,6 +2496,146 @@ mod tests {
         ws.git.changed.clear();
         assert!(!recompute_review(&mut ws));
         assert!(ws.ready_for_review);
+    }
+
+    #[test]
+    fn agent_active_transition_sets_active_and_clears_review() {
+        let mut ws = test_workspace();
+        ws.agent_idle = true;
+        ws.ready_for_review = true;
+        ws.review_manual = true;
+
+        let transition = apply_agent_active(&mut ws);
+
+        assert!(ws.agent_active);
+        assert!(!ws.agent_idle);
+        assert!(!ws.ready_for_review);
+        assert!(!ws.review_manual);
+        assert!(transition.active_changed);
+        assert!(transition.review_changed);
+        assert!(!transition.ready);
+
+        let transition = apply_agent_active(&mut ws);
+        assert!(!transition.active_changed);
+        assert!(!transition.review_changed);
+    }
+
+    #[test]
+    fn agent_settled_clears_active_and_recomputes_review() {
+        let mut ws = test_workspace();
+        ws.agent_active = true;
+        ws.git.changed.push(protocol::ChangedFile {
+            path: "a.rs".into(),
+            index_status: 'M',
+            worktree_status: ' ',
+        });
+
+        let transition = apply_agent_settled(&mut ws);
+
+        assert!(!ws.agent_active);
+        assert!(ws.agent_idle);
+        assert!(ws.ready_for_review);
+        assert!(transition.active_changed);
+        assert!(transition.review_changed);
+        assert!(transition.ready);
+    }
+
+    #[test]
+    fn input_submit_detection() {
+        assert!(input_is_submit(b"\r"));
+        assert!(input_is_submit(b"\n"));
+        assert!(input_is_submit(b"hello\r"));
+        assert!(!input_is_submit(b"hello"));
+        assert!(!input_is_submit(b""));
+        assert!(!input_is_submit(&[0x1b, b'[', b'A'])); // arrow-up escape sequence
+    }
+
+    #[test]
+    fn typing_arms_grace_window_and_clears_spinner() {
+        let mut ws = test_workspace();
+        ws.agent_active = true;
+        let now = Instant::now();
+
+        let was_active = apply_agent_input(&mut ws, b"h", now);
+
+        assert!(was_active, "spinner was visible, so it reports as cleared");
+        assert!(!ws.agent_active, "typing clears the spinner");
+        assert_eq!(
+            ws.agent_input_suppress_until,
+            Some(now + Duration::from_millis(USER_TYPING_GRACE_MS))
+        );
+        assert!(agent_input_suppressed(&ws, now));
+    }
+
+    #[test]
+    fn submit_clears_grace_window() {
+        let mut ws = test_workspace();
+        ws.agent_input_suppress_until = Some(Instant::now() + Duration::from_secs(3));
+
+        let was_active = apply_agent_input(&mut ws, b"\r", Instant::now());
+
+        assert!(!was_active);
+        assert!(
+            ws.agent_input_suppress_until.is_none(),
+            "Enter ends the typing-grace window immediately"
+        );
+    }
+
+    #[test]
+    fn empty_input_does_not_arm_window() {
+        let mut ws = test_workspace();
+        apply_agent_input(&mut ws, b"", Instant::now());
+        assert!(ws.agent_input_suppress_until.is_none());
+    }
+
+    #[test]
+    fn agent_active_ignored_during_grace_window() {
+        let mut ws = test_workspace();
+        ws.ready_for_review = true;
+        ws.agent_input_suppress_until = Some(Instant::now() + Duration::from_secs(3));
+
+        let transition = apply_agent_active(&mut ws);
+
+        assert!(!ws.agent_active, "echoed activity must not light the spinner");
+        assert!(ws.ready_for_review, "review state is left untouched");
+        assert!(!transition.active_changed);
+        assert!(!transition.review_changed);
+    }
+
+    #[test]
+    fn agent_settled_ignored_during_grace_window() {
+        let mut ws = test_workspace();
+        ws.git.changed.push(protocol::ChangedFile {
+            path: "a.rs".into(),
+            index_status: 'M',
+            worktree_status: ' ',
+        });
+        ws.agent_input_suppress_until = Some(Instant::now() + Duration::from_secs(3));
+
+        let transition = apply_agent_settled(&mut ws);
+
+        assert!(!ws.agent_idle, "echoed settle must not mark the agent idle");
+        assert!(!ws.ready_for_review, "echoed settle must not flip review");
+        assert!(!transition.review_changed);
+        assert!(!transition.active_changed);
+    }
+
+    #[test]
+    fn needs_input_suppressed_but_error_honoured_during_grace_window() {
+        let mut ws = test_workspace();
+        let now = Instant::now();
+        ws.agent_input_suppress_until = Some(now + Duration::from_secs(3));
+
+        assert!(should_suppress_attention(&ws, AttentionLevel::NeedsInput, now));
+        assert!(!should_suppress_attention(&ws, AttentionLevel::Error, now));
+        assert!(!should_suppress_attention(&ws, AttentionLevel::None, now));
+    }
+
+    #[test]
+    fn attention_not_suppressed_outside_grace_window() {
+        let ws = test_workspace(); // no window armed
+        let now = Instant::now();
+        assert!(!should_suppress_attention(&ws, AttentionLevel::NeedsInput, now));
     }
 
     #[test]

@@ -24,6 +24,10 @@ _Avoid_: done, finished, notice.
 The existing per-Workspace flash state (`None`/`NeedsInput`/`Error`) signalling the user must look *now*. Separate from ReadyForReview — attention is "look now", readiness is "a unit of work completed".
 _Avoid_: status, state.
 
+**AgentActive**:
+A transient Workspace UI state: the agent terminal produced content and has not yet reached the 500 ms settle window. Separate from **AttentionLevel** (look now), **ReadyForReview** (reviewable work), and `agent_running` (process presence). Rendered as a light-blue spinner, suppressed when AttentionLevel is `NeedsInput` or `Error`.
+_Avoid_: working, busy, running.
+
 **Session**:
 Unchanged infrastructure concept — a named daemon process bound to a Unix socket. A process/isolation boundary, NOT a domain grouping. Repositories are global (above sessions); Workspaces are per-session.
 _Avoid_: workspace, project.
@@ -31,7 +35,7 @@ _Avoid_: workspace, project.
 ## Relationships
 
 - A **Repository** has many **Workspaces** (reference by `repository_id`).
-- A **Workspace** has exactly one **Worktree**, one branch, one agent terminal, and an optional **ReadyForReview** state.
+- A **Workspace** has exactly one **Worktree**, one branch, one agent terminal, and optional **AgentActive** and **ReadyForReview** states.
 - **Repositories** live in a global `repositories.json`; **Workspaces** live per-session with a `repository_id` foreign key.
 - A **Session** owns many **Workspaces** but does not own **Repositories**.
 
@@ -41,8 +45,11 @@ _Avoid_: workspace, project.
 > **Domain expert:** "A new **Workspace** — Conduit fetches the repo's default branch, adds a **Worktree** on a fresh branch named from your task, and starts the agent there."
 > **Dev:** "And when is it **ReadyForReview**?"
 > **Domain expert:** "When the agent goes quiet with changes on disk and isn't waiting on you. That's different from **AttentionLevel** `NeedsInput`, which means it's blocked asking *you* something right now."
+> **Dev:** "So the spinner means the agent is running?"
+> **Domain expert:** "No. **AgentActive** means it has produced visible output inside the settle window. A quiet but still-running agent is not active."
 
 ## Flagged ambiguities
 
 - "Workspace" previously meant *the repo directory itself*. It was renamed: today's repo-directory concept is now **Repository**, and **Workspace** means a per-task worktree. (See ADR 0001.)
 - "done"/"ready" was used loosely — resolved to **ReadyForReview**, an explicit state kept orthogonal to **AttentionLevel**. (See ADR 0002.)
+- "working"/"busy" is ambiguous — resolved to **AgentActive**, a transient output-within-settle-window signal rather than process liveness.

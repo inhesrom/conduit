@@ -15,6 +15,8 @@ use crate::app::{Focus, SidebarMode, SidebarRow, TuiApp};
 /// Steady, non-flashing colour for the ready-for-review marker — deliberately
 /// distinct from the attention orange/red so the two never read the same.
 pub const REVIEW: Color = Color::Magenta;
+const AGENT_ACTIVE: Color = Color::LightBlue;
+const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Default sidebar width in columns.
 pub const WIDTH: u16 = 30;
@@ -140,6 +142,12 @@ fn repo_line(app: &TuiApp, id: protocol::RepositoryId) -> Line<'static> {
             Style::default().fg(Color::DarkGray),
         ));
     }
+    if repo_has_active_agent(app, id) {
+        spans.push(Span::styled(
+            format!("  {}", spinner_frame(app.spinner_tick)),
+            Style::default().fg(AGENT_ACTIVE),
+        ));
+    }
     if repo.ready_for_review_count > 0 {
         spans.push(Span::styled(
             format!("  ◆{}", repo.ready_for_review_count),
@@ -157,6 +165,10 @@ fn workspace_line(app: &TuiApp, wid: protocol::WorkspaceId) -> Line<'static> {
     let marker = match ws.attention {
         AttentionLevel::NeedsInput => Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
         AttentionLevel::Error => Span::styled("✖ ", Style::default().fg(Color::Red)),
+        _ if ws.agent_active => Span::styled(
+            format!("{} ", spinner_frame(app.spinner_tick)),
+            Style::default().fg(AGENT_ACTIVE),
+        ),
         _ => Span::raw("  "),
     };
     // The currently-open workspace always carries a left accent bar + bold name
@@ -187,6 +199,24 @@ fn workspace_line(app: &TuiApp, wid: protocol::WorkspaceId) -> Line<'static> {
         spans.push(Span::styled("  ◆", Style::default().fg(REVIEW)));
     }
     Line::from(spans)
+}
+
+fn spinner_frame(tick: u8) -> &'static str {
+    BRAILLE_SPINNER[(tick as usize) % BRAILLE_SPINNER.len()]
+}
+
+fn visually_active(ws: &protocol::WorkspaceSummary) -> bool {
+    ws.agent_active
+        && !matches!(
+            ws.attention,
+            AttentionLevel::NeedsInput | AttentionLevel::Error
+        )
+}
+
+fn repo_has_active_agent(app: &TuiApp, id: protocol::RepositoryId) -> bool {
+    app.workspaces
+        .iter()
+        .any(|ws| ws.repository_id == Some(id) && visually_active(ws))
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +271,21 @@ fn rail_lines(
                 Style::default()
             };
             lines.push(rail_char_line(' ', width, sep));
+            owners.push(ri);
+        }
+        if repo_has_active_agent(app, repo.id) {
+            let mut s = Style::default().fg(AGENT_ACTIVE);
+            if is_sel {
+                s = s.bg(sel_bg);
+            }
+            lines.push(rail_char_line(
+                spinner_frame(app.spinner_tick)
+                    .chars()
+                    .next()
+                    .unwrap_or(' '),
+                width,
+                s,
+            ));
             owners.push(ri);
         }
         if repo.ready_for_review_count > 0 {
@@ -409,4 +454,111 @@ pub fn popout_row_index_at(rail: Rect, full: Rect, app: &TuiApp, x: u16, y: u16)
     let scroll = app.popout_selected.saturating_sub(h.saturating_sub(1));
     let idx = (y - inner.y) as usize + scroll;
     (idx < ids.len()).then_some(idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::{RepositorySummary, WorkspaceSummary};
+    use uuid::Uuid;
+
+    fn repo_summary(id: protocol::RepositoryId) -> RepositorySummary {
+        RepositorySummary {
+            id,
+            name: "conduit".to_string(),
+            path: "/tmp/conduit".to_string(),
+            default_branch: Some("main".to_string()),
+            worktree_root: None,
+            default_agent: None,
+            ssh_host: None,
+            workspace_count: 1,
+            ready_for_review_count: 0,
+        }
+    }
+
+    fn workspace_summary(
+        id: protocol::WorkspaceId,
+        repo_id: protocol::RepositoryId,
+    ) -> WorkspaceSummary {
+        WorkspaceSummary {
+            id,
+            name: "ui-in-progress".to_string(),
+            path: "/tmp/conduit/.conduit-worktrees/conduit/ui-in-progress".to_string(),
+            branch: Some("ui-in-progress".to_string()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_files: 0,
+            attention: AttentionLevel::None,
+            agent_running: true,
+            agent_active: false,
+            shell_running: false,
+            last_activity_unix_ms: 0,
+            ssh_host: None,
+            repository_id: Some(repo_id),
+            base_branch: Some("main".to_string()),
+            ready_for_review: false,
+            agent: None,
+        }
+    }
+
+    fn app_with_workspace() -> (TuiApp, protocol::RepositoryId, protocol::WorkspaceId) {
+        let repo_id = Uuid::new_v4();
+        let ws_id = Uuid::new_v4();
+        let mut app = TuiApp::default();
+        app.spinner_tick = 2;
+        app.set_repositories(vec![repo_summary(repo_id)]);
+        app.set_workspaces(vec![workspace_summary(ws_id, repo_id)]);
+        (app, repo_id, ws_id)
+    }
+
+    fn text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn active_workspace_shows_spinner_in_status_slot() {
+        let (mut app, _repo_id, ws_id) = app_with_workspace();
+        app.workspaces[0].agent_active = true;
+
+        let line = workspace_line(&app, ws_id);
+
+        assert_eq!(line.spans[1].content.as_ref(), "⠹ ");
+        assert_eq!(line.spans[1].style.fg, Some(AGENT_ACTIVE));
+        assert!(text(&line).contains("⠹ ui-in-progress"));
+    }
+
+    #[test]
+    fn attention_overrides_workspace_spinner() {
+        for (attention, marker, color) in [
+            (AttentionLevel::NeedsInput, "⚠ ", Color::Yellow),
+            (AttentionLevel::Error, "✖ ", Color::Red),
+        ] {
+            let (mut app, _repo_id, ws_id) = app_with_workspace();
+            app.workspaces[0].agent_active = true;
+            app.workspaces[0].attention = attention;
+
+            let line = workspace_line(&app, ws_id);
+
+            assert_eq!(line.spans[1].content.as_ref(), marker);
+            assert_eq!(line.spans[1].style.fg, Some(color));
+            assert!(!text(&line).contains('⠹'));
+        }
+    }
+
+    #[test]
+    fn repository_and_rail_roll_up_active_children() {
+        let (mut app, repo_id, _ws_id) = app_with_workspace();
+        app.workspaces[0].agent_active = true;
+
+        let repo = repo_line(&app, repo_id);
+        assert!(text(&repo).contains("main  ⠹"));
+
+        let (lines, owners) = rail_lines(&app, 3, 0, false);
+        assert_eq!(owners.first().copied(), Some(0));
+        assert_eq!(text(&lines[0]).trim(), "⠹");
+        assert_eq!(lines[0].spans[1].style.fg, Some(AGENT_ACTIVE));
+    }
 }
