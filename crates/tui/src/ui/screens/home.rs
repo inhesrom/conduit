@@ -764,8 +764,21 @@ fn render_toggle(enabled: bool) -> Span<'static> {
 
 /// Returns a centered rectangle within `area` at `width_pct` width and fixed `height`.
 fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCreateState) {
-    use crate::app::QuickCreateField;
-    let height = if qc.expanded { 15 } else { 9 };
+    use crate::app::{QuickCreateField, QuickCreateMode};
+    let new_branch_mode = qc.mode == QuickCreateMode::NewBranch;
+    let suggestions: Vec<&crate::app::BranchChoice> = if qc.expanded && !new_branch_mode {
+        qc.filtered_branches()
+    } else {
+        Vec::new()
+    };
+    let suggestion_rows = suggestions.len().min(5);
+    let height = if !qc.expanded {
+        9
+    } else if new_branch_mode {
+        16 // + mode row vs the original 15
+    } else {
+        15 + suggestion_rows as u16 // no slug preview, + picker rows
+    };
     let modal = centered_rect(area, 60, height);
     frame.render_widget(Clear, modal);
     let block = Block::default()
@@ -808,21 +821,78 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
     let mut lines = vec![
         Line::from(""),
         field_line(matches!(qc.field, QuickCreateField::Name), "task", &qc.name),
-        Line::from(vec![
+    ];
+    // The slug preview only applies when a new branch will be created.
+    if !qc.expanded || new_branch_mode {
+        lines.push(Line::from(vec![
             Span::styled("           branch: ", desc),
             Span::styled(slug_display, Style::default().fg(Color::Green)),
-        ]),
-    ];
+        ]));
+    }
     if qc.expanded {
-        lines.push(field_line(
-            matches!(qc.field, QuickCreateField::BaseBranch),
-            "base",
-            if qc.base_branch.is_empty() {
-                "(repo default)"
-            } else {
-                &qc.base_branch
-            },
-        ));
+        // Mode selector, in the same `◂ x ▸` style as the agent selector.
+        let mode_active = matches!(qc.field, QuickCreateField::Mode);
+        let mlabel = if mode_active { focused } else { label };
+        let marrows = if mode_active { focused } else { desc };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<8}", "mode"), mlabel),
+            Span::styled("◂ ", marrows),
+            Span::styled(
+                if new_branch_mode {
+                    "new branch"
+                } else {
+                    "existing branch"
+                },
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(" ▸", marrows),
+        ]));
+        if new_branch_mode {
+            lines.push(field_line(
+                matches!(qc.field, QuickCreateField::BaseBranch),
+                "base",
+                if qc.base_branch.is_empty() {
+                    "(repo default)"
+                } else {
+                    &qc.base_branch
+                },
+            ));
+        } else {
+            lines.push(field_line(
+                matches!(qc.field, QuickCreateField::Branch),
+                "branch",
+                if qc.branch_filter.is_empty() && qc.branches.is_empty() {
+                    "(loading branches…)"
+                } else {
+                    &qc.branch_filter
+                },
+            ));
+            // Up to 5 suggestion rows, windowed around the highlighted entry.
+            let selected = qc.branch_selected.min(suggestions.len().saturating_sub(1));
+            let start = selected.saturating_sub(suggestion_rows.saturating_sub(1));
+            for (i, choice) in suggestions
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(suggestion_rows)
+            {
+                let highlighted = i == selected;
+                let style = if highlighted {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if choice.is_remote {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("           "),
+                    Span::styled(choice.display.clone(), style),
+                ]));
+            }
+        }
         // Agent field. Selection mode shows `◂ value ▸` (←/→ cycles, Enter
         // expands to an editable command); edit mode shows the raw launch
         // command as a plain editable field.
@@ -859,10 +929,10 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
         ));
     }
     lines.push(Line::from(""));
-    let more = if qc.expanded {
-        " next field"
+    let (tab_key, more) = if qc.expanded {
+        ("Tab/⇧Tab", " field")
     } else {
-        " more options"
+        ("Tab", " more options")
     };
     // On the agent selector, Enter expands to an editable command rather than
     // creating; everywhere else it creates.
@@ -875,12 +945,20 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
     let mut footer = vec![
         Span::styled("Enter", key),
         Span::styled(enter_hint, desc),
-        Span::styled("Tab", key),
+        Span::styled(tab_key, key),
         Span::styled(more, desc),
     ];
     if agent_selecting {
         footer.push(Span::styled("  ←/→", key));
         footer.push(Span::styled(" agent", desc));
+    }
+    if matches!(qc.field, QuickCreateField::Mode) {
+        footer.push(Span::styled("  ←/→", key));
+        footer.push(Span::styled(" mode", desc));
+    }
+    if matches!(qc.field, QuickCreateField::Branch) {
+        footer.push(Span::styled("  ↑/↓", key));
+        footer.push(Span::styled(" select", desc));
     }
     footer.push(Span::styled("  Esc", key));
     footer.push(Span::styled(" cancel", desc));
@@ -1080,6 +1158,22 @@ mod tests {
     fn render_home_very_small_terminal() {
         let app = TuiApp::default();
         smoke_render_home(&app, 20, 10);
+    }
+
+    #[test]
+    fn render_home_with_quick_create_branch_picker() {
+        let mut app = TuiApp::default();
+        app.begin_quick_create(uuid::Uuid::new_v4());
+        let qc = app.quick_create.as_mut().unwrap();
+        qc.expanded = true;
+        qc.mode = crate::app::QuickCreateMode::ExistingBranch;
+        qc.field = crate::app::QuickCreateField::Branch;
+        qc.set_branches(
+            (0..8).map(|i| format!("branch-{i}")).collect(),
+            vec!["origin/remote-only".into()],
+        );
+        qc.branch_selected = 6; // exercise the suggestion windowing
+        smoke_render_home(&app, 120, 40);
     }
 
     // --- border_rects tests ---

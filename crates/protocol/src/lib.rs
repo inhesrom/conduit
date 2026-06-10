@@ -112,6 +112,16 @@ pub struct RemoteBranchInfo {
     pub full_name: String,
 }
 
+/// An existing branch to check out into a new workspace's worktree, instead
+/// of creating a fresh branch off a base ref.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CheckoutSource {
+    LocalBranch { name: String },
+    /// A remote-only branch (full ref, e.g. "origin/feature-x"); checking it
+    /// out creates a local tracking branch.
+    RemoteBranch { remote_ref: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TagInfo {
     pub name: String,
@@ -315,6 +325,15 @@ pub enum Command {
         /// core; interpreted by the TUI when it starts the agent terminal.
         #[serde(default)]
         agent: Option<String>,
+        /// When set, check out this existing branch instead of creating a new
+        /// branch off `base_branch` (which is ignored).
+        #[serde(default)]
+        existing: Option<CheckoutSource>,
+    },
+    /// Request the repo's branch names for the quick-create branch picker;
+    /// answered with [`Event::RepoBranches`].
+    ListRepoBranches {
+        repo_id: RepositoryId,
     },
     // --- Review ---
     SetReadyForReview {
@@ -419,6 +438,13 @@ pub enum Event {
     WorktreeCreateProgress {
         repo_id: RepositoryId,
         stage: String,
+    },
+    /// Reply to [`Command::ListRepoBranches`]. `remote` entries are full refs
+    /// (e.g. "origin/feature-x").
+    RepoBranches {
+        repo_id: RepositoryId,
+        local: Vec<String>,
+        remote: Vec<String>,
     },
     // --- Review ---
     WorkspaceReviewChanged {
@@ -555,6 +581,52 @@ mod tests {
 
         let ws: WorkspaceSummary = serde_json::from_value(json).unwrap();
         assert!(!ws.agent_active);
+    }
+
+    #[test]
+    fn checkout_source_round_trip() {
+        round_trip(&Command::CreateWorkspace {
+            repo_id: Uuid::new_v4(),
+            name: "task".into(),
+            base_branch: None,
+            agent: None,
+            existing: Some(CheckoutSource::LocalBranch {
+                name: "feature-x".into(),
+            }),
+        });
+        round_trip(&Command::CreateWorkspace {
+            repo_id: Uuid::new_v4(),
+            name: "task".into(),
+            base_branch: None,
+            agent: None,
+            existing: Some(CheckoutSource::RemoteBranch {
+                remote_ref: "origin/feature-x".into(),
+            }),
+        });
+        round_trip(&Command::ListRepoBranches {
+            repo_id: Uuid::new_v4(),
+        });
+        round_trip(&Event::RepoBranches {
+            repo_id: Uuid::new_v4(),
+            local: vec!["main".into()],
+            remote: vec!["origin/main".into()],
+        });
+    }
+
+    #[test]
+    fn create_workspace_defaults_existing() {
+        // Old clients send CreateWorkspace without the `existing` key.
+        let json = serde_json::json!({
+            "CreateWorkspace": {
+                "repo_id": Uuid::new_v4(),
+                "name": "task"
+            }
+        });
+        let cmd: Command = serde_json::from_value(json).unwrap();
+        match cmd {
+            Command::CreateWorkspace { existing, .. } => assert!(existing.is_none()),
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

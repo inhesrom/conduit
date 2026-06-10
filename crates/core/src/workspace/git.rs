@@ -773,6 +773,102 @@ pub async fn create_worktree(
     Ok(())
 }
 
+/// Creates a git worktree at `worktree_path` checking out the EXISTING local
+/// `branch`. Git refuses if the branch is already checked out in another
+/// worktree; the error surfaces through the returned `Result`.
+pub async fn create_worktree_existing(
+    repo: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    let wt = worktree_path.display().to_string();
+    let out = ssh::build_command(ssh, repo, "git", &["worktree", "add", &wt, branch])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Creates a git worktree at `worktree_path` on a new local branch
+/// `local_name` tracking the remote-only `remote_ref` (e.g. "origin/feature-x").
+pub async fn create_worktree_tracking(
+    repo: &Path,
+    worktree_path: &Path,
+    local_name: &str,
+    remote_ref: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    let wt = worktree_path.display().to_string();
+    let out = ssh::build_command(
+        ssh,
+        repo,
+        "git",
+        &["worktree", "add", "--track", "-b", local_name, &wt, remote_ref],
+    )
+    .output()
+    .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Local branch name implied by a remote ref: "origin/feature/x" → "feature/x".
+/// Falls back to the input when there is no `/`.
+pub fn local_name_for_remote_ref(remote_ref: &str) -> &str {
+    remote_ref
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or(remote_ref)
+}
+
+/// Lists the repo's branch names as `(local, remote)` where remote entries are
+/// full refs (e.g. "origin/feature-x"). Used by the quick-create branch picker.
+pub async fn list_branch_names(
+    repo: &Path,
+    ssh: Option<&SshTarget>,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let (local, remote) = match ssh {
+        Some(target) => {
+            let commands: Vec<String> = vec![
+                "git for-each-ref --format='%(HEAD) %(refname:short) %(upstream:track)' refs/heads/ 2>/dev/null || echo ''".to_string(),
+                "git for-each-ref --format='%(refname:short)' refs/remotes/ 2>/dev/null || echo ''"
+                    .to_string(),
+            ];
+            let out = ssh::build_batch_command(target, repo, &commands)
+                .output()
+                .await?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "SSH branch listing failed for {}: {}",
+                    repo.display(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let sections = split_batch_sections(&stdout, 2)?;
+            (
+                parse_local_branches_output(sections[0]),
+                parse_remote_branches_output(sections[1]),
+            )
+        }
+        None => tokio::join!(get_local_branches(repo), get_remote_branches(repo)),
+    };
+    Ok((
+        local.into_iter().map(|b| b.name).collect(),
+        remote.into_iter().map(|b| b.full_name).collect(),
+    ))
+}
+
 /// Lists existing worktrees of `repo` as `(path, branch)` pairs.
 pub async fn list_worktrees(repo: &Path, ssh: Option<&SshTarget>) -> Result<Vec<(PathBuf, String)>> {
     let out = ssh::build_command(ssh, repo, "git", &["worktree", "list", "--porcelain"])
@@ -1185,6 +1281,15 @@ pub async fn git_stash(repo: &Path, message: Option<&str>, ssh: Option<&SshTarge
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- local_name_for_remote_ref ---
+
+    #[test]
+    fn remote_ref_local_name() {
+        assert_eq!(local_name_for_remote_ref("origin/feature-x"), "feature-x");
+        assert_eq!(local_name_for_remote_ref("origin/feature/x"), "feature/x");
+        assert_eq!(local_name_for_remote_ref("no-slash"), "no-slash");
+    }
 
     // --- parse_porcelain_line ---
 
