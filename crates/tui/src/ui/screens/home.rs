@@ -157,7 +157,12 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
 /// Builds a styled icon+count badge span pair for the dashboard header.
 /// Returns dimmed spans when `count` is zero so the layout stays stable.
-fn dashboard_badge(count: usize, icon: &str, label: &str, color: Color) -> Vec<Span<'static>> {
+pub(crate) fn dashboard_badge(
+    count: usize,
+    icon: &str,
+    label: &str,
+    color: Color,
+) -> Vec<Span<'static>> {
     let dim = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM);

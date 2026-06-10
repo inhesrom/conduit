@@ -1378,6 +1378,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
             match app.route {
                 Route::Home => ui::screens::home::render(frame, detail_area, &app),
+                Route::Repo { .. } => {
+                    ui::screens::repo_summary::render(frame, detail_area, &app)
+                }
                 Route::Workspace { .. } => ui::screens::workspace::render(frame, detail_area, &app),
             }
             // The Rail's workspace pop-out floats over the detail pane, so it is
@@ -1398,6 +1401,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             if let Some(sel) = &app.pending_copy_selection {
                 let borders = match app.route {
                     Route::Home => ui::screens::home::border_rects(detail_area),
+                    Route::Repo { .. } => ui::screens::repo_summary::border_rects(detail_area),
                     Route::Workspace { .. } => {
                         ui::screens::workspace::border_rects(detail_area, &app)
                     }
@@ -1808,6 +1812,26 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             } else {
                                 handle_sidebar_key(&mut app, &backend, key, true).await;
                             }
+                        }
+                        Route::Repo { .. } => {
+                            // A delete confirmation or quick-create can be raised
+                            // from the summary, so service those modals first.
+                            if app.is_confirming_delete() {
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                        confirm_pending_delete(&mut app, &backend).await;
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                        app.cancel_delete_workspace();
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+                            if handle_quick_create_key(&mut app, &backend, key).await {
+                                continue;
+                            }
+                            handle_repo_summary_key(&mut app, &backend, key).await;
                         }
                         Route::Workspace { id } => {
                             if handle_workspace_command_key(&mut app, &backend, id, key).await {
@@ -3257,7 +3281,17 @@ async fn handle_sidebar_key(
                     app.collapsed_repos.remove(&id);
                 }
             }
-            KeyCode::Enter | KeyCode::Char('l') => match app.selected_sidebar_row() {
+            // `Enter` — open the repo's status summary, or open a workspace.
+            KeyCode::Enter => match app.selected_sidebar_row() {
+                Some(app::SidebarRow::Repo(id)) => app.open_repo_summary(id),
+                Some(app::SidebarRow::Workspace(id)) => {
+                    activate_workspace(app, backend, id).await;
+                }
+                None => {}
+            },
+            // `l` — expand the repo (collapse/expand stays on h/l/arrows), or
+            // open a workspace.
+            KeyCode::Char('l') => match app.selected_sidebar_row() {
                 Some(app::SidebarRow::Repo(_)) => app.toggle_collapse_selected(),
                 Some(app::SidebarRow::Workspace(id)) => {
                     activate_workspace(app, backend, id).await;
@@ -3314,6 +3348,47 @@ async fn handle_sidebar_key(
             KeyCode::Char('S') if allow_modals => app.open_settings(),
             _ => return false,
         }
+    }
+    true
+}
+
+/// Keys for the repo status summary (`Route::Repo`): navigate the workspace
+/// list, open the selected one, or step back to Home. Returns `true` when the
+/// key was consumed.
+async fn handle_repo_summary_key(app: &mut TuiApp, backend: &Backend, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => app.go_home(),
+        KeyCode::Down | KeyCode::Char('j') => app.move_repo_summary_selection(1),
+        KeyCode::Up | KeyCode::Char('k') => app.move_repo_summary_selection(-1),
+        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+            if let Some(id) = app.selected_repo_summary_workspace_id() {
+                activate_workspace(app, backend, id).await;
+            }
+        }
+        // `n` — new workspace under this repo (mirrors the empty-state hint).
+        KeyCode::Char('n') => {
+            if let Some(repo_id) = app.repo_summary_repo_id() {
+                app.begin_quick_create(repo_id);
+                let _ = backend
+                    .cmd_tx
+                    .send(Command::ListRepoBranches { repo_id })
+                    .await;
+            }
+        }
+        // `D` — delete the selected workspace.
+        KeyCode::Char('D') => {
+            if let Some(id) = app.selected_repo_summary_workspace_id() {
+                app.pending_delete_workspace = Some(id);
+            }
+        }
+        KeyCode::Char('g') => {
+            if let Some(id) = app.selected_repo_summary_workspace_id() {
+                let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
+            }
+        }
+        _ => return false,
     }
     true
 }
@@ -4126,6 +4201,14 @@ async fn handle_mouse(
             }
             _ => {}
         },
+        Route::Repo { .. } => {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                // Start a text selection confined to the clicked element.
+                let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
+                app.mouse_selection =
+                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
+            }
+        }
     }
 }
 
@@ -5197,6 +5280,7 @@ fn selection_confine_rect(area: Rect, app: &TuiApp, x: u16, y: u16) -> Rect {
             None => area,
         },
         Route::Home => ui::screens::home::chunk_at(area, x, y).unwrap_or(area),
+        Route::Repo { .. } => ui::screens::repo_summary::chunk_at(area, x, y).unwrap_or(area),
     }
 }
 

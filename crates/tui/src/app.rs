@@ -863,6 +863,8 @@ pub struct TuiApp {
     pub collapsed_repos: HashSet<RepositoryId>,
     /// When true, the sidebar shows only ready-for-review workspaces.
     pub sidebar_review_filter: bool,
+    /// Selected workspace index within the repo-summary view (`Route::Repo`).
+    pub repo_summary_selected: usize,
     /// Active ctrl+n quick-create modal, if any.
     pub quick_create: Option<QuickCreateState>,
     /// Initial prompt to deliver to the agent of the next created workspace.
@@ -980,6 +982,7 @@ impl Default for TuiApp {
             popout_selected: 0,
             collapsed_repos: HashSet::new(),
             sidebar_review_filter: false,
+            repo_summary_selected: 0,
             quick_create: None,
             pending_create_prompt: None,
             pending_agent_prompt: None,
@@ -1329,7 +1332,7 @@ impl TuiApp {
     pub fn active_workspace_id(&self) -> Option<WorkspaceId> {
         match self.route {
             Route::Workspace { id } => Some(id),
-            Route::Home => None,
+            Route::Home | Route::Repo { .. } => None,
         }
     }
 
@@ -1342,7 +1345,7 @@ impl TuiApp {
 
         let cur = match self.route {
             Route::Workspace { id } => self.workspaces.iter().position(|w| w.id == id)?,
-            Route::Home => {
+            Route::Home | Route::Repo { .. } => {
                 let id = self.selected_workspace_id()?;
                 self.workspaces.iter().position(|w| w.id == id)?
             }
@@ -1515,6 +1518,55 @@ impl TuiApp {
         self.persist_tabs_for_active_workspace();
         self.route = Route::Home;
         self.focus = Focus::Sidebar;
+    }
+
+    /// Open the status-summary view for a repository in the detail pane.
+    pub fn open_repo_summary(&mut self, id: RepositoryId) {
+        self.persist_tabs_for_active_workspace();
+        self.route = Route::Repo { id };
+        self.focus = Focus::Sidebar;
+        self.repo_summary_selected = 0;
+    }
+
+    /// The repository whose summary is currently shown, if any.
+    pub fn repo_summary_repo_id(&self) -> Option<RepositoryId> {
+        match self.route {
+            Route::Repo { id } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Workspace ids belonging to the repo whose summary is shown, in list order.
+    pub fn repo_summary_workspace_ids(&self) -> Vec<WorkspaceId> {
+        let Some(repo) = self.repo_summary_repo_id() else {
+            return Vec::new();
+        };
+        self.workspaces
+            .iter()
+            .filter(|w| w.repository_id == Some(repo))
+            .map(|w| w.id)
+            .collect()
+    }
+
+    pub fn move_repo_summary_selection(&mut self, delta: isize) {
+        let len = self.repo_summary_workspace_ids().len();
+        if len == 0 {
+            self.repo_summary_selected = 0;
+            return;
+        }
+        let n = (self.repo_summary_selected as isize + delta).clamp(0, (len - 1) as isize);
+        self.repo_summary_selected = n as usize;
+    }
+
+    pub fn selected_repo_summary_workspace_id(&self) -> Option<WorkspaceId> {
+        let ids = self.repo_summary_workspace_ids();
+        if ids.is_empty() {
+            return None;
+        }
+        // Clamp to the last row so Enter targets whatever the view highlights,
+        // even if the workspace list shrank since the selection was set.
+        let idx = self.repo_summary_selected.min(ids.len() - 1);
+        ids.get(idx).copied()
     }
 
     pub fn terminal_fullscreen(&self) -> bool {
