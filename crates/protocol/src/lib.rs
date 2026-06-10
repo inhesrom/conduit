@@ -14,6 +14,8 @@ pub struct SshTarget {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Route {
     Home,
+    /// Status summary of a single repository's workspaces, shown in the detail pane.
+    Repo { id: RepositoryId },
     Workspace { id: WorkspaceId },
 }
 
@@ -524,6 +526,7 @@ mod tests {
     #[test]
     fn route_round_trip() {
         round_trip(&Route::Home);
+        round_trip(&Route::Repo { id: Uuid::new_v4() });
         round_trip(&Route::Workspace { id: Uuid::new_v4() });
     }
 

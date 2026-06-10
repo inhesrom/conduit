@@ -222,6 +222,22 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                 ]
             }
         }
+        Route::Repo { .. } => vec![
+            key("j/k"),
+            desc(" navigate"),
+            gap(),
+            key("Enter"),
+            desc(" open"),
+            gap(),
+            key("n"),
+            desc(" new"),
+            gap(),
+            key("D"),
+            desc(" delete"),
+            gap(),
+            key("Esc"),
+            desc(" back"),
+        ],
         Route::Workspace { .. } if app.is_workspace_command_open() => vec![
             key("Enter"),
             desc(" run"),

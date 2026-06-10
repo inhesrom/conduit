@@ -15,7 +15,7 @@ use crate::app::{Focus, SidebarMode, SidebarRow, TuiApp};
 /// Steady, non-flashing colour for the ready-for-review marker — deliberately
 /// distinct from the attention orange/red so the two never read the same.
 pub const REVIEW: Color = Color::Magenta;
-const AGENT_ACTIVE: Color = Color::LightBlue;
+pub(crate) const AGENT_ACTIVE: Color = Color::LightBlue;
 const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Default sidebar width in columns.
@@ -250,7 +250,7 @@ fn workspace_line(app: &TuiApp, wid: protocol::WorkspaceId) -> Line<'static> {
     Line::from(spans)
 }
 
-fn spinner_frame(tick: u8) -> &'static str {
+pub(crate) fn spinner_frame(tick: u8) -> &'static str {
     BRAILLE_SPINNER[(tick as usize) % BRAILLE_SPINNER.len()]
 }
 
