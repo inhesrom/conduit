@@ -23,7 +23,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use protocol::{Command, Event as CoreEvent, Route, TerminalKind, WorkspaceId};
+use protocol::{CheckoutSource, Command, Event as CoreEvent, Route, TerminalKind, WorkspaceId};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
@@ -2828,25 +2828,54 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
     }
     match key.code {
         KeyCode::Esc => app.cancel_quick_create(),
-        KeyCode::Tab => {
+        KeyCode::Tab | KeyCode::BackTab => {
             if let Some(qc) = app.quick_create.as_mut() {
                 if !qc.expanded {
                     qc.expanded = true;
-                    qc.field = app::QuickCreateField::BaseBranch;
+                    qc.field = app::QuickCreateField::Mode;
                 } else {
-                    qc.next_field();
+                    // Leaving the branch picker commits the highlighted
+                    // suggestion into the filter text so it's what gets created.
+                    if qc.field == app::QuickCreateField::Branch {
+                        if let Some(b) = qc.selected_branch() {
+                            qc.branch_filter = b.display.clone();
+                        }
+                    }
+                    if key.code == KeyCode::BackTab {
+                        qc.prev_field();
+                    } else {
+                        qc.next_field();
+                    }
                 }
             }
         }
         KeyCode::Left | KeyCode::Right => {
-            // While the agent field is focused in selection mode, ←/→ cycle
-            // through configured agents. Once expanded into command-edit mode
-            // (or on other fields) the arrows do nothing — so they can't clobber
-            // an edited command.
+            // ←/→ toggle the mode field, and cycle configured agents while the
+            // agent field is focused in selection mode. Once expanded into
+            // command-edit mode (or on other fields) the arrows do nothing — so
+            // they can't clobber an edited command.
             if let Some(qc) = app.quick_create.as_mut() {
-                if qc.field == app::QuickCreateField::Agent && !qc.agent_command_edit {
+                if qc.field == app::QuickCreateField::Mode {
+                    qc.cycle_mode();
+                } else if qc.field == app::QuickCreateField::Agent && !qc.agent_command_edit {
                     let delta = if key.code == KeyCode::Left { -1 } else { 1 };
                     qc.cycle_agent(&app.settings.agents, delta);
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Down => {
+            // ↑/↓ move the branch-picker highlight.
+            if let Some(qc) = app.quick_create.as_mut() {
+                if qc.field == app::QuickCreateField::Branch {
+                    let len = qc.filtered_branches().len();
+                    if len > 0 {
+                        let cur = qc.branch_selected.min(len - 1);
+                        qc.branch_selected = if key.code == KeyCode::Down {
+                            (cur + 1).min(len - 1)
+                        } else {
+                            cur.saturating_sub(1)
+                        };
+                    }
                 }
             }
         }
@@ -2873,8 +2902,38 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 }
                 return true;
             }
+            // In existing-branch mode a branch must be resolvable; keep the
+            // modal open with a status message otherwise.
+            let unresolved_branch = app
+                .quick_create
+                .as_ref()
+                .map(|qc| {
+                    qc.mode == app::QuickCreateMode::ExistingBranch
+                        && qc.selected_branch().is_none()
+                })
+                .unwrap_or(false);
+            if unresolved_branch {
+                app.git_action_message =
+                    Some(("No matching branch to check out".to_string(), Instant::now()));
+                return true;
+            }
             if let Some(qc) = app.quick_create.take() {
-                let base_branch = if qc.base_branch.trim().is_empty() {
+                let existing = if qc.mode == app::QuickCreateMode::ExistingBranch {
+                    qc.selected_branch().map(|b| {
+                        if b.is_remote {
+                            CheckoutSource::RemoteBranch {
+                                remote_ref: b.display.clone(),
+                            }
+                        } else {
+                            CheckoutSource::LocalBranch {
+                                name: b.display.clone(),
+                            }
+                        }
+                    })
+                } else {
+                    None
+                };
+                let base_branch = if existing.is_some() || qc.base_branch.trim().is_empty() {
                     None
                 } else {
                     Some(qc.base_branch.trim().to_string())
@@ -2895,23 +2954,30 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                         name: qc.name.clone(),
                         base_branch,
                         agent,
+                        existing,
                     })
                     .await;
             }
         }
         KeyCode::Backspace => {
             if let Some(qc) = app.quick_create.as_mut() {
-                // Agent selection mode is cycle + Enter-to-edit only; text edits
-                // apply once the command has been expanded for editing.
-                if qc.field != app::QuickCreateField::Agent || qc.agent_command_edit {
-                    qc.active_input_mut().pop();
+                // Selector fields (mode, agent profile cycling) have no text
+                // buffer; `active_input_mut` returns None for them.
+                if let Some(input) = qc.active_input_mut() {
+                    input.pop();
+                    if qc.field == app::QuickCreateField::Branch {
+                        qc.branch_selected = 0;
+                    }
                 }
             }
         }
         KeyCode::Char(c) => {
             if let Some(qc) = app.quick_create.as_mut() {
-                if qc.field != app::QuickCreateField::Agent || qc.agent_command_edit {
-                    qc.active_input_mut().push(c);
+                if let Some(input) = qc.active_input_mut() {
+                    input.push(c);
+                    if qc.field == app::QuickCreateField::Branch {
+                        qc.branch_selected = 0;
+                    }
                 }
             }
         }
@@ -3024,7 +3090,14 @@ async fn handle_sidebar_key(
             KeyCode::Up | KeyCode::Char('k') => app.move_rail_selection(-1),
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.toggle_sidebar_popout(),
             KeyCode::Char('n') => match app.selected_rail_repo() {
-                Some(repo_id) => app.begin_quick_create(repo_id),
+                Some(repo_id) => {
+                    app.begin_quick_create(repo_id);
+                    // Populate the existing-branch picker in the background.
+                    let _ = backend
+                        .cmd_tx
+                        .send(Command::ListRepoBranches { repo_id })
+                        .await;
+                }
                 None => {
                     app.git_action_message = Some((
                         "No repositories — press N to add one first".to_string(),
@@ -3057,7 +3130,14 @@ async fn handle_sidebar_key(
             KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
             // `n` — new workspace under the selected repo.
             KeyCode::Char('n') => match app.sidebar_context_repo() {
-                Some(repo_id) => app.begin_quick_create(repo_id),
+                Some(repo_id) => {
+                    app.begin_quick_create(repo_id);
+                    // Populate the existing-branch picker in the background.
+                    let _ = backend
+                        .cmd_tx
+                        .send(Command::ListRepoBranches { repo_id })
+                        .await;
+                }
                 None => {
                     app.git_action_message = Some((
                         "No repositories — press N to add one first".to_string(),
@@ -3354,6 +3434,17 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
         }
         CoreEvent::WorktreeCreateProgress { stage, .. } => {
             app.git_action_message = Some((format!("creating worktree: {stage}"), Instant::now()));
+        }
+        CoreEvent::RepoBranches {
+            repo_id,
+            local,
+            remote,
+        } => {
+            if let Some(qc) = app.quick_create.as_mut() {
+                if qc.repo_id == repo_id {
+                    qc.set_branches(local, remote);
+                }
+            }
         }
         CoreEvent::WorkspaceReviewChanged { id, ready } => {
             if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {

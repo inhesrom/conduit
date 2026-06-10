@@ -421,9 +421,27 @@ pub enum SidebarMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickCreateField {
     Name,
+    Mode,
     BaseBranch,
+    Branch,
     Agent,
     Prompt,
+}
+
+/// Whether quick-create makes a fresh branch off a base ref or checks out an
+/// already-existing branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickCreateMode {
+    NewBranch,
+    ExistingBranch,
+}
+
+/// One entry in the quick-create branch picker. `display` is either a local
+/// branch name ("feature-x") or a full remote ref ("origin/feature-x").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchChoice {
+    pub display: String,
+    pub is_remote: bool,
 }
 
 /// State of the ctrl+n quick-create-workspace modal.
@@ -434,8 +452,15 @@ pub struct QuickCreateState {
     pub name: String,
     /// When false, only the name field is shown; Tab reveals the overrides.
     pub expanded: bool,
+    pub mode: QuickCreateMode,
     /// Empty = use the repository's default branch.
     pub base_branch: String,
+    /// Filter text typed into the branch picker (existing-branch mode).
+    pub branch_filter: String,
+    /// Index into [`Self::filtered_branches`] of the highlighted suggestion.
+    pub branch_selected: usize,
+    /// Repo branches for the picker; empty until [`Event::RepoBranches`] arrives.
+    pub branches: Vec<BranchChoice>,
     /// Agent to launch: a configured profile name or a raw custom command.
     /// Pre-filled with the repo/global default. While [`Self::agent_command_edit`]
     /// is false this holds a profile name cycled with ←/→; once true it holds a
@@ -450,24 +475,103 @@ pub struct QuickCreateState {
 }
 
 impl QuickCreateState {
-    pub fn active_input_mut(&mut self) -> &mut String {
+    /// The text buffer edited by the focused field, or `None` when the field
+    /// is a selector (mode toggle, agent profile cycling).
+    pub fn active_input_mut(&mut self) -> Option<&mut String> {
         match self.field {
-            QuickCreateField::Name => &mut self.name,
-            QuickCreateField::BaseBranch => &mut self.base_branch,
-            QuickCreateField::Agent => &mut self.agent,
-            QuickCreateField::Prompt => &mut self.initial_prompt,
+            QuickCreateField::Name => Some(&mut self.name),
+            QuickCreateField::Mode => None,
+            QuickCreateField::BaseBranch => Some(&mut self.base_branch),
+            QuickCreateField::Branch => Some(&mut self.branch_filter),
+            QuickCreateField::Agent if self.agent_command_edit => Some(&mut self.agent),
+            QuickCreateField::Agent => None,
+            QuickCreateField::Prompt => Some(&mut self.initial_prompt),
         }
     }
 
-    /// Advance focus, only visiting the override fields once expanded.
+    /// Advance focus, only visiting the override fields once expanded. The
+    /// second row depends on the mode: base ref (new branch) or branch picker
+    /// (existing branch).
     pub fn next_field(&mut self) {
         self.field = match self.field {
-            QuickCreateField::Name if self.expanded => QuickCreateField::BaseBranch,
+            QuickCreateField::Name if self.expanded => QuickCreateField::Mode,
             QuickCreateField::Name => QuickCreateField::Name,
-            QuickCreateField::BaseBranch => QuickCreateField::Agent,
+            QuickCreateField::Mode => match self.mode {
+                QuickCreateMode::NewBranch => QuickCreateField::BaseBranch,
+                QuickCreateMode::ExistingBranch => QuickCreateField::Branch,
+            },
+            QuickCreateField::BaseBranch | QuickCreateField::Branch => QuickCreateField::Agent,
             QuickCreateField::Agent => QuickCreateField::Prompt,
             QuickCreateField::Prompt => QuickCreateField::Name,
         };
+    }
+
+    /// Move focus backwards (Shift+Tab), mirroring [`Self::next_field`].
+    pub fn prev_field(&mut self) {
+        self.field = match self.field {
+            QuickCreateField::Name if self.expanded => QuickCreateField::Prompt,
+            QuickCreateField::Name => QuickCreateField::Name,
+            QuickCreateField::Mode => QuickCreateField::Name,
+            QuickCreateField::BaseBranch | QuickCreateField::Branch => QuickCreateField::Mode,
+            QuickCreateField::Agent => match self.mode {
+                QuickCreateMode::NewBranch => QuickCreateField::BaseBranch,
+                QuickCreateMode::ExistingBranch => QuickCreateField::Branch,
+            },
+            QuickCreateField::Prompt => QuickCreateField::Agent,
+        };
+    }
+
+    /// Toggle between new-branch and existing-branch mode (←/→ on the mode field).
+    pub fn cycle_mode(&mut self) {
+        self.mode = match self.mode {
+            QuickCreateMode::NewBranch => QuickCreateMode::ExistingBranch,
+            QuickCreateMode::ExistingBranch => QuickCreateMode::NewBranch,
+        };
+        self.branch_selected = 0;
+    }
+
+    /// Fill the picker: local branches first, then remote refs whose implied
+    /// local name doesn't already exist locally (local wins).
+    pub fn set_branches(&mut self, local: Vec<String>, remote: Vec<String>) {
+        let mut branches: Vec<BranchChoice> = local
+            .iter()
+            .map(|name| BranchChoice {
+                display: name.clone(),
+                is_remote: false,
+            })
+            .collect();
+        branches.extend(
+            remote
+                .into_iter()
+                .filter(|r| {
+                    let implied = r.split_once('/').map(|(_, rest)| rest).unwrap_or(r);
+                    !local.iter().any(|l| l == implied)
+                })
+                .map(|display| BranchChoice {
+                    display,
+                    is_remote: true,
+                }),
+        );
+        self.branches = branches;
+        self.branch_selected = 0;
+    }
+
+    /// Picker entries matching the typed filter (case-insensitive substring;
+    /// empty filter = all), paired with their index into [`Self::branches`].
+    pub fn filtered_branches(&self) -> Vec<&BranchChoice> {
+        let needle = self.branch_filter.to_lowercase();
+        self.branches
+            .iter()
+            .filter(|b| needle.is_empty() || b.display.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    /// The highlighted picker entry, or `None` when nothing matches the filter
+    /// (including when the branch list hasn't loaded).
+    pub fn selected_branch(&self) -> Option<&BranchChoice> {
+        let filtered = self.filtered_branches();
+        let idx = self.branch_selected.min(filtered.len().checked_sub(1)?);
+        Some(filtered[idx])
     }
 
     /// Replace the agent field with the next/prev configured agent name,
@@ -1057,7 +1161,11 @@ impl TuiApp {
             repo_name,
             name: String::new(),
             expanded: false,
+            mode: QuickCreateMode::NewBranch,
             base_branch: String::new(),
+            branch_filter: String::new(),
+            branch_selected: 0,
+            branches: Vec::new(),
             agent,
             agent_command_edit: false,
             initial_prompt: String::new(),
@@ -4954,20 +5062,28 @@ mod tests {
         assert_eq!(app.home_selected, 0);
     }
 
-    #[test]
-    fn cycle_agent_wraps_through_configured_agents() {
-        let agents = default_agents(); // [claude, codex]
-        let mut qc = QuickCreateState {
+    fn make_qc(agent: &str, field: QuickCreateField) -> QuickCreateState {
+        QuickCreateState {
             repo_id: Uuid::new_v4(),
             repo_name: "r".into(),
             name: String::new(),
             expanded: true,
+            mode: QuickCreateMode::NewBranch,
             base_branch: String::new(),
-            agent: "claude".into(),
+            branch_filter: String::new(),
+            branch_selected: 0,
+            branches: Vec::new(),
+            agent: agent.into(),
             agent_command_edit: false,
             initial_prompt: String::new(),
-            field: QuickCreateField::Agent,
-        };
+            field,
+        }
+    }
+
+    #[test]
+    fn cycle_agent_wraps_through_configured_agents() {
+        let agents = default_agents(); // [claude, codex]
+        let mut qc = make_qc("claude", QuickCreateField::Agent);
         qc.cycle_agent(&agents, 1);
         assert_eq!(qc.agent, "codex");
         qc.cycle_agent(&agents, 1); // wraps back to the first
@@ -4979,22 +5095,105 @@ mod tests {
     #[test]
     fn cycle_agent_from_custom_command_lands_on_an_agent() {
         let agents = default_agents(); // [claude, codex]
-        let mut qc = QuickCreateState {
-            repo_id: Uuid::new_v4(),
-            repo_name: "r".into(),
-            name: String::new(),
-            expanded: true,
-            base_branch: String::new(),
-            agent: "my-custom-cmd".into(), // not a known profile
-            agent_command_edit: false,
-            initial_prompt: String::new(),
-            field: QuickCreateField::Agent,
-        };
+        let mut qc = make_qc("my-custom-cmd", QuickCreateField::Agent); // not a known profile
         qc.cycle_agent(&agents, 1); // forward from unknown → first
         assert_eq!(qc.agent, "claude");
         qc.agent = "my-custom-cmd".into();
         qc.cycle_agent(&agents, -1); // backward from unknown → last
         assert_eq!(qc.agent, "codex");
+    }
+
+    #[test]
+    fn quick_create_field_order_by_mode() {
+        let mut qc = make_qc("claude", QuickCreateField::Name);
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::Mode);
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::BaseBranch);
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::Agent);
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::Prompt);
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::Name);
+
+        qc.mode = QuickCreateMode::ExistingBranch;
+        qc.field = QuickCreateField::Mode;
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::Branch);
+        qc.next_field();
+        assert_eq!(qc.field, QuickCreateField::Agent);
+    }
+
+    #[test]
+    fn quick_create_prev_field_reverses_next_field() {
+        // prev_field must walk the exact reverse of next_field in both modes.
+        for mode in [QuickCreateMode::NewBranch, QuickCreateMode::ExistingBranch] {
+            let mut qc = make_qc("claude", QuickCreateField::Name);
+            qc.mode = mode;
+            for _ in 0..5 {
+                let before = qc.field;
+                qc.next_field();
+                qc.prev_field();
+                assert_eq!(qc.field, before, "mode {mode:?}, field {before:?}");
+                qc.next_field();
+            }
+        }
+    }
+
+    #[test]
+    fn quick_create_cycle_mode_toggles() {
+        let mut qc = make_qc("claude", QuickCreateField::Mode);
+        qc.branch_selected = 3;
+        qc.cycle_mode();
+        assert_eq!(qc.mode, QuickCreateMode::ExistingBranch);
+        assert_eq!(qc.branch_selected, 0);
+        qc.cycle_mode();
+        assert_eq!(qc.mode, QuickCreateMode::NewBranch);
+    }
+
+    #[test]
+    fn set_branches_dedupes_remote_tracked_locally() {
+        let mut qc = make_qc("claude", QuickCreateField::Branch);
+        qc.set_branches(
+            vec!["main".into(), "feature-x".into()],
+            vec![
+                "origin/main".into(),
+                "origin/feature-x".into(),
+                "origin/only-remote".into(),
+            ],
+        );
+        let names: Vec<&str> = qc.branches.iter().map(|b| b.display.as_str()).collect();
+        assert_eq!(names, vec!["main", "feature-x", "origin/only-remote"]);
+        assert!(qc.branches[2].is_remote);
+        assert!(!qc.branches[0].is_remote);
+    }
+
+    #[test]
+    fn filtered_branches_matches_substring_case_insensitive() {
+        let mut qc = make_qc("claude", QuickCreateField::Branch);
+        qc.set_branches(
+            vec!["main".into(), "Feature-X".into()],
+            vec!["origin/only-remote".into()],
+        );
+        assert_eq!(qc.filtered_branches().len(), 3); // empty filter = all
+        qc.branch_filter = "feat".into();
+        let f = qc.filtered_branches();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].display, "Feature-X");
+        qc.branch_filter = "remote".into();
+        assert_eq!(qc.filtered_branches()[0].display, "origin/only-remote");
+    }
+
+    #[test]
+    fn selected_branch_clamps_and_handles_empty() {
+        let mut qc = make_qc("claude", QuickCreateField::Branch);
+        assert!(qc.selected_branch().is_none()); // nothing loaded
+        qc.set_branches(vec!["main".into(), "dev".into()], vec![]);
+        qc.branch_selected = 99;
+        assert_eq!(qc.selected_branch().unwrap().display, "dev"); // clamped
+        qc.branch_filter = "no-such".into();
+        assert!(qc.selected_branch().is_none()); // filter matches nothing
     }
 
     #[test]

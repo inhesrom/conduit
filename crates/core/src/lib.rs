@@ -17,8 +17,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{broadcast, mpsc};
 
 use protocol::{
-    AttentionLevel, ChangedFile, Command, Event, GitState, RepositoryId, RepositorySummary,
-    SavedCommand, SshTarget, WorkspaceId, WorkspaceSummary,
+    AttentionLevel, ChangedFile, CheckoutSource, Command, Event, GitState, RepositoryId,
+    RepositorySummary, SavedCommand, SshTarget, WorkspaceId, WorkspaceSummary,
 };
 use state::{AppState, Repository, Workspace};
 use uuid::Uuid;
@@ -202,12 +202,12 @@ struct WorkspaceCreateOutcome {
 use workspace::attention::AttentionDetector;
 use workspace::git::{
     checkout_branch, checkout_remote_branch, commit, create_branch, create_worktree,
-    delete_local_branch, delete_remote_branch, detect_default_branch, diff_branch_file,
-    diff_branch_files, diff_commit, diff_commit_file, diff_file, discard_all, discard_file,
-    gh_create_pr, git_fetch, git_pull, git_push, git_stash, git_stash_all, git_stash_pull_pop,
-    list_commit_files, list_worktrees, refresh_git, remote_origin_url, remove_worktree, repo_root,
-    stage_all,
-    stage_file, unstage_all, unstage_file,
+    create_worktree_existing, create_worktree_tracking, delete_local_branch, delete_remote_branch,
+    detect_default_branch, diff_branch_file, diff_branch_files, diff_commit, diff_commit_file,
+    diff_file, discard_all, discard_file, gh_create_pr, git_fetch, git_pull, git_push, git_stash,
+    git_stash_all, git_stash_pull_pop, list_branch_names, list_commit_files, list_worktrees,
+    local_name_for_remote_ref, refresh_git, remote_origin_url, remove_worktree, repo_root,
+    stage_all, stage_file, unstage_all, unstage_file,
 };
 use workspace::process_info;
 use workspace::ssh;
@@ -348,11 +348,20 @@ pub fn spawn_core() -> CoreHandle {
                     name,
                     base_branch,
                     agent,
+                    existing,
                 } => {
                     if let Some(repo) = state.repositories.get(&repo_id) {
                         let id = Uuid::new_v4();
+                        // The branch checked out in the worktree: an existing
+                        // branch's real name, or a fresh slug of the task name.
+                        let local_name = existing.as_ref().map(|source| match source {
+                            CheckoutSource::LocalBranch { name } => name.clone(),
+                            CheckoutSource::RemoteBranch { remote_ref } => {
+                                local_name_for_remote_ref(remote_ref).to_string()
+                            }
+                        });
                         let slug = {
-                            let s = protocol::branch_slug(&name);
+                            let s = protocol::branch_slug(local_name.as_deref().unwrap_or(&name));
                             if s.is_empty() {
                                 format!("ws-{}", &id.simple().to_string()[..8])
                             } else {
@@ -360,13 +369,15 @@ pub fn spawn_core() -> CoreHandle {
                             }
                         };
                         let base = base_branch
+                            .filter(|_| existing.is_none())
                             .or_else(|| repo.default_branch.clone())
                             .unwrap_or_else(|| "main".to_string());
+                        let branch = local_name.unwrap_or_else(|| slug.clone());
                         let wt_path = worktree_path_for(repo, &slug);
                         let repo_path = repo.path.clone();
                         let ssh = repo.ssh.clone();
                         let display_name = if name.trim().is_empty() {
-                            slug.clone()
+                            branch.clone()
                         } else {
                             name
                         };
@@ -385,23 +396,52 @@ pub fn spawn_core() -> CoreHandle {
                                 repo_id,
                                 stage: "worktree-add".to_string(),
                             });
-                            let remote_ref = format!("origin/{base}");
-                            let mut result =
-                                create_worktree(&repo_path, &wt_path, &slug, &remote_ref, ssh.as_ref())
+                            let result = match &existing {
+                                Some(CheckoutSource::LocalBranch { name }) => {
+                                    create_worktree_existing(&repo_path, &wt_path, name, ssh.as_ref())
+                                        .await
+                                }
+                                Some(CheckoutSource::RemoteBranch { remote_ref }) => {
+                                    create_worktree_tracking(
+                                        &repo_path,
+                                        &wt_path,
+                                        &branch,
+                                        remote_ref,
+                                        ssh.as_ref(),
+                                    )
+                                    .await
+                                }
+                                None => {
+                                    let remote_ref = format!("origin/{base}");
+                                    let mut result = create_worktree(
+                                        &repo_path,
+                                        &wt_path,
+                                        &branch,
+                                        &remote_ref,
+                                        ssh.as_ref(),
+                                    )
                                     .await;
-                            if result.is_err() {
-                                // Repo may have no `origin` remote — fall back to a local base ref.
-                                result =
-                                    create_worktree(&repo_path, &wt_path, &slug, &base, ssh.as_ref())
+                                    if result.is_err() {
+                                        // Repo may have no `origin` remote — fall back to a local base ref.
+                                        result = create_worktree(
+                                            &repo_path,
+                                            &wt_path,
+                                            &branch,
+                                            &base,
+                                            ssh.as_ref(),
+                                        )
                                         .await;
-                            }
+                                    }
+                                    result
+                                }
+                            };
                             let _ = tx
                                 .send(WorkspaceCreateOutcome {
                                     id,
                                     repo_id,
                                     name: display_name,
                                     path: wt_path,
-                                    branch: slug,
+                                    branch,
                                     base_branch: base,
                                     agent,
                                     ssh,
@@ -412,6 +452,32 @@ pub fn spawn_core() -> CoreHandle {
                     } else {
                         let _ = evt_tx_task.send(Event::Error {
                             message: "Cannot create workspace: unknown repository".to_string(),
+                        });
+                    }
+                }
+                Command::ListRepoBranches { repo_id } => {
+                    if let Some(repo) = state.repositories.get(&repo_id) {
+                        let path = repo.path.clone();
+                        let ssh = repo.ssh.clone();
+                        let evt_tx = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match list_branch_names(&path, ssh.as_ref()).await {
+                                Ok((local, remote)) => {
+                                    let _ = evt_tx.send(Event::RepoBranches {
+                                        repo_id,
+                                        local,
+                                        remote,
+                                    });
+                                }
+                                Err(err) => {
+                                    let _ = evt_tx.send(Event::Error {
+                                        message: format!(
+                                            "Branch listing failed for {}: {err}",
+                                            path.display()
+                                        ),
+                                    });
+                                }
+                            }
                         });
                     }
                 }
