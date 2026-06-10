@@ -149,6 +149,11 @@ pub enum Command {
         id: WorkspaceId,
         name: String,
     },
+    SetWorkspaceAgent {
+        id: WorkspaceId,
+        #[serde(default)]
+        agent: Option<String>,
+    },
     MoveWorkspace {
         id: WorkspaceId,
         delta: i32,
@@ -684,6 +689,11 @@ mod tests {
                 id,
                 name: "n".into(),
             },
+            Command::SetWorkspaceAgent {
+                id,
+                agent: Some("claude".into()),
+            },
+            Command::SetWorkspaceAgent { id, agent: None },
             Command::MoveWorkspace { id, delta: 1 },
             Command::MoveWorkspace { id, delta: -1 },
             Command::SetAttention {

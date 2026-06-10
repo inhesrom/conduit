@@ -1457,6 +1457,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_adding_workspace()
                         && !app.is_adding_ssh_workspace()
                         && app.ssh_history_picker.is_none()
+                        && app.agent_picker.is_none()
                         && !app.is_confirming_delete()
                         && !app.is_renaming_workspace()
                         && !app.is_renaming_tab()
@@ -1925,6 +1926,91 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 }
                                 continue;
                             }
+                            if app.agent_picker.is_some() {
+                                let in_custom = app
+                                    .agent_picker
+                                    .as_ref()
+                                    .is_some_and(|p| p.custom_input.is_some());
+                                if in_custom {
+                                    match key.code {
+                                        KeyCode::Esc => {
+                                            if let Some(picker) = app.agent_picker.as_mut() {
+                                                picker.custom_input = None;
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            let entry = app.agent_picker.as_ref().and_then(|p| {
+                                                p.custom_input
+                                                    .as_deref()
+                                                    .map(str::trim)
+                                                    .filter(|c| !c.is_empty())
+                                                    .map(|c| (p.id, c.to_string()))
+                                            });
+                                            if let Some((target, command)) = entry {
+                                                apply_agent_switch(
+                                                    &mut app,
+                                                    &backend,
+                                                    target,
+                                                    Some(command),
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app
+                                                .agent_picker
+                                                .as_mut()
+                                                .and_then(|p| p.custom_input.as_mut())
+                                            {
+                                                input.pop();
+                                            }
+                                        }
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app
+                                                .agent_picker
+                                                .as_mut()
+                                                .and_then(|p| p.custom_input.as_mut())
+                                            {
+                                                input.push(c);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    match key.code {
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app.agent_picker_move(1)
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app.agent_picker_move(-1)
+                                        }
+                                        KeyCode::Esc => app.cancel_agent_picker(),
+                                        KeyCode::Enter => {
+                                            let selection =
+                                                app.agent_picker.as_ref().map(|p| (p.id, p.selected));
+                                            if let Some((target, selected)) = selection {
+                                                if let Some(profile) =
+                                                    app.settings.agents.get(selected)
+                                                {
+                                                    let name = profile.name.clone();
+                                                    apply_agent_switch(
+                                                        &mut app,
+                                                        &backend,
+                                                        target,
+                                                        Some(name),
+                                                    )
+                                                    .await;
+                                                } else {
+                                                    app.begin_agent_picker_custom();
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue;
+                            }
+
                             if app.is_renaming_tab() {
                                 match key.code {
                                     KeyCode::Esc => app.cancel_rename_tab(),
@@ -2683,6 +2769,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 {
                                     app.begin_rename_tab();
                                 }
+                                KeyCode::Char('c')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
+                                    app.begin_agent_picker(id);
+                                }
                                 KeyCode::Char('a')
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
@@ -2925,6 +3016,7 @@ fn workspace_hotkeys_allowed(app: &TuiApp) -> bool {
         && !app.is_adding_workspace()
         && !app.is_adding_ssh_workspace()
         && app.ssh_history_picker.is_none()
+        && app.agent_picker.is_none()
         && !app.is_confirming_delete()
         && !app.is_renaming_workspace()
         && !app.is_renaming_tab()
@@ -4845,6 +4937,63 @@ fn agent_cmd(settings: &app::Settings) -> Vec<String> {
 /// per-Workspace `agent` choice. The choice is either a configured profile name
 /// (→ that profile's command + yolo flags) or a raw custom command (→ split on
 /// whitespace into argv). `None`/empty falls back to the global default agent.
+/// Switch a workspace's agent: persist the choice, stop any running agent
+/// process, and start the new agent fresh in the workspace's agent tab.
+async fn apply_agent_switch(
+    app: &mut TuiApp,
+    backend: &Backend,
+    id: protocol::WorkspaceId,
+    agent: Option<String>,
+) {
+    app.agent_picker = None;
+    // Optimistic update so agent resolution sees the new choice before the
+    // core's WorkspaceList round-trip lands.
+    if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {
+        ws.agent = agent.clone();
+    }
+    let _ = backend
+        .cmd_tx
+        .send(Command::SetWorkspaceAgent {
+            id,
+            agent: agent.clone(),
+        })
+        .await;
+    if app.workspace_agent_running(id) {
+        app.suppress_next_agent_exit(id);
+    }
+    let _ = backend
+        .cmd_tx
+        .send(Command::StopTerminal {
+            id,
+            kind: TerminalKind::Agent,
+            tab_id: Some("agent".to_string()),
+        })
+        .await;
+    let cmd = agent_cmd_for(&app.settings, agent.as_deref());
+    app.queue_agent_startup(id, false);
+    let _ = backend
+        .cmd_tx
+        .send(Command::StartTerminal {
+            id,
+            kind: TerminalKind::Agent,
+            tab_id: Some("agent".to_string()),
+            cmd,
+            cols: app.terminal_content_size.0,
+            rows: app.terminal_content_size.1,
+        })
+        .await;
+    if matches!(app.route, Route::Workspace { id: rid } if rid == id) {
+        if let Some(idx) = app
+            .ws_tabs
+            .iter()
+            .position(|t| t.kind == TerminalKind::Agent)
+        {
+            app.set_active_tab_index(idx);
+        }
+        app.focus = app::Focus::WsTerminal;
+    }
+}
+
 fn agent_cmd_for(settings: &app::Settings, agent_choice: Option<&str>) -> Vec<String> {
     let Some(choice) = agent_choice.map(str::trim).filter(|c| !c.is_empty()) else {
         return agent_cmd(settings);

@@ -89,6 +89,16 @@ pub struct SshHistoryPicker {
     pub selected: usize,
 }
 
+/// Modal for switching a workspace's agent after creation. Lists the
+/// configured agent profiles plus a trailing "custom…" row; selecting the
+/// latter switches to a free-form command input.
+pub struct AgentPicker {
+    pub id: WorkspaceId,
+    pub selected: usize,
+    /// `Some(_)` means the picker is in custom-command text-input mode.
+    pub custom_input: Option<String>,
+}
+
 /// Tracks a single-line editable text buffer with a UTF-8 byte cursor.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EditableText {
@@ -822,6 +832,7 @@ pub struct TuiApp {
     pub ssh_workspace_input: Option<SshWorkspaceInput>,
     pub ssh_history: Vec<SshHistoryEntry>,
     pub ssh_history_picker: Option<SshHistoryPicker>,
+    pub agent_picker: Option<AgentPicker>,
     pub confirm_discard_file: Option<String>,
     pub confirm_discard_all: Option<WorkspaceId>,
     pub stash_input: Option<String>,
@@ -924,6 +935,7 @@ impl Default for TuiApp {
             ssh_workspace_input: None,
             ssh_history: load_ssh_history(),
             ssh_history_picker: None,
+            agent_picker: None,
             confirm_discard_file: None,
             confirm_discard_all: None,
             stash_input: None,
@@ -1663,6 +1675,51 @@ impl TuiApp {
             }
         }
         self.persist_tabs_for_active_workspace();
+    }
+
+    pub fn begin_agent_picker(&mut self, id: WorkspaceId) {
+        let agents = &self.settings.agents;
+        let selected = match self.workspace_agent(id) {
+            // A raw custom command won't match any profile name; preselect
+            // the trailing "custom…" row in that case.
+            Some(cur) => agents
+                .iter()
+                .position(|a| a.name == cur)
+                .unwrap_or(agents.len()),
+            None => agents
+                .iter()
+                .position(|a| a.name == self.settings.default_agent)
+                .unwrap_or(0),
+        };
+        self.agent_picker = Some(AgentPicker {
+            id,
+            selected,
+            custom_input: None,
+        });
+    }
+
+    pub fn cancel_agent_picker(&mut self) {
+        self.agent_picker = None;
+    }
+
+    pub fn agent_picker_move(&mut self, delta: i32) {
+        let len = self.settings.agents.len() + 1;
+        if let Some(picker) = self.agent_picker.as_mut() {
+            picker.selected = (picker.selected as i32 + delta).rem_euclid(len as i32) as usize;
+        }
+    }
+
+    pub fn begin_agent_picker_custom(&mut self) {
+        let Some(id) = self.agent_picker.as_ref().map(|p| p.id) else {
+            return;
+        };
+        let prefill = self
+            .workspace_agent(id)
+            .filter(|cur| !self.settings.agents.iter().any(|a| a.name == *cur))
+            .unwrap_or_default();
+        if let Some(picker) = self.agent_picker.as_mut() {
+            picker.custom_input = Some(prefill);
+        }
     }
 
     pub fn begin_add_ssh_workspace(&mut self) {
@@ -4656,6 +4713,49 @@ mod tests {
         assert!(app.ssh_history_picker.is_some());
         app.select_ssh_history_entry();
         assert!(app.is_adding_ssh_workspace());
+    }
+
+    #[test]
+    fn agent_picker_preselects_current_profile() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.workspaces[0].agent = Some("codex".into());
+        app.begin_agent_picker(id);
+        assert_eq!(app.agent_picker.as_ref().unwrap().selected, 1);
+        app.cancel_agent_picker();
+        assert!(app.agent_picker.is_none());
+    }
+
+    #[test]
+    fn agent_picker_default_and_custom_preselection() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        // No agent set: preselect the default-agent profile.
+        app.begin_agent_picker(id);
+        assert_eq!(app.agent_picker.as_ref().unwrap().selected, 0);
+        // Raw custom command: preselect the trailing custom row and prefill
+        // the custom input with the current command.
+        app.workspaces[0].agent = Some("aider --yolo".into());
+        app.begin_agent_picker(id);
+        let custom_row = app.settings.agents.len();
+        assert_eq!(app.agent_picker.as_ref().unwrap().selected, custom_row);
+        app.begin_agent_picker_custom();
+        assert_eq!(
+            app.agent_picker.as_ref().unwrap().custom_input.as_deref(),
+            Some("aider --yolo")
+        );
+    }
+
+    #[test]
+    fn agent_picker_move_wraps_over_custom_row() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.begin_agent_picker(id);
+        let len = app.settings.agents.len() + 1;
+        app.agent_picker_move(-1);
+        assert_eq!(app.agent_picker.as_ref().unwrap().selected, len - 1);
+        app.agent_picker_move(1);
+        assert_eq!(app.agent_picker.as_ref().unwrap().selected, 0);
     }
 
     #[test]

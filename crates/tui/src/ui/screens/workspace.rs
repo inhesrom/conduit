@@ -1296,6 +1296,112 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         render_workspace_command_modal(frame, area, command);
     }
 
+    // --- Agent picker modal ---
+    if let Some(ref picker) = app.agent_picker {
+        if let Some(ref input) = picker.custom_input {
+            let modal_w = 60u16.min(area.width.saturating_sub(4));
+            let modal_h = 5u16;
+            let modal_rect = Rect::new(
+                area.x + (area.width.saturating_sub(modal_w)) / 2,
+                area.y + (area.height.saturating_sub(modal_h)) / 2,
+                modal_w,
+                modal_h,
+            );
+            frame.render_widget(Clear, modal_rect);
+            frame.render_widget(
+                Paragraph::new(format!("{input}_"))
+                    .block(
+                        Block::default()
+                            .title("Custom Agent Command (Enter to switch, Esc to back)")
+                            .borders(Borders::ALL)
+                            .border_style(
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                            .border_type(BorderType::Rounded),
+                    )
+                    .wrap(Wrap { trim: false }),
+                modal_rect,
+            );
+        } else {
+            let current = app.workspace_agent(picker.id);
+            let row_count = app.settings.agents.len() as u16 + 1;
+            let modal_w = 50u16.min(area.width.saturating_sub(4));
+            let modal_h = (row_count + 5)
+                .min(20)
+                .min(area.height.saturating_sub(2));
+            let modal_rect = Rect::new(
+                area.x + (area.width.saturating_sub(modal_w)) / 2,
+                area.y + (area.height.saturating_sub(modal_h)) / 2,
+                modal_w,
+                modal_h,
+            );
+            frame.render_widget(Clear, modal_rect);
+            let outer_block = Block::default()
+                .title(" Switch Agent ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan));
+            let inner = outer_block.inner(modal_rect);
+            frame.render_widget(outer_block, modal_rect);
+
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(2)])
+                .split(inner);
+
+            let mut items: Vec<ListItem> = app
+                .settings
+                .agents
+                .iter()
+                .map(|a| {
+                    let active = match current.as_deref() {
+                        Some(cur) => cur == a.name,
+                        None => a.name == app.settings.default_agent,
+                    };
+                    let label = if active {
+                        format!("  {} (current)", a.name)
+                    } else {
+                        format!("  {}", a.name)
+                    };
+                    ListItem::new(label)
+                })
+                .collect();
+            let custom_current = current
+                .as_deref()
+                .is_some_and(|cur| !app.settings.agents.iter().any(|a| a.name == cur));
+            items.push(ListItem::new(if custom_current {
+                "  custom… (current)".to_string()
+            } else {
+                "  custom…".to_string()
+            }));
+
+            let list = List::new(items).highlight_symbol("> ").highlight_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+            let mut list_state = ListState::default();
+            list_state.select(Some(picker.selected));
+            frame.render_stateful_widget(list, sections[0], &mut list_state);
+
+            let key_style = Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD);
+            let desc_style = Style::default().fg(Color::DarkGray);
+            let hints = Line::from(vec![
+                Span::styled("j/k", key_style),
+                Span::styled(" nav  ", desc_style),
+                Span::styled("Enter", key_style),
+                Span::styled(" select  ", desc_style),
+                Span::styled("Esc", key_style),
+                Span::styled(" cancel", desc_style),
+            ]);
+            frame.render_widget(Paragraph::new(vec![Line::from(""), hints]), sections[1]);
+        }
+    }
+
     if matches!(
         app.focus,
         crate::app::Focus::ReviewFiles | crate::app::Focus::ReviewDiff

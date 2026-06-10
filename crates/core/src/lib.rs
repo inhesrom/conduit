@@ -587,6 +587,12 @@ pub fn spawn_core() -> CoreHandle {
                         ws.last_activity = Instant::now();
                     }
                 }
+                Command::SetWorkspaceAgent { id, agent } => {
+                    if let Some(ws) = state.workspaces.get_mut(&id) {
+                        ws.agent = agent;
+                        ws.last_activity = Instant::now();
+                    }
+                }
                 Command::MoveWorkspace { id, delta } => {
                     if let Some(pos) = state.ordered_ids.iter().position(|wid| *wid == id) {
                         let new_pos = (pos as i32 + delta)
