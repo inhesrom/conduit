@@ -8,8 +8,7 @@ use ratatui::{
 
 use crate::app::TuiApp;
 use crate::ui::footer;
-use crate::ui::widgets::tile_grid;
-use tile_grid::ORANGE;
+use crate::ui::widgets::tile_grid::ORANGE;
 
 /// Renders the home screen: dashboard header, tile grid, footer, and any open modals.
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
@@ -948,33 +947,28 @@ fn home_chunks(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-/// Returns the outer `Rect` of every bordered pane on the home screen.
+/// Returns the `home_chunks` section (dashboard, body, or footer) containing the
+/// given point, if any. Used to confine a mouse selection to one home section.
+pub fn chunk_at(area: Rect, x: u16, y: u16) -> Option<Rect> {
+    home_chunks(area)
+        .into_iter()
+        .find(|r| x >= r.x && y >= r.y && x < r.right() && y < r.bottom())
+}
+
+/// Returns the outer `Rect` of every bordered widget on the home screen — the
+/// dashboard header, the welcome body, and the footer.
 ///
 /// Used during text extraction so that border cells can be replaced with spaces.
-pub fn border_rects(area: Rect, app: &TuiApp) -> Vec<Rect> {
+/// These are exactly the widgets `render` draws; in particular there is no tile
+/// grid (it was replaced by `render_welcome_body`), so emitting per-workspace tile
+/// rects here would blank real body text rows during clipboard extraction.
+pub fn border_rects(area: Rect) -> Vec<Rect> {
     let chunks = home_chunks(area);
-    let mut rects = vec![
+    vec![
         chunks[0], // dashboard header (Borders::ALL + Rounded)
+        chunks[1], // welcome body (Borders::ALL + Rounded)
         chunks[2], // footer (Borders::TOP)
-    ];
-
-    // Individual tile rects from the grid
-    let grid_area = chunks[1];
-    let expanded_h = tile_grid::tile_h_expanded(app.settings.preview_lines);
-    for i in 0..app.workspaces.len() {
-        let r = tile_grid::tile_rect(
-            grid_area,
-            i,
-            &app.home_expanded_tiles,
-            expanded_h,
-            app.home_scroll_offset,
-        );
-        if r.width > 0 && r.height > 0 {
-            rects.push(r);
-        }
-    }
-
-    rects
+    ]
 }
 
 #[cfg(test)]
@@ -1055,21 +1049,27 @@ mod tests {
     // --- border_rects tests ---
 
     #[test]
-    fn border_rects_includes_dashboard_and_footer() {
-        let app = TuiApp::default();
+    fn border_rects_are_the_three_rendered_widgets() {
+        // The dashboard, welcome body, and footer are the only bordered widgets
+        // `render` draws. There must be no per-workspace tile rects (the tile grid
+        // was replaced by `render_welcome_body`) — those phantom borders blanked
+        // real body text rows (e.g. "Repository: …") during clipboard extraction.
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
-        let rects = super::border_rects(area, &app);
-        // At minimum: dashboard header + footer = 2
-        assert!(rects.len() >= 2, "got {} rects", rects.len());
+        let chunks = super::home_chunks(area);
+        assert_eq!(super::border_rects(area), vec![chunks[0], chunks[1], chunks[2]]);
     }
 
+    // --- chunk_at (mouse-selection confinement) ---
+
     #[test]
-    fn border_rects_includes_tiles() {
-        let mut app = TuiApp::default();
-        app.set_workspaces(vec![make_ws("a"), make_ws("b"), make_ws("c")]);
-        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
-        let rects = super::border_rects(area, &app);
-        // dashboard + footer + 3 tiles = 5
-        assert!(rects.len() >= 5, "got {} rects", rects.len());
+    fn chunk_at_returns_section_containing_point() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let chunks = super::home_chunks(area);
+        // Dashboard (top), body (middle), footer (bottom).
+        assert_eq!(super::chunk_at(area, 5, 1), Some(chunks[0]));
+        assert_eq!(super::chunk_at(area, 5, 10), Some(chunks[1]));
+        assert_eq!(super::chunk_at(area, 5, 23), Some(chunks[2]));
+        // A point outside the area resolves to nothing (caller falls back to area).
+        assert_eq!(super::chunk_at(area, 100, 100), None);
     }
 }

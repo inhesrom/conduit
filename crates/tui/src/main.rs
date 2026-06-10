@@ -1400,7 +1400,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             // Extract selected text from the rendered buffer before applying highlights.
             if let Some(sel) = &app.pending_copy_selection {
                 let borders = match app.route {
-                    Route::Home => ui::screens::home::border_rects(detail_area, &app),
+                    Route::Home => ui::screens::home::border_rects(detail_area),
                     Route::Workspace { .. } => {
                         ui::screens::workspace::border_rects(detail_area, &app)
                     }
@@ -3820,20 +3820,18 @@ async fn handle_mouse(
                     }
                     return;
                 }
-                // Otherwise start a text selection on the detail pane.
-                app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
+                // Otherwise start a text selection confined to the clicked element.
+                let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
+                app.mouse_selection =
+                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
             }
             _ => {}
         },
         Route::Workspace { id } => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.mouse_selection = if let Some(r) =
-                    ui::screens::workspace::pane_rect_at(area, app, mouse.column, mouse.row)
-                {
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, r))
-                } else {
-                    Some(app::MouseSelection::at(mouse.column, mouse.row))
-                };
+                let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
+                app.mouse_selection =
+                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
                 if let Some(hit) =
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
@@ -4624,6 +4622,123 @@ mod tests {
         assert!(text.contains("bot"));
         assert!(!text.contains("\n\n\n"));
     }
+
+    // --- confine-aware extraction (selection stays within one UI element) ---
+
+    fn put_char(buf: &mut ratatui::buffer::Buffer, col: u16, row: u16, ch: char) {
+        buf.cell_mut(ratatui::layout::Position::new(col, row))
+            .unwrap()
+            .set_symbol(&ch.to_string());
+    }
+
+    #[test]
+    fn extract_confined_multirow_clamps_intermediate_rows() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        // 20-wide buffer: in-band content in cols 2..=7, junk from an adjacent pane
+        // in cols 12..=17. The selection is confined to the left band only.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
+        for row in 0..4u16 {
+            for (i, ch) in "ABCDEF".chars().enumerate() {
+                put_char(&mut buf, 2 + i as u16, row, ch);
+            }
+            for (i, ch) in "XXXXXX".chars().enumerate() {
+                put_char(&mut buf, 12 + i as u16, row, ch);
+            }
+        }
+
+        let confine = Rect::new(2, 0, 6, 4); // cols 2..=7, all 4 rows
+        let sel = app::MouseSelection {
+            anchor_col: 4,
+            anchor_row: 0,
+            end_col: 5,
+            end_row: 3,
+            confine: Some(confine),
+        };
+        let text = extract_selected_text_from_buf(&buf, &sel, &[]);
+
+        // Intermediate rows span only the confine band, never the adjacent pane.
+        assert!(text.contains("ABCDEF"), "in-band content missing: {text:?}");
+        assert!(!text.contains('X'), "adjacent-pane junk leaked: {text:?}");
+    }
+
+    #[test]
+    fn extract_confined_singlerow_uses_endpoints_not_band() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        for (i, ch) in "0123456789".chars().enumerate() {
+            put_char(&mut buf, i as u16, 0, ch);
+        }
+        // Wide confine, but a single-row selection only spans its own endpoints.
+        let sel = app::MouseSelection {
+            anchor_col: 3,
+            anchor_row: 0,
+            end_col: 6,
+            end_row: 0,
+            confine: Some(Rect::new(0, 0, 20, 1)),
+        };
+        assert_eq!(extract_selected_text_from_buf(&buf, &sel, &[]), "3456");
+    }
+
+    #[test]
+    fn extract_unconfined_spans_full_width() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        // With no confine, intermediate rows still span the full buffer width
+        // (legacy terminal-style flow selection is preserved).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+        for row in 0..3u16 {
+            for (i, ch) in "abcdefghij".chars().enumerate() {
+                put_char(&mut buf, i as u16, row, ch);
+            }
+        }
+        let sel = app::MouseSelection {
+            anchor_col: 8,
+            anchor_row: 0,
+            end_col: 1,
+            end_row: 2,
+            confine: None,
+        };
+        let text = extract_selected_text_from_buf(&buf, &sel, &[]);
+        assert!(text.contains("abcdefghij"), "middle row not full width: {text:?}");
+    }
+
+    // --- confine-rect resolver ---
+
+    #[test]
+    fn inset_for_border_insets_tall_keeps_short() {
+        use ratatui::layout::Rect;
+
+        // A tall bordered pane is inset one cell on each side.
+        assert_eq!(
+            inset_for_border(Rect::new(10, 5, 40, 20)),
+            Rect::new(11, 6, 38, 18)
+        );
+        // A 2-row footer is left unchanged (insetting would zero its height).
+        let footer = Rect::new(0, 38, 80, 2);
+        assert_eq!(inset_for_border(footer), footer);
+    }
+
+    #[test]
+    fn selection_confine_rect_home_returns_section_else_area() {
+        use ratatui::layout::Rect;
+
+        let app = TuiApp::default(); // defaults to Route::Home
+        let area = Rect::new(0, 0, 80, 24);
+
+        // A point inside resolves to a home section: a strict sub-rect of the detail
+        // area, never the whole terminal.
+        let r = selection_confine_rect(area, &app, 10, 10);
+        assert!(r.height < area.height && r.width <= area.width);
+        assert!(r.y >= area.y && r.bottom() <= area.bottom());
+
+        // A point outside the area falls back to the detail area.
+        assert_eq!(selection_confine_rect(area, &app, 200, 200), area);
+    }
 }
 
 /// xterm-256 colour 39 — a medium sky-blue used for mouse selection highlighting.
@@ -4633,13 +4748,16 @@ fn apply_selection_highlight(frame: &mut ratatui::Frame, sel: &app::MouseSelecti
     let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
     let buf = frame.buffer_mut();
     let width = buf.area.width;
+    // Intermediate rows of a multi-row selection span the confine band (a single UI
+    // element) rather than the full terminal width, so the highlight stays inside the
+    // clicked element instead of bleeding across panes.
+    let (left_bound, right_bound) = match sel.confine {
+        Some(r) => (r.x, r.right().saturating_sub(1)),
+        None => (0, width.saturating_sub(1)),
+    };
     for row in start_row..=end_row {
-        let row_start = if row == start_row { start_col } else { 0 };
-        let row_end = if row == end_row {
-            end_col
-        } else {
-            width.saturating_sub(1)
-        };
+        let row_start = if row == start_row { start_col } else { left_bound };
+        let row_end = if row == end_row { end_col } else { right_bound };
         for col in row_start..=row_end {
             if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(col, row)) {
                 cell.set_style(
@@ -4671,14 +4789,16 @@ fn extract_selected_text_from_buf(
 ) -> String {
     let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
     let width = buf.area.width;
+    // Confine intermediate rows to the selection's element band (mirrors
+    // `apply_selection_highlight`) so copied text doesn't pull in adjacent panes.
+    let (left_bound, right_bound) = match sel.confine {
+        Some(r) => (r.x, r.right().saturating_sub(1)),
+        None => (0, width.saturating_sub(1)),
+    };
     let mut lines: Vec<String> = Vec::new();
     for row in start_row..=end_row {
-        let row_start = if row == start_row { start_col } else { 0 };
-        let row_end = if row == end_row {
-            end_col
-        } else {
-            width.saturating_sub(1)
-        };
+        let row_start = if row == start_row { start_col } else { left_bound };
+        let row_end = if row == end_row { end_col } else { right_bound };
         let mut line = String::new();
         for col in row_start..=row_end {
             if is_border_cell(col, row, border_rects) {
@@ -4817,6 +4937,31 @@ fn detail_area(full: Rect, sidebar_mode: app::SidebarMode) -> Rect {
         Layout::horizontal([Constraint::Length(w), Constraint::Min(0)]).split(full)[1]
     } else {
         full
+    }
+}
+
+/// Resolves the rect a mouse selection beginning at `(x, y)` should be confined to:
+/// the UI element under the cursor. Falls back to `area` (the detail pane) so a
+/// selection never spans the whole terminal or bleeds into the sidebar.
+fn selection_confine_rect(area: Rect, app: &TuiApp, x: u16, y: u16) -> Rect {
+    match app.route {
+        Route::Workspace { .. } => match ui::screens::workspace::pane_rect_at(area, app, x, y) {
+            Some(r) => inset_for_border(r),
+            None => area,
+        },
+        Route::Home => ui::screens::home::chunk_at(area, x, y).unwrap_or(area),
+    }
+}
+
+/// Insets a bordered pane rect by one cell on each side so the selection band sits
+/// inside the frame (no highlight over border glyphs, no leading/trailing border
+/// spaces in copied text). Left unchanged when too small to keep a non-empty
+/// interior, e.g. the 2-row footer.
+fn inset_for_border(r: Rect) -> Rect {
+    if r.width > 2 && r.height > 2 {
+        Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2)
+    } else {
+        r
     }
 }
 

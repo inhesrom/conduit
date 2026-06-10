@@ -320,19 +320,16 @@ pub struct MouseSelection {
 }
 
 impl MouseSelection {
-    /// Creates a zero-length selection anchored at the given position.
-    pub fn at(col: u16, row: u16) -> Self {
-        Self {
-            anchor_col: col,
-            anchor_row: row,
-            end_col: col,
-            end_row: row,
-            confine: None,
-        }
-    }
-
     /// Creates a zero-length selection anchored at the given position, confined to `rect`.
+    ///
+    /// The anchor is clamped into `rect` so a press on a pane border (just outside an
+    /// inset confine band) still anchors inside the band, keeping it aligned with the
+    /// endpoint that `clamp_to_confine` also holds inside `rect`.
     pub fn at_confined(col: u16, row: u16, rect: ratatui::layout::Rect) -> Self {
+        let max_col = rect.right().saturating_sub(1).max(rect.x);
+        let max_row = rect.bottom().saturating_sub(1).max(rect.y);
+        let col = col.clamp(rect.x, max_col);
+        let row = row.clamp(rect.y, max_row);
         Self {
             anchor_col: col,
             anchor_row: row,
@@ -345,8 +342,10 @@ impl MouseSelection {
     /// Clamp `end_col`/`end_row` to the confine rect (if set).
     pub fn clamp_to_confine(&mut self) {
         if let Some(r) = self.confine {
-            self.end_col = self.end_col.clamp(r.x, r.right().saturating_sub(1));
-            self.end_row = self.end_row.clamp(r.y, r.bottom().saturating_sub(1));
+            let max_col = r.right().saturating_sub(1).max(r.x);
+            let max_row = r.bottom().saturating_sub(1).max(r.y);
+            self.end_col = self.end_col.clamp(r.x, max_col);
+            self.end_row = self.end_row.clamp(r.y, max_row);
         }
     }
 
@@ -4309,11 +4308,14 @@ mod tests {
     // ===== Pure helpers =====
 
     #[test]
-    fn mouse_selection_at() {
-        let sel = MouseSelection::at(5, 10);
-        assert_eq!(sel.anchor_col, 5);
-        assert_eq!(sel.anchor_row, 10);
+    fn mouse_selection_at_confined_clamps_anchor_into_rect() {
+        // A press outside the confine band (e.g. on a pane border) anchors inside it.
+        let rect = ratatui::layout::Rect::new(2, 1, 6, 4); // cols 2..=7, rows 1..=4
+        let sel = MouseSelection::at_confined(0, 0, rect);
+        assert_eq!((sel.anchor_col, sel.anchor_row), (2, 1));
         assert!(sel.is_empty());
+        let sel = MouseSelection::at_confined(100, 100, rect);
+        assert_eq!((sel.anchor_col, sel.anchor_row), (7, 4));
     }
 
     #[test]
@@ -4346,7 +4348,13 @@ mod tests {
 
     #[test]
     fn mouse_selection_not_empty_when_dragged() {
-        let mut sel = MouseSelection::at(0, 0);
+        let mut sel = MouseSelection {
+            anchor_col: 0,
+            anchor_row: 0,
+            end_col: 0,
+            end_row: 0,
+            confine: None,
+        };
         sel.end_col = 5;
         assert!(!sel.is_empty());
     }
