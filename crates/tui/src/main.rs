@@ -993,6 +993,9 @@ fn delete_session(name: &str) -> Result<()> {
     if let Some(path) = session_workspaces_persist_path(name) {
         let _ = std::fs::remove_file(path);
     }
+    if let Some(path) = session_repositories_persist_path(name) {
+        let _ = std::fs::remove_file(path);
+    }
     println!("deleted session '{}'", name);
     Ok(())
 }
@@ -1083,6 +1086,17 @@ fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
             .join(".config")
             .join("conduit")
             .join(format!("workspaces.{safe}.json")),
+    )
+}
+
+fn session_repositories_persist_path(name: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let safe = sanitize_session_name(name);
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("conduit")
+            .join(format!("repositories.{safe}.json")),
     )
 }
 

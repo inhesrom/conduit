@@ -2243,10 +2243,19 @@ fn config_base() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".config/conduit"))
 }
 
-/// Path to the machine-global repository registry. NOT session-scoped — base
-/// repos are registered once and available in every session.
+/// Path to the per-context repository registry. Scoped by `CONDUIT_SESSION_NAME`
+/// so each named session (`-s`/`-a`) keeps an independent repo list; local
+/// (non-session) mode uses its own `repositories.local.json`. This mirrors how
+/// `persist_file()` scopes workspaces, so sessions never share repos.
 fn repositories_file() -> Option<PathBuf> {
-    Some(config_base()?.join("repositories.json"))
+    let base = config_base()?;
+    let file = match std::env::var("CONDUIT_SESSION_NAME") {
+        Ok(session) if !session.trim().is_empty() => {
+            format!("repositories.{}.json", sanitize_session_name(&session))
+        }
+        _ => "repositories.local.json".to_string(),
+    };
+    Some(base.join(file))
 }
 
 fn repository_summaries(state: &AppState) -> Vec<RepositorySummary> {
@@ -2353,8 +2362,7 @@ fn save_repositories(state: &AppState) {
         })
         .collect::<Vec<_>>();
     if let Ok(json) = serde_json::to_string_pretty(&items) {
-        // Write-temp-then-rename: the registry is shared across session daemons,
-        // so avoid torn files. Last-writer-wins is acceptable for one user.
+        // Write-temp-then-rename to avoid torn files if the write is interrupted.
         let tmp = path.with_extension("json.tmp");
         if fs::write(&tmp, json).is_ok() {
             let _ = fs::rename(&tmp, &path);
@@ -2362,75 +2370,33 @@ fn save_repositories(state: &AppState) {
     }
 }
 
-/// Loads the persisted repository registry. Returns `None` when the file does
-/// not exist yet (first launch) so the caller can trigger migration.
+/// Loads this context's persisted repository registry. Returns `None` when the
+/// file does not exist yet, so the caller starts the context with no repos.
 fn load_repositories() -> Option<Vec<PersistedRepository>> {
     let path = repositories_file()?;
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str::<Vec<PersistedRepository>>(&raw).ok()
 }
 
-/// Populates `state.repositories` from the persisted registry, or — on first
-/// launch (no registry file) — migrates legacy `workspaces.json` entries into
-/// Repositories.
+/// Populates `state.repositories` from this context's persisted registry. When
+/// no registry file exists yet, the context starts empty — sessions and local
+/// mode each build up their own independent repo list from scratch.
 async fn restore_repositories(state: &mut AppState) {
-    if let Some(items) = load_repositories() {
-        for item in items {
-            let repo = Repository {
-                id: item.id,
-                name: item.name,
-                path: PathBuf::from(item.path),
-                default_branch: item.default_branch,
-                worktree_root: item.worktree_root.map(PathBuf::from),
-                default_agent: item.default_agent,
-                ssh: item.ssh,
-            };
-            state.ordered_repo_ids.push(repo.id);
-            state.repositories.insert(repo.id, repo);
-        }
-        return;
-    }
-    migrate_legacy_workspaces(state).await;
-    save_repositories(state);
-}
-
-/// First-launch migration: each legacy `workspaces.json` entry that is a git
-/// repository becomes a Repository. Non-git entries are skipped. No Workspaces
-/// are created (source-only model — the user spawns worktree-Workspaces).
-async fn migrate_legacy_workspaces(state: &mut AppState) {
-    let Some(base) = config_base() else {
-        return;
-    };
-    // Migrate from the default (non-session) legacy file.
-    let legacy = base.join("workspaces.json");
-    let Ok(raw) = fs::read_to_string(&legacy) else {
-        return;
-    };
-    let Ok(items) = serde_json::from_str::<Vec<PersistedWorkspace>>(&raw) else {
+    let Some(items) = load_repositories() else {
         return;
     };
     for item in items {
-        let path = PathBuf::from(&item.path);
-        match repo_root(&path, item.ssh.as_ref()).await {
-            Ok(root) => {
-                let default_branch = detect_default_branch(&root, item.ssh.as_ref()).await.ok();
-                let id = Uuid::new_v4();
-                let repo = Repository {
-                    id,
-                    name: item.name,
-                    path: root,
-                    default_branch,
-                    worktree_root: None,
-                    default_agent: None,
-                    ssh: item.ssh,
-                };
-                state.ordered_repo_ids.push(id);
-                state.repositories.insert(id, repo);
-            }
-            Err(_) => {
-                // Not a git repo — skip (the file stays on disk untouched).
-            }
-        }
+        let repo = Repository {
+            id: item.id,
+            name: item.name,
+            path: PathBuf::from(item.path),
+            default_branch: item.default_branch,
+            worktree_root: item.worktree_root.map(PathBuf::from),
+            default_agent: item.default_agent,
+            ssh: item.ssh,
+        };
+        state.ordered_repo_ids.push(repo.id);
+        state.repositories.insert(repo.id, repo);
     }
 }
 
