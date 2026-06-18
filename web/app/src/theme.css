@@ -31,6 +31,11 @@
   --fill: color-mix(in srgb, var(--ink) 8%, var(--paper));
   --fill-strong: color-mix(in srgb, var(--ink) 16%, var(--paper));
 
+  /* The one sanctioned exception to monochrome: muted green/red for git
+   * added/removed. Kept low-saturation so they sit in the 1-bit world. */
+  --add: #4f9d63;
+  --del: #cc5b54;
+
   /* Pixel display faces for chrome; mono stays legible for terminal + diffs. */
   --font-display: "Silkscreen", "Pixelify Sans Variable", monospace;
   --font-ui: "Pixelify Sans Variable", ui-sans-serif, system-ui, sans-serif;
@@ -59,7 +64,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.4;
   /* Crisp pixels: no smoothing softening the type. */
   -webkit-font-smoothing: none;
@@ -76,7 +81,7 @@ body {
   font-family: var(--font-display);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ink-dim);
 }
 

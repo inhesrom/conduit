@@ -1,6 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
@@ -8,12 +7,10 @@ import { bytesToB64, textToB64 } from "./b64";
 import { termKey, type ConduitClient } from "./client";
 import type { TerminalKind } from "./protocol";
 
-/** xterm theme matching theme.css — keep the two in sync by hand. */
-const XTERM_THEME = {
-  background: "#0b0d11",
-  foreground: "#d6dae2",
-  cursor: "#d6dae2",
-  selectionBackground: "#28304a",
+/** The ANSI palette stays colorful — it's the agent's own output. Background,
+ * text, cursor, and selection instead follow the app's 1-bit theme so the
+ * terminal flips with the light/dark toggle. */
+const ANSI = {
   black: "#1c2026",
   red: "#e5534b",
   green: "#57ab5a",
@@ -31,6 +28,23 @@ const XTERM_THEME = {
   brightCyan: "#56d4dd",
   brightWhite: "#ffffff",
 };
+
+// Mirrors theme.css ink/paper. Read the data-theme attribute directly rather
+// than getComputedStyle (which returned empty in the observer context).
+function xtermTheme() {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  const paper = light ? "#e6e6e6" : "#0c0c0c";
+  const ink = light ? "#111111" : "#e8e8e8";
+  return {
+    ...ANSI,
+    background: paper,
+    foreground: ink,
+    cursor: ink,
+    cursorAccent: paper,
+    selectionBackground: ink,
+    selectionForeground: paper,
+  };
+}
 
 const RESIZE_DEBOUNCE_MS = 150;
 
@@ -72,13 +86,24 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
   const term = new Terminal({
     allowProposedApi: true,
     scrollback: opts.scrollback ?? (opts.kind === "Agent" ? 10_000 : 5_000),
-    fontSize: opts.fontSize ?? 13,
+    fontSize: opts.fontSize ?? 15,
     fontFamily:
       '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-    theme: XTERM_THEME,
+    theme: xtermTheme(),
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+
+  // Re-skin the terminal when the app's light/dark theme changes (the DOM
+  // renderer repaints on theme assignment; refresh for good measure).
+  const themeObserver = new MutationObserver(() => {
+    term.options.theme = xtermTheme();
+    term.refresh(0, term.rows - 1);
+  });
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
 
   let detachSink: (() => void) | null = null;
   let observer: ResizeObserver | null = null;
@@ -172,14 +197,8 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       term.loadAddon(unicode11);
       term.unicode.activeVersion = "11";
 
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch {
-        // WebGL unavailable — xterm falls back to the DOM renderer.
-      }
-
+      // DOM renderer (no WebGL addon): repaints reliably on theme changes, so
+      // the terminal background follows the light/dark toggle.
       fitAddon.fit();
 
       // History snapshot + sink registration in one synchronous block: no
@@ -214,6 +233,7 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       disposed = true;
       if (resizeTimer !== null) clearTimeout(resizeTimer);
       observer?.disconnect();
+      themeObserver.disconnect();
       detachSink?.();
       term.dispose();
     },
