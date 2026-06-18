@@ -1,6 +1,7 @@
 //! Embedded web server: bridges browser WebSocket clients onto the same
 //! Command/Event protocol the TUI speaks over the daemon's Unix socket.
 
+pub mod assets;
 pub mod fs;
 pub mod ws;
 
@@ -84,6 +85,7 @@ pub async fn serve(
         .route("/ws", get(ws_handler))
         .route("/api/fs/list", get(fs::list_dir))
         .route("/healthz", get(healthz))
+        .fallback(assets::static_handler)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
