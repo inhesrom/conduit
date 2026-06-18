@@ -5,6 +5,7 @@ exclude = ["vendor/vt100"]
 members = [
   "crates/protocol",
   "crates/core",
+  "crates/server",
   "crates/tui",
 ]
 

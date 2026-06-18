@@ -568,161 +568,7 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, data: &[u8]) -
     Ok(())
 }
 
-use std::collections::HashMap;
-use uuid::Uuid;
-
-/// Per-workspace keyed state store — keeps only the latest of each state event type.
-struct WorkspaceState {
-    git: Option<Vec<u8>>,
-    attention: Option<Vec<u8>>,
-}
-
-/// Keyed state store for non-terminal events. No eviction needed — each workspace
-/// stores only the latest of each event type.
-struct EventHistory {
-    repository_list: Option<Vec<u8>>,
-    workspace_list: Option<Vec<u8>>,
-    per_workspace: HashMap<Uuid, WorkspaceState>,
-}
-
-impl EventHistory {
-    fn new() -> Self {
-        Self {
-            repository_list: None,
-            workspace_list: None,
-            per_workspace: HashMap::new(),
-        }
-    }
-
-    fn update(&mut self, evt: &CoreEvent, payload: Vec<u8>) {
-        match evt {
-            CoreEvent::RepositoryList { .. } => {
-                self.repository_list = Some(payload);
-            }
-            CoreEvent::WorkspaceList { .. } => {
-                self.workspace_list = Some(payload);
-            }
-            CoreEvent::WorkspaceGitUpdated { id, .. } => {
-                self.per_workspace
-                    .entry(*id)
-                    .or_insert_with(|| WorkspaceState {
-                        git: None,
-                        attention: None,
-                    })
-                    .git = Some(payload);
-            }
-            CoreEvent::WorkspaceAttentionChanged { id, .. } => {
-                self.per_workspace
-                    .entry(*id)
-                    .or_insert_with(|| WorkspaceState {
-                        git: None,
-                        attention: None,
-                    })
-                    .attention = Some(payload);
-            }
-            _ => {}
-        }
-    }
-
-    fn snapshot(&self) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        // Repositories first so the client populates the sidebar tree before
-        // workspaces are slotted into it.
-        if let Some(ref frame) = self.repository_list {
-            out.push(frame.clone());
-        }
-        if let Some(ref frame) = self.workspace_list {
-            out.push(frame.clone());
-        }
-        for ws in self.per_workspace.values() {
-            if let Some(ref frame) = ws.git {
-                out.push(frame.clone());
-            }
-            if let Some(ref frame) = ws.attention {
-                out.push(frame.clone());
-            }
-        }
-        out
-    }
-}
-
-/// Per-terminal ring buffer — stores raw terminal bytes (base64-decoded) per tab.
-struct TerminalBuffer {
-    kind: protocol::TerminalKind,
-    data: Vec<u8>,
-}
-
-struct TerminalHistory {
-    buffers: HashMap<(Uuid, String), TerminalBuffer>,
-}
-
-const TERMINAL_HISTORY_MAX_BYTES: usize = 512 * 1024; // 512 KB per terminal tab
-
-impl TerminalHistory {
-    fn new() -> Self {
-        Self {
-            buffers: HashMap::new(),
-        }
-    }
-
-    fn append(&mut self, id: Uuid, kind: protocol::TerminalKind, tab_id: String, raw_bytes: &[u8]) {
-        let entry = self
-            .buffers
-            .entry((id, tab_id))
-            .or_insert_with(|| TerminalBuffer {
-                kind,
-                data: Vec::new(),
-            });
-        entry.kind = kind;
-        entry.data.extend_from_slice(raw_bytes);
-        if entry.data.len() > TERMINAL_HISTORY_MAX_BYTES {
-            let excess = entry.data.len() - TERMINAL_HISTORY_MAX_BYTES;
-            entry.data.drain(..excess);
-        }
-    }
-
-    fn reset(&mut self, id: Uuid, tab_id: String) {
-        self.buffers.remove(&(id, tab_id));
-    }
-
-    /// Emit a TerminalStarted + single TerminalOutput per buffer for replay.
-    fn snapshot(&self) -> Vec<CoreEvent> {
-        let mut out = Vec::new();
-        for ((id, tab_id), entry) in &self.buffers {
-            if entry.data.is_empty() {
-                continue;
-            }
-            out.push(CoreEvent::TerminalStarted {
-                id: *id,
-                kind: entry.kind,
-                tab_id: Some(tab_id.clone()),
-            });
-            let data_b64 = base64::engine::general_purpose::STANDARD.encode(&entry.data);
-            out.push(CoreEvent::TerminalOutput {
-                id: *id,
-                kind: entry.kind,
-                tab_id: Some(tab_id.clone()),
-                data_b64,
-            });
-        }
-        out
-    }
-}
-
-/// Combined history shared under a single mutex for atomic snapshots.
-struct CombinedHistory {
-    state: EventHistory,
-    terminals: TerminalHistory,
-}
-
-impl CombinedHistory {
-    fn new() -> Self {
-        Self {
-            state: EventHistory::new(),
-            terminals: TerminalHistory::new(),
-        }
-    }
-}
+use conduit_core::history::{snapshot_and_subscribe, spawn_recorder, CombinedHistory};
 
 async fn run_daemon(name: &str) -> Result<()> {
     let sock_path = session_socket_path(name)?;
@@ -749,50 +595,17 @@ async fn run_daemon(name: &str) -> Result<()> {
     let history = std::sync::Arc::new(tokio::sync::Mutex::new(CombinedHistory::new()));
 
     // Background task: record replayable events into history
-    {
-        let history = history.clone();
-        let mut evt_rx = core.evt_tx.subscribe();
+    spawn_recorder(&core.evt_tx, history.clone());
+
+    // Embedded web server: WebSocket clients share this session's core and
+    // history. A failed bind (e.g. port taken by another session) must not
+    // kill the daemon — log and continue without web.
+    if let Some(web_cfg) = conduit_server::WebConfig::from_env() {
+        let web_core = core.clone();
+        let web_history = history.clone();
         tokio::spawn(async move {
-            loop {
-                match evt_rx.recv().await {
-                    Ok(ref evt) => {
-                        match evt {
-                            CoreEvent::TerminalOutput {
-                                id,
-                                kind,
-                                tab_id,
-                                data_b64,
-                            } => {
-                                if let Ok(raw) =
-                                    base64::engine::general_purpose::STANDARD.decode(data_b64)
-                                {
-                                    let tab =
-                                        tab_id.clone().unwrap_or_else(|| "default".to_string());
-                                    history.lock().await.terminals.append(*id, *kind, tab, &raw);
-                                }
-                            }
-                            CoreEvent::TerminalStarted { id, tab_id, .. } => {
-                                let tab = tab_id.clone().unwrap_or_else(|| "default".to_string());
-                                history.lock().await.terminals.reset(*id, tab);
-                            }
-                            CoreEvent::RepositoryList { .. }
-                            | CoreEvent::WorkspaceList { .. }
-                            | CoreEvent::WorkspaceGitUpdated { .. }
-                            | CoreEvent::WorkspaceAttentionChanged { .. } => {
-                                if let Ok(payload) = serde_json::to_vec(evt) {
-                                    history.lock().await.state.update(evt, payload);
-                                }
-                            }
-                            // TerminalExited: leave buffer intact (shows last output)
-                            _ => {}
-                        }
-                    }
-                    Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(n)) => {
-                        eprintln!("[conduit] event recorder lagged by {n} events");
-                        continue;
-                    }
-                }
+            if let Err(e) = conduit_server::serve(web_core, web_history, web_cfg).await {
+                eprintln!("[conduit] embedded web server unavailable: {e:#}");
             }
         });
     }
@@ -816,31 +629,15 @@ async fn run_daemon(name: &str) -> Result<()> {
                 }
             });
 
-            // Lock history, take snapshot, subscribe to broadcast — all under lock
-            // to guarantee no gap or overlap between snapshot and live events.
-            let mut evt_rx = {
-                let combined = history.lock().await;
-
-                // Send state events first
-                for frame in combined.state.snapshot() {
-                    if write_tx.send(frame).await.is_err() {
-                        return;
-                    }
+            // Snapshot history and subscribe to the broadcast atomically, then
+            // send the replay after the lock is released so a slow client
+            // can't stall the recorder.
+            let (payloads, mut evt_rx) = snapshot_and_subscribe(&history, &core_evt_tx).await;
+            for frame in payloads {
+                if write_tx.send(frame).await.is_err() {
+                    return;
                 }
-                // Then terminal history (TerminalStarted + TerminalOutput per tab)
-                for evt in combined.terminals.snapshot() {
-                    if let Ok(payload) = serde_json::to_vec(&evt) {
-                        if write_tx.send(payload).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                // Subscribe while still holding lock — no events can be missed
-                let rx = core_evt_tx.subscribe();
-                // Lock is dropped when `combined` goes out of scope
-                rx
-            };
+            }
 
             // Forward live broadcast events directly to socket writer
             let write_tx2 = write_tx.clone();
@@ -2913,8 +2710,10 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 })
                 .unwrap_or(false);
             if unresolved_branch {
-                app.git_action_message =
-                    Some(("No matching branch to check out".to_string(), Instant::now()));
+                app.git_action_message = Some((
+                    "No matching branch to check out".to_string(),
+                    Instant::now(),
+                ));
                 return true;
             }
             if let Some(qc) = app.quick_create.take() {
@@ -3920,16 +3719,22 @@ async fn handle_mouse(
                 }
                 // Otherwise start a text selection confined to the clicked element.
                 let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
-                app.mouse_selection =
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
+                app.mouse_selection = Some(app::MouseSelection::at_confined(
+                    mouse.column,
+                    mouse.row,
+                    rect,
+                ));
             }
             _ => {}
         },
         Route::Workspace { id } => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
-                app.mouse_selection =
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
+                app.mouse_selection = Some(app::MouseSelection::at_confined(
+                    mouse.column,
+                    mouse.row,
+                    rect,
+                ));
                 if let Some(hit) =
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
@@ -4802,7 +4607,10 @@ mod tests {
             confine: None,
         };
         let text = extract_selected_text_from_buf(&buf, &sel, &[]);
-        assert!(text.contains("abcdefghij"), "middle row not full width: {text:?}");
+        assert!(
+            text.contains("abcdefghij"),
+            "middle row not full width: {text:?}"
+        );
     }
 
     // --- confine-rect resolver ---
@@ -4854,7 +4662,11 @@ fn apply_selection_highlight(frame: &mut ratatui::Frame, sel: &app::MouseSelecti
         None => (0, width.saturating_sub(1)),
     };
     for row in start_row..=end_row {
-        let row_start = if row == start_row { start_col } else { left_bound };
+        let row_start = if row == start_row {
+            start_col
+        } else {
+            left_bound
+        };
         let row_end = if row == end_row { end_col } else { right_bound };
         for col in row_start..=row_end {
             if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(col, row)) {
@@ -4895,7 +4707,11 @@ fn extract_selected_text_from_buf(
     };
     let mut lines: Vec<String> = Vec::new();
     for row in start_row..=end_row {
-        let row_start = if row == start_row { start_col } else { left_bound };
+        let row_start = if row == start_row {
+            start_col
+        } else {
+            left_bound
+        };
         let row_end = if row == end_row { end_col } else { right_bound };
         let mut line = String::new();
         for col in row_start..=row_end {

@@ -113,7 +113,7 @@ conduit -d                 Detach (use with -s or -a)
 
 | Variable | Description | Default |
 |---|---|---|
-| `CONDUIT_WEB_PORT` | Embedded web server port | `3001` |
+| `CONDUIT_WEB_PORT` | Embedded web server port (session/daemon mode; see `web/README.md`) | `3001` |
 | `CONDUIT_DISABLE_EMBEDDED_WEB` | Disable the embedded web server if set | — |
 | `SHELL` | Shell used for terminal sessions | `zsh` |
 

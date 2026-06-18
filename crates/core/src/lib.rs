@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod events;
 mod foreground_commands;
+pub mod history;
 pub mod state;
 pub mod workspace;
 
@@ -2082,8 +2083,7 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
         // entry was imported as a Repository; without this guard it would also
         // load as an orphan Workspace and float to the bottom of the sidebar,
         // visually attaching to whichever repository is listed last.
-        if item.repository_id.is_none()
-            && state.repositories.values().any(|r| r.path == repo_path)
+        if item.repository_id.is_none() && state.repositories.values().any(|r| r.path == repo_path)
         {
             continue;
         }
@@ -2135,7 +2135,10 @@ fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
 /// worktree (the base repo itself) and worktrees already represented by a
 /// Workspace are skipped. Returns the ids of any newly added Workspaces (empty
 /// on error or when nothing new is found). Callers persist + emit events.
-async fn pickup_worktrees_for_repo(state: &mut AppState, repo_id: RepositoryId) -> Vec<WorkspaceId> {
+async fn pickup_worktrees_for_repo(
+    state: &mut AppState,
+    repo_id: RepositoryId,
+) -> Vec<WorkspaceId> {
     let Some(repo) = state.repositories.get(&repo_id) else {
         return Vec::new();
     };
@@ -2159,12 +2162,18 @@ async fn pickup_worktrees_for_repo(state: &mut AppState, repo_id: RepositoryId) 
             continue;
         }
         // Skip worktrees already tracked as a Workspace.
-        if state.workspaces.values().any(|w| same_path(&w.path, &wt_path)) {
+        if state
+            .workspaces
+            .values()
+            .any(|w| same_path(&w.path, &wt_path))
+        {
             continue;
         }
 
         let id = Uuid::new_v4();
-        let initial_git = refresh_git(&wt_path, ssh.as_ref()).await.unwrap_or_default();
+        let initial_git = refresh_git(&wt_path, ssh.as_ref())
+            .await
+            .unwrap_or_default();
         let branch = if branch.is_empty() {
             initial_git.branch.clone()
         } else {
@@ -2662,7 +2671,10 @@ mod tests {
 
         let transition = apply_agent_active(&mut ws);
 
-        assert!(!ws.agent_active, "echoed activity must not light the spinner");
+        assert!(
+            !ws.agent_active,
+            "echoed activity must not light the spinner"
+        );
         assert!(ws.ready_for_review, "review state is left untouched");
         assert!(!transition.active_changed);
         assert!(!transition.review_changed);
@@ -2692,7 +2704,11 @@ mod tests {
         let now = Instant::now();
         ws.agent_input_suppress_until = Some(now + Duration::from_secs(3));
 
-        assert!(should_suppress_attention(&ws, AttentionLevel::NeedsInput, now));
+        assert!(should_suppress_attention(
+            &ws,
+            AttentionLevel::NeedsInput,
+            now
+        ));
         assert!(!should_suppress_attention(&ws, AttentionLevel::Error, now));
         assert!(!should_suppress_attention(&ws, AttentionLevel::None, now));
     }
@@ -2701,7 +2717,11 @@ mod tests {
     fn attention_not_suppressed_outside_grace_window() {
         let ws = test_workspace(); // no window armed
         let now = Instant::now();
-        assert!(!should_suppress_attention(&ws, AttentionLevel::NeedsInput, now));
+        assert!(!should_suppress_attention(
+            &ws,
+            AttentionLevel::NeedsInput,
+            now
+        ));
     }
 
     #[test]

@@ -1,0 +1,56 @@
+/* Conduit web design tokens — lifted from the TUI palette.
+ * Sources: crates/tui/src/ui/widgets/sidebar.rs (REVIEW magenta, ACTIVE_ACCENT
+ * cyan, selection RGBs, attention orange), screens/workspace.rs (focus blue). */
+
+:root {
+  /* Surfaces */
+  --cdt-bg: #0b0d11;
+  --cdt-bg-panel: #12151b;
+  --cdt-bg-raised: #181c24;
+  --cdt-border: #262b36;
+
+  /* Text */
+  --cdt-fg: #d6dae2;
+  --cdt-fg-muted: #828a99; /* TUI Gray */
+  --cdt-fg-faint: #4d5260; /* TUI DarkGray */
+
+  /* Semantic state — same meanings as the TUI */
+  --cdt-attention: #ffa500; /* Rgb(255,165,0): attention / needs-input flash */
+  --cdt-error: #e5534b; /* Red: error attention */
+  --cdt-warn: #d4a72c; /* Yellow */
+  --cdt-success: #57ab5a;
+  --cdt-review: #d75fd7; /* Magenta: steady ready-for-review marker (◆) */
+  --cdt-accent: #2bc6d4; /* Cyan: "you are here" */
+  --cdt-focus: #6cb6ff; /* LightBlue: focused pane border, agent-active spinner */
+
+  /* Selection rows — exact TUI RGBs */
+  --cdt-select-bg-focused: rgb(40 44 72);
+  --cdt-select-bg: rgb(32 32 40);
+
+  /* Type */
+  --cdt-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --cdt-font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Braille activity spinner — the TUI's 10-frame sequence as a discrete
+ * content animation. Use: <span class="cdt-spinner"></span> */
+.cdt-spinner::before {
+  content: "⠋";
+  animation: cdt-braille 0.8s infinite;
+  color: var(--cdt-focus);
+  font-family: var(--cdt-font-mono);
+}
+
+@keyframes cdt-braille {
+  0% { content: "⠋"; }
+  10% { content: "⠙"; }
+  20% { content: "⠹"; }
+  30% { content: "⠸"; }
+  40% { content: "⠼"; }
+  50% { content: "⠴"; }
+  60% { content: "⠦"; }
+  70% { content: "⠧"; }
+  80% { content: "⠇"; }
+  90% { content: "⠏"; }
+}

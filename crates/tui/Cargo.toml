@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 protocol = { path = "../protocol" }
 conduit_core = { path = "../core" }
+conduit_server = { path = "../server" }
 anyhow = "1"
 alacritty_terminal = "0.26"
 base64 = "0.22"
