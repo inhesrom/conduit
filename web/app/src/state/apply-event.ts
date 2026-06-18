@@ -1,5 +1,5 @@
 import { reconcile } from "solid-js/store";
-import type { AppEvent } from "@conduit/shared";
+import { type AppEvent, termKey } from "@conduit/shared";
 import { setStore } from "./store";
 
 /** The single reducer from the event stream into the store. Snapshot events
@@ -38,6 +38,17 @@ export function applyEvent(e: AppEvent): void {
 
     case "WorkspaceReviewChanged":
       setStore("workspaces", (w) => w.id === e.id, "ready_for_review", e.ready);
+      break;
+
+    case "TerminalStarted":
+      setStore("terminals", termKey(e.id, e.kind, e.tab_id), { running: true, exitCode: null });
+      break;
+
+    case "TerminalExited":
+      setStore("terminals", termKey(e.id, e.kind, e.tab_id), {
+        running: false,
+        exitCode: e.code,
+      });
       break;
 
     default:

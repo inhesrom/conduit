@@ -6,6 +6,11 @@ import type {
   WorkspaceSummary,
 } from "@conduit/shared";
 
+export interface TerminalState {
+  running: boolean;
+  exitCode: number | null;
+}
+
 export interface AppState {
   conn: ConnStatus;
   repositories: RepositorySummary[];
@@ -13,6 +18,8 @@ export interface AppState {
   /** Full git detail per workspace, populated by WorkspaceGitUpdated. The
    * board/sidebar read the summary fields; the workspace screen reads this. */
   gitByWs: Record<string, GitState>;
+  /** Liveness per terminal, keyed by termKey(id, kind, tabId). */
+  terminals: Record<string, TerminalState>;
 }
 
 export const [store, setStore] = createStore<AppState>({
@@ -20,4 +27,5 @@ export const [store, setStore] = createStore<AppState>({
   repositories: [],
   workspaces: [],
   gitByWs: {},
+  terminals: {},
 });
