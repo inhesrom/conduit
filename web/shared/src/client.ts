@@ -91,6 +91,25 @@ export class ConduitClient {
     this.#open();
   }
 
+  /** Point at a new URL and (re)connect — used to switch sessions. Drops any
+   * existing socket and pending retry first; subsequent auto-reconnects target
+   * the new URL. */
+  connectTo(url: string): void {
+    this.#url = url;
+    this.#closed = false;
+    if (this.#retryTimer !== null) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = null;
+    }
+    if (this.#socket !== null) {
+      const old = this.#socket;
+      this.#socket = null;
+      old.onclose = null;
+      old.close();
+    }
+    this.#open();
+  }
+
   close(): void {
     this.#closed = true;
     if (this.#retryTimer !== null) clearTimeout(this.#retryTimer);

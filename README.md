@@ -117,21 +117,29 @@ conduit -d                 Detach (use with -s or -a)
 | `CONDUIT_WEB_BIND` | Address the web server binds to | `127.0.0.1` |
 | `CONDUIT_WEB_TLS` | Force TLS on localhost (`on`); a self-signed cert is generated | — |
 | `CONDUIT_WEB_CERT` / `CONDUIT_WEB_KEY` | Use a specific TLS cert/key (PEM) instead of self-signed | — |
-| `CONDUIT_DISABLE_EMBEDDED_WEB` | Disable the embedded web server if set | — |
 | `SHELL` | Shell used for terminal sessions | `zsh` |
 
 ### Web UI
 
-A running session/daemon serves a TypeScript web UI (`web/`) over the same
-protocol as the TUI. Locally, browse `http://localhost:3001`. For remote
-access, set a password and bind beyond localhost — both are required, over TLS:
+`conduit web serve` runs a standalone web server (`web/`) that lists your
+running sessions and attaches the browser to whichever you pick — `conduit -a`
+for the browser. It connects to sessions over their existing daemon sockets, so
+it drives already-running sessions and their live agents without restarting
+them. Run it once; browse `http://localhost:3001`.
+
+```sh
+conduit -s work                      # start your session(s) as usual
+conduit web serve                    # then serve the web UI for all of them
+conduit web serve --session work     # …or pin it to one session
+```
+
+For remote access, set a password and bind beyond localhost — both are
+required, and TLS is used automatically (self-signed if no cert is provided):
 
 ```sh
 conduit web set-password
-CONDUIT_WEB_BIND=0.0.0.0 conduit -s work     # refuses unless a password is set
+CONDUIT_WEB_BIND=0.0.0.0 conduit web serve   # refused unless a password is set
 ```
-
-A non-localhost bind without a password and TLS is refused.
 
 ### Config Paths
 

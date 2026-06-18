@@ -1385,6 +1385,58 @@
   margin-top: 4px;
 }
 
+/* ---- Session switcher + picker --------------------------------------- */
+.session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  font-size: 12.5px;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+}
+.session-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.session-chip:disabled {
+  cursor: default;
+}
+.session-caret {
+  font-size: 9px;
+  color: var(--ink-faint);
+}
+.session-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.session-opt {
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  transition: var(--t-fast);
+}
+.session-opt:hover {
+  border-color: var(--accent);
+  background: var(--here-wash);
+}
+.session-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+.session-empty code {
+  color: var(--ink-dim);
+}
+
 @media (max-width: 720px) {
   .sidebar {
     width: 210px;

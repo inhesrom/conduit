@@ -29,8 +29,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     Terminal,
 };
-use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
@@ -46,6 +45,7 @@ enum LaunchMode {
     Update,
     Reinstall,
     WebSetPassword,
+    WebServe { session: Option<String> },
 }
 
 #[derive(Debug)]
@@ -61,17 +61,11 @@ struct Backend {
     evt_rx: mpsc::Receiver<CoreEvent>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionEntry {
-    name: String,
-    socket_path: String,
-    pid: u32,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct SessionRegistry {
-    sessions: Vec<SessionEntry>,
-}
+use conduit_core::ipc::{read_frame, write_frame};
+use conduit_core::sessions::{
+    load_registry, sanitize_session_name, save_registry, session_socket_path, socket_alive,
+    SessionEntry,
+};
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
@@ -97,31 +91,59 @@ OPTIONS:
     -V, --version          Print version
     -h, --help             Print this help
 
+SUBCOMMANDS:
+    web serve [--session <name>]   Serve the web UI, attaching to running sessions
+    web set-password               Set the web UI password (required for remote access)
+
 EXAMPLES:
     conduit                  Launch in local (non-session) mode
     conduit-s work           Create or reattach to session 'work'
     conduit-s work -d        Start session 'work' in background
     conduit-a work           Attach to running session 'work'
     conduit-l                List sessions
-    conduit-r work           Remove session 'work'",
+    conduit-r work           Remove session 'work'
+    conduit web serve        Serve the web UI for all running sessions",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn parse_cli(args: Vec<String>) -> Result<Cli> {
-    // Subcommand: `conduit web set-password`
+    // Subcommands: `conduit web set-password` / `conduit web serve [--session <name>]`
     if args.first().map(String::as_str) == Some("web") {
-        if args.get(1).map(String::as_str) == Some("set-password") {
-            return Ok(Cli {
-                mode: LaunchMode::WebSetPassword,
-                detach: false,
-                version: false,
-                help: false,
-            });
+        match args.get(1).map(String::as_str) {
+            Some("set-password") => {
+                return Ok(Cli {
+                    mode: LaunchMode::WebSetPassword,
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            Some("serve") => {
+                let mut session = None;
+                let mut j = 2;
+                while j < args.len() {
+                    match args[j].as_str() {
+                        "--session" | "-a" => {
+                            session = args.get(j + 1).cloned();
+                            j += 2;
+                        }
+                        _ => j += 1,
+                    }
+                }
+                return Ok(Cli {
+                    mode: LaunchMode::WebServe { session },
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            _ => {
+                return Err(anyhow!(
+                    "unknown web subcommand; try: conduit web serve | conduit web set-password"
+                ));
+            }
         }
-        return Err(anyhow!(
-            "unknown web subcommand; try: conduit web set-password"
-        ));
     }
 
     let mut i = 0usize;
@@ -241,6 +263,14 @@ async fn main() -> Result<()> {
         LaunchMode::Update => self_update(false),
         LaunchMode::Reinstall => self_update(true),
         LaunchMode::WebSetPassword => set_web_password(),
+        LaunchMode::WebServe { session } => {
+            let Some(cfg) = conduit_server::WebConfig::from_env(session) else {
+                return Err(anyhow!(
+                    "web server not started (a non-localhost bind needs a password and TLS)"
+                ));
+            };
+            conduit_server::serve(cfg).await
+        }
         LaunchMode::RunDaemon { name } => run_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
@@ -562,47 +592,6 @@ fn build_local_backend() -> (Backend, CoreHandle) {
 // Unix-domain-socket session infrastructure
 // ---------------------------------------------------------------------------
 
-fn session_socket_dir() -> Result<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return Err(anyhow!("cannot determine config directory"));
-    };
-    Ok(base.join("conduit").join("sessions"))
-}
-
-fn session_socket_path(name: &str) -> Result<PathBuf> {
-    let safe = sanitize_session_name(name);
-    Ok(session_socket_dir()?.join(format!("{safe}.sock")))
-}
-
-/// 4-byte big-endian length prefix + JSON payload.
-async fn read_frame<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    match r.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    }
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 16 * 1024 * 1024 {
-        return Err(anyhow!("frame too large: {} bytes", len));
-    }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
-    Ok(Some(buf))
-}
-
-async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, data: &[u8]) -> Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    w.write_all(&len).await?;
-    w.write_all(data).await?;
-    w.flush().await?;
-    Ok(())
-}
-
 use conduit_core::history::{snapshot_and_subscribe, spawn_recorder, CombinedHistory};
 
 async fn run_daemon(name: &str) -> Result<()> {
@@ -632,18 +621,9 @@ async fn run_daemon(name: &str) -> Result<()> {
     // Background task: record replayable events into history
     spawn_recorder(&core.evt_tx, history.clone());
 
-    // Embedded web server: WebSocket clients share this session's core and
-    // history. A failed bind (e.g. port taken by another session) must not
-    // kill the daemon — log and continue without web.
-    if let Some(web_cfg) = conduit_server::WebConfig::from_env() {
-        let web_core = core.clone();
-        let web_history = history.clone();
-        tokio::spawn(async move {
-            if let Err(e) = conduit_server::serve(web_core, web_history, web_cfg).await {
-                eprintln!("[conduit] embedded web server unavailable: {e:#}");
-            }
-        });
-    }
+    // The web UI is served by the standalone `conduit web serve`, which
+    // attaches to this daemon over its socket — the daemon itself runs no
+    // web server.
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -874,10 +854,6 @@ async fn wait_for_socket(path: &str, timeout: Duration) -> Result<()> {
     Err(anyhow!("daemon did not become ready at {}", path))
 }
 
-fn socket_alive(path: &str) -> bool {
-    std::os::unix::net::UnixStream::connect(path).is_ok()
-}
-
 fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
     let output = match OsCommand::new("ps")
         .arg("-p")
@@ -896,17 +872,6 @@ fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
     cmdline.contains("--run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
 }
 
-fn session_registry_path() -> Option<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return None;
-    };
-    Some(base.join("conduit").join("sessions.json"))
-}
-
 fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let safe = sanitize_session_name(name);
@@ -916,48 +881,6 @@ fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
             .join("conduit")
             .join(format!("workspaces.{safe}.json")),
     )
-}
-
-fn sanitize_session_name(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return "default".to_string();
-    }
-    let mut out = String::with_capacity(trimmed.len());
-    for c in trimmed.chars() {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    out
-}
-
-fn load_registry() -> Result<SessionRegistry> {
-    let Some(path) = session_registry_path() else {
-        return Ok(SessionRegistry::default());
-    };
-    if !path.exists() {
-        return Ok(SessionRegistry::default());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read session registry: {}", path.display()))?;
-    let registry = serde_json::from_str::<SessionRegistry>(&raw).unwrap_or_default();
-    Ok(registry)
-}
-
-fn save_registry(registry: &SessionRegistry) -> Result<()> {
-    let Some(path) = session_registry_path() else {
-        return Ok(());
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let raw = serde_json::to_string_pretty(registry)?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("failed to write session registry: {}", path.display()))?;
-    Ok(())
 }
 
 async fn run_tui(mut backend: Backend) -> Result<()> {

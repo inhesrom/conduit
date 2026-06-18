@@ -56,3 +56,22 @@ export const [store, setStore] = createStore<AppState>({
   reviewByWs: {},
   resurrection: {},
 });
+
+/** Clear all session-scoped state when switching sessions. Connection status
+ * is left to the client's status callback. */
+export function resetStore(): void {
+  setStore({
+    repositories: [],
+    workspaces: [],
+    gitByWs: {},
+    terminals: {},
+    diffByWs: {},
+    commitFilesByWs: {},
+    repoBranches: {},
+    createProgress: null,
+    pendingPrompt: {},
+    pendingCreatePrompt: null,
+    reviewByWs: {},
+    resurrection: {},
+  });
+}

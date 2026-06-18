@@ -1,16 +1,18 @@
 import { createSignal } from "solid-js";
-import { client } from "../client";
+import { initSessions } from "./sessions";
 
 export type AuthState = "checking" | "needed" | "ready";
 
 const [authState, setAuthState] = createSignal<AuthState>("checking");
 export { authState };
 
-let connected = false;
+let started = false;
 function startOnce(): void {
-  if (connected) return;
-  connected = true;
-  client.connect();
+  if (started) return;
+  started = true;
+  // Auth cleared — load the session list and attach (the WS connects once a
+  // session is selected).
+  void initSessions();
 }
 
 /** Decide whether to show the login screen, then connect when cleared. */

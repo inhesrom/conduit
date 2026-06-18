@@ -2,6 +2,8 @@ pub mod commands;
 pub mod events;
 mod foreground_commands;
 pub mod history;
+pub mod ipc;
+pub mod sessions;
 pub mod state;
 pub mod workspace;
 

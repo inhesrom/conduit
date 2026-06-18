@@ -1,19 +1,20 @@
-//! Embedded web server: bridges browser WebSocket clients onto the same
-//! Command/Event protocol the TUI speaks, serves the web UI, and (for remote
-//! access) gates everything behind a password + TLS.
+//! Standalone web server: serves the web UI, authenticates, and relays each
+//! browser WebSocket to a chosen running session daemon's Unix socket — so the
+//! browser can attach to and drive already-running sessions (and their live
+//! agents), the way the TUI's `conduit -a` does.
 
 pub mod assets;
 pub mod auth;
 pub mod fs;
+pub mod proxy;
 pub mod tls;
-pub mod ws;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    extract::{ConnectInfo, Request, State, WebSocketUpgrade},
+    extract::{ConnectInfo, Query, Request, State, WebSocketUpgrade},
     http::{
         header::{HOST, ORIGIN},
         HeaderMap, StatusCode,
@@ -24,11 +25,8 @@ use axum::{
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use conduit_core::history::CombinedHistory;
-use conduit_core::CoreHandle;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::Mutex;
 
 use auth::Auth;
 use tls::TlsSource;
@@ -38,9 +36,9 @@ const SESSION_COOKIE: &str = "conduit_session";
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub core: CoreHandle,
-    pub history: Arc<Mutex<CombinedHistory>>,
     pub auth: Arc<Auth>,
+    /// When set, every WS attaches to this one session and the picker is hidden.
+    pub pinned_session: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +47,7 @@ pub struct WebConfig {
     pub tls: Option<TlsSource>,
     pub auth_path: PathBuf,
     pub sessions_path: PathBuf,
+    pub pinned_session: Option<String>,
 }
 
 fn config_dir() -> PathBuf {
@@ -67,15 +66,9 @@ pub fn web_auth_path() -> PathBuf {
 }
 
 impl WebConfig {
-    /// Resolve from env + config dir. Returns `None` when the embedded web
-    /// server is disabled or its configuration is refused.
-    ///
-    /// Policy: a non-loopback bind requires both a password and TLS — there is
-    /// no safe way to expose terminal access without them.
-    pub fn from_env() -> Option<Self> {
-        if std::env::var_os("CONDUIT_DISABLE_EMBEDDED_WEB").is_some() {
-            return None;
-        }
+    /// Resolve from env, pinning to `session` if given. Returns `None` (with a
+    /// logged reason) when a non-loopback bind lacks the required password+TLS.
+    pub fn from_env(pinned_session: Option<String>) -> Option<Self> {
         let dir = config_dir();
         let port = std::env::var("CONDUIT_WEB_PORT")
             .ok()
@@ -89,7 +82,6 @@ impl WebConfig {
         let auth_path = dir.join("web_auth.json");
         let has_password = auth_path.exists();
 
-        // TLS: explicit cert/key, else self-signed when TLS is wanted.
         let cert = std::env::var("CONDUIT_WEB_CERT")
             .ok()
             .filter(|s| !s.is_empty());
@@ -115,7 +107,7 @@ impl WebConfig {
         if !host.is_loopback() && (!has_password || tls.is_none()) {
             eprintln!(
                 "[conduit] refusing to bind web server to {host}: a non-localhost bind \
-                 requires a password (`conduit web set-password`) and TLS. Staying off."
+                 requires a password (`conduit web set-password`) and TLS."
             );
             return None;
         }
@@ -125,14 +117,42 @@ impl WebConfig {
             tls,
             auth_path,
             sessions_path: dir.join("web_sessions.json"),
+            pinned_session,
         })
     }
 }
 
 // ---- handlers --------------------------------------------------------------
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<ServerState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws::handle_socket(socket, state))
+#[derive(Deserialize)]
+struct WsQuery {
+    session: Option<String>,
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<ServerState>,
+    Query(q): Query<WsQuery>,
+) -> Response {
+    let Some(name) = state.pinned_session.clone().or(q.session) else {
+        return (StatusCode::BAD_REQUEST, "missing ?session").into_response();
+    };
+    let path = match conduit_core::sessions::session_socket_path(&name) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "bad session name").into_response(),
+    };
+    ws.on_upgrade(move |socket| proxy::handle_proxy(socket, path))
+}
+
+async fn sessions(State(state): State<ServerState>) -> impl IntoResponse {
+    let names: Vec<String> = match &state.pinned_session {
+        Some(p) => vec![p.clone()],
+        None => conduit_core::sessions::list_running_sessions()
+            .into_iter()
+            .map(|s| s.name)
+            .collect(),
+    };
+    Json(json!({ "sessions": names, "pinned": state.pinned_session.is_some() }))
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -226,11 +246,7 @@ async fn require_auth(
 
 // ---- serve -----------------------------------------------------------------
 
-pub async fn serve(
-    core: CoreHandle,
-    history: Arc<Mutex<CombinedHistory>>,
-    cfg: WebConfig,
-) -> anyhow::Result<()> {
+pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
     let auth = Arc::new(Auth::load(
         cfg.auth_path.clone(),
         cfg.sessions_path.clone(),
@@ -240,13 +256,13 @@ pub async fn serve(
         eprintln!("[conduit] web auth enabled (password required)");
     }
     let state = ServerState {
-        core,
-        history,
         auth,
+        pinned_session: cfg.pinned_session.clone(),
     };
 
     let protected = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/api/sessions", get(sessions))
         .route("/api/fs/list", get(fs::list_dir))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -261,10 +277,7 @@ pub async fn serve(
         .into_make_service_with_connect_info::<SocketAddr>();
 
     let scheme = if cfg.tls.is_some() { "https" } else { "http" };
-    eprintln!(
-        "[conduit] embedded web server listening on {scheme}://{}",
-        cfg.bind
-    );
+    eprintln!("[conduit] web server listening on {scheme}://{}", cfg.bind);
 
     match &cfg.tls {
         Some(src) => {
