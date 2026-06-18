@@ -109,7 +109,7 @@ export function WorkspaceScreen(props: { id: string }) {
               onPointerDown={(e) => e.stopPropagation()}
               onClick={toggleGitCollapsed}
             >
-              {gitCollapsed() ? "▴ git" : "▾"}
+              {gitCollapsed() ? "▴ git" : "git ▾"}
             </button>
           </div>
           <Show when={!gitCollapsed()}>

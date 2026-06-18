@@ -66,6 +66,20 @@
   min-height: 0;
   background: var(--panel);
   border-right: 2px solid var(--ink);
+  position: relative;
+}
+/* Drag the right edge to resize; double-click resets to the default width. */
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 5;
+}
+.sidebar-resize:hover {
+  background: var(--fill-strong);
 }
 .sidebar.rail {
   width: 56px;
@@ -433,7 +447,7 @@
   min-height: 0;
 }
 .ws-split-handle {
-  height: 12px;
+  height: 18px;
   flex: none;
   cursor: row-resize;
   background: var(--panel);
@@ -463,15 +477,19 @@
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--ink-dim);
-  font-size: 10px;
+  color: var(--ink);
+  background: var(--fill);
+  border: 1px solid var(--line-bright);
+  font-size: 13px;
+  line-height: 1;
   font-family: var(--font-display);
   text-transform: uppercase;
-  padding: 1px 5px;
+  padding: 3px 8px;
 }
 .ws-split-toggle:hover {
   background: var(--ink);
   color: var(--paper);
+  border-color: var(--ink);
 }
 
 /* Generic button. */

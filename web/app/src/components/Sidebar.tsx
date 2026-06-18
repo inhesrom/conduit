@@ -10,7 +10,9 @@ import {
   reviewFilter,
   setReviewFilter,
   setSidebarMode,
+  setSidebarWidth,
   sidebarMode,
+  sidebarWidth,
 } from "../state/ui";
 import { StatusGlyph } from "./StatusGlyph";
 
@@ -98,9 +100,24 @@ export function Sidebar() {
       .sort(byRepoThenName),
   );
 
+  let navEl: HTMLElement | undefined;
+  const onResizeStart = (e: PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      const left = navEl ? navEl.getBoundingClientRect().left : 0;
+      setSidebarWidth(ev.clientX - left);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   return (
     <Show when={sidebarMode() === "expanded"} fallback={<RailSidebar />}>
-      <nav class="sidebar">
+      <nav class="sidebar" ref={navEl} style={{ width: `${sidebarWidth()}px` }}>
         <div class="sidebar-head">
           <span class="eyebrow">Workspaces</span>
           <div class="sidebar-controls">
@@ -142,6 +159,12 @@ export function Sidebar() {
             <p class="sidebar-empty">No repositories yet.</p>
           </Show>
         </div>
+        <div
+          class="sidebar-resize"
+          title="Drag to resize"
+          onPointerDown={onResizeStart}
+          onDblClick={() => setSidebarWidth(264)}
+        />
       </nav>
     </Show>
   );
