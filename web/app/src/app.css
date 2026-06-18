@@ -1345,6 +1345,46 @@
   flex: none;
 }
 
+/* ---- Login ----------------------------------------------------------- */
+.login {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  background: var(--void);
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 320px;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.login-mark {
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+}
+.login-prompt {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+.login-card .modal-input {
+  margin-bottom: 0;
+}
+.login-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--error);
+}
+.login-submit {
+  margin-top: 4px;
+}
+
 @media (max-width: 720px) {
   .sidebar {
     width: 210px;

@@ -3,6 +3,7 @@ import { AppModals } from "./components/AppModals";
 import { CommandPalette } from "./components/CommandPalette";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { Dialogs } from "./components/Dialogs";
+import { LoginScreen } from "./components/LoginScreen";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { currentWorkspaceId, route } from "./router";
@@ -10,6 +11,7 @@ import { BoardScreen } from "./screens/BoardScreen";
 import { WorkspaceScreen } from "./screens/WorkspaceScreen";
 import { openSettings } from "./state/modals";
 import { paletteOpen, togglePalette } from "./state/palette";
+import { authState, checkSession } from "./state/session";
 import { store } from "./state/store";
 import { cycleSidebar, sidebarMode } from "./state/ui";
 
@@ -50,11 +52,14 @@ export function App() {
       cycleSidebar();
     }
   };
-  onMount(() => window.addEventListener("keydown", onKey));
+  onMount(() => {
+    window.addEventListener("keydown", onKey);
+    void checkSession();
+  });
   onCleanup(() => window.removeEventListener("keydown", onKey));
 
   return (
-    <>
+    <Show when={authState() !== "needed"} fallback={<LoginScreen />}>
       <Topbar />
       <div class="shell">
         <Show when={sidebarMode() !== "hidden"}>
@@ -75,6 +80,6 @@ export function App() {
       <Show when={paletteOpen()}>
         <CommandPalette />
       </Show>
-    </>
+    </Show>
   );
 }

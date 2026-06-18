@@ -11,4 +11,7 @@ export const client = new ConduitClient({ url });
 
 client.onEvent(applyEvent);
 client.onStatus((conn) => setStore("conn", conn));
-client.connect();
+
+// Connection is started by the session bootstrap (state/session.ts) once auth
+// is satisfied, so we never open the socket before login.
+

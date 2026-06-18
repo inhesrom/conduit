@@ -114,8 +114,24 @@ conduit -d                 Detach (use with -s or -a)
 | Variable | Description | Default |
 |---|---|---|
 | `CONDUIT_WEB_PORT` | Embedded web server port (session/daemon mode; see `web/README.md`) | `3001` |
+| `CONDUIT_WEB_BIND` | Address the web server binds to | `127.0.0.1` |
+| `CONDUIT_WEB_TLS` | Force TLS on localhost (`on`); a self-signed cert is generated | — |
+| `CONDUIT_WEB_CERT` / `CONDUIT_WEB_KEY` | Use a specific TLS cert/key (PEM) instead of self-signed | — |
 | `CONDUIT_DISABLE_EMBEDDED_WEB` | Disable the embedded web server if set | — |
 | `SHELL` | Shell used for terminal sessions | `zsh` |
+
+### Web UI
+
+A running session/daemon serves a TypeScript web UI (`web/`) over the same
+protocol as the TUI. Locally, browse `http://localhost:3001`. For remote
+access, set a password and bind beyond localhost — both are required, over TLS:
+
+```sh
+conduit web set-password
+CONDUIT_WEB_BIND=0.0.0.0 conduit -s work     # refuses unless a password is set
+```
+
+A non-localhost bind without a password and TLS is refused.
 
 ### Config Paths
 

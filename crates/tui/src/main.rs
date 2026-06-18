@@ -45,6 +45,7 @@ enum LaunchMode {
     RunDaemon { name: String },
     Update,
     Reinstall,
+    WebSetPassword,
 }
 
 #[derive(Debug)]
@@ -108,6 +109,21 @@ EXAMPLES:
 }
 
 fn parse_cli(args: Vec<String>) -> Result<Cli> {
+    // Subcommand: `conduit web set-password`
+    if args.first().map(String::as_str) == Some("web") {
+        if args.get(1).map(String::as_str) == Some("set-password") {
+            return Ok(Cli {
+                mode: LaunchMode::WebSetPassword,
+                detach: false,
+                version: false,
+                help: false,
+            });
+        }
+        return Err(anyhow!(
+            "unknown web subcommand; try: conduit web set-password"
+        ));
+    }
+
     let mut i = 0usize;
     let mut mode = LaunchMode::Local;
     let mut detach = false;
@@ -224,6 +240,7 @@ async fn main() -> Result<()> {
     match cli.mode {
         LaunchMode::Update => self_update(false),
         LaunchMode::Reinstall => self_update(true),
+        LaunchMode::WebSetPassword => set_web_password(),
         LaunchMode::RunDaemon { name } => run_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
@@ -267,6 +284,24 @@ async fn main() -> Result<()> {
             run_tui(backend).await
         }
     }
+}
+
+fn set_web_password() -> Result<()> {
+    let pw = rpassword::prompt_password("New web password: ")?;
+    if pw.is_empty() {
+        return Err(anyhow!("password cannot be empty"));
+    }
+    let confirm = rpassword::prompt_password("Confirm password: ")?;
+    if pw != confirm {
+        return Err(anyhow!("passwords don't match"));
+    }
+    let path = conduit_server::web_auth_path();
+    conduit_server::auth::set_password(&path, &pw)?;
+    println!(
+        "Web password set ({}). Non-localhost access now requires it over TLS.",
+        path.display()
+    );
+    Ok(())
 }
 
 fn self_update(force: bool) -> Result<()> {
