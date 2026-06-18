@@ -20,6 +20,10 @@ export interface AppState {
   gitByWs: Record<string, GitState>;
   /** Liveness per terminal, keyed by termKey(id, kind, tabId). */
   terminals: Record<string, TerminalState>;
+  /** The diff currently loaded for a workspace's diff pane. */
+  diffByWs: Record<string, { file: string; diff: string }>;
+  /** File lists for expanded commits, keyed by workspace then commit hash. */
+  commitFilesByWs: Record<string, Record<string, string[]>>;
 }
 
 export const [store, setStore] = createStore<AppState>({
@@ -28,4 +32,6 @@ export const [store, setStore] = createStore<AppState>({
   workspaces: [],
   gitByWs: {},
   terminals: {},
+  diffByWs: {},
+  commitFilesByWs: {},
 });

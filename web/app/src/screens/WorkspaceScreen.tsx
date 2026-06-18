@@ -4,6 +4,7 @@ import { repoName } from "../state/selectors";
 import { store } from "../state/store";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { TerminalRegion } from "../components/TerminalRegion";
+import { GitRegion } from "../components/git/GitRegion";
 
 export function WorkspaceScreen(props: { id: string }) {
   const ws = () => store.workspaces.find((w) => w.id === props.id);
@@ -29,9 +30,7 @@ export function WorkspaceScreen(props: { id: string }) {
         </header>
         <div class="ws-grid">
           <TerminalRegion ws={ws()!} />
-          <section class="git-region">
-            <div class="empty git-stub">Git status, log, branches, and diff arrive next.</div>
-          </section>
+          <GitRegion ws={ws()!} />
         </div>
       </Show>
     </div>

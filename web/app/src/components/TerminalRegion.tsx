@@ -119,6 +119,7 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
               startOnMount={!agentRunningAtOpen}
               cmd={() => agentCmdFor(props.ws.agent)}
               fallbackCmd={() => agentVanillaCmdFor(props.ws.agent)}
+              externalRunning={() => props.ws.agent_running}
             />
           </div>
         </Show>

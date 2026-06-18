@@ -1,6 +1,8 @@
 import { Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { ConnectionBanner } from "./components/ConnectionBanner";
+import { Dialogs } from "./components/Dialogs";
 import { Sidebar } from "./components/Sidebar";
+import { Toasts } from "./components/Toasts";
 import { currentWorkspaceId, route } from "./router";
 import { BoardScreen } from "./screens/BoardScreen";
 import { WorkspaceScreen } from "./screens/WorkspaceScreen";
@@ -54,6 +56,8 @@ export function App() {
           </Switch>
         </main>
       </div>
+      <Toasts />
+      <Dialogs />
     </>
   );
 }

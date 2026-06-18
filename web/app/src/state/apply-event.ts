@@ -1,6 +1,7 @@
 import { reconcile } from "solid-js/store";
 import { type AppEvent, termKey } from "@conduit/shared";
 import { setStore } from "./store";
+import { pushToast } from "./toasts";
 
 /** The single reducer from the event stream into the store. Snapshot events
  * (RepositoryList / WorkspaceList) are full replacements reconciled by id, so
@@ -49,6 +50,22 @@ export function applyEvent(e: AppEvent): void {
         running: false,
         exitCode: e.code,
       });
+      break;
+
+    case "WorkspaceDiffUpdated":
+      setStore("diffByWs", e.id, { file: e.file, diff: e.diff });
+      break;
+
+    case "CommitFilesLoaded":
+      setStore("commitFilesByWs", e.id, e.hash, e.files);
+      break;
+
+    case "GitActionResult":
+      if (e.message) pushToast(e.success ? "ok" : "error", e.message);
+      break;
+
+    case "Error":
+      pushToast("error", e.message);
       break;
 
     default:
