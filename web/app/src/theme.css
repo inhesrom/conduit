@@ -1,0 +1,165 @@
+/* Conductor — conduit's web design system.
+ *
+ * Thesis: the tool's job is to tell you which of your parallel agents needs
+ * you right now. So color is a functional signal language, never decoration:
+ * the chrome is achromatic blue-charcoal, and saturation appears only to mean
+ * something (needs input / error / working / ready / here). Chrome type is a
+ * proportional grotesque (Mona Sans); every piece of machine data — branches,
+ * hashes, paths, the terminal — is mono (JetBrains Mono). That contrast is the
+ * point: a designed frame around real terminal material, not terminal cosplay.
+ */
+
+:root {
+  /* Surfaces — a specific desaturated blue-charcoal, deliberately not black. */
+  --void: #0e1116;
+  --surface: #141923;
+  --raised: #1b212d;
+  --raised-2: #222a38;
+  --line: #2a313f;
+  --line-soft: #1e2531;
+
+  /* Ink */
+  --ink: #dce1e8;
+  --ink-dim: #8b94a4;
+  --ink-faint: #586273;
+
+  /* Signals — the only color in the UI; each one means exactly one thing. */
+  --needs: #ffa500; /* needs input */
+  --error: #f0524f; /* error */
+  --notice: #e3b341; /* notice */
+  --review: #d75fd7; /* ready for review (◆) */
+  --here: #2bc6d4; /* you are here */
+  --active: #6cb6ff; /* focus / agent working */
+  --ok: #57ab5a; /* clean / success */
+
+  /* Tinted washes for selected/active rows (signal at low alpha). */
+  --here-wash: rgba(43, 198, 212, 0.1);
+  --needs-wash: rgba(255, 165, 0, 0.12);
+  --error-wash: rgba(240, 82, 79, 0.12);
+  --review-wash: rgba(215, 95, 215, 0.12);
+
+  --sans: "Mona Sans Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius: 9px;
+  --radius-sm: 6px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 0.13s var(--ease);
+  --t-med: 0.22s var(--ease);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Eyebrow labels — Mona Sans leans on its width axis here: condensed,
+ * letterspaced, uppercase. The structural device of the whole UI. */
+.eyebrow {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-stretch: 75%;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-feature-settings: "calt", "liga";
+}
+
+button {
+  font-family: var(--sans);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(108, 182, 255, 0.28);
+}
+
+:focus-visible {
+  outline: 2px solid var(--active);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Scrollbars — quiet, part of the chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--raised-2);
+  background-clip: content-box;
+}
+
+/* Braille activity glyph — the TUI's ⠋⠙⠹… spinner, reborn. */
+.spinner::before {
+  content: "⠋";
+  font-family: var(--mono);
+  animation: braille 0.85s steps(1) infinite;
+}
+@keyframes braille {
+  0% { content: "⠋"; }
+  10% { content: "⠙"; }
+  20% { content: "⠹"; }
+  30% { content: "⠸"; }
+  40% { content: "⠼"; }
+  50% { content: "⠴"; }
+  60% { content: "⠦"; }
+  70% { content: "⠧"; }
+  80% { content: "⠇"; }
+  90% { content: "⠏"; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.32; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

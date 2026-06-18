@@ -1,0 +1,48 @@
+import { reconcile } from "solid-js/store";
+import type { AppEvent } from "@conduit/shared";
+import { setStore } from "./store";
+
+/** The single reducer from the event stream into the store. Snapshot events
+ * (RepositoryList / WorkspaceList) are full replacements reconciled by id, so
+ * only changed rows actually update — and reconnect self-heals for free. */
+export function applyEvent(e: AppEvent): void {
+  switch (e.type) {
+    case "RepositoryList":
+      setStore("repositories", reconcile(e.items, { key: "id" }));
+      break;
+
+    case "WorkspaceList":
+      setStore("workspaces", reconcile(e.items, { key: "id" }));
+      break;
+
+    case "WorkspaceGitUpdated":
+      setStore("gitByWs", e.id, e.git);
+      // Keep the summary fields the board/sidebar render in sync with the
+      // fresh git detail.
+      setStore(
+        "workspaces",
+        (w) => w.id === e.id,
+        (w) => ({
+          ...w,
+          branch: e.git.branch,
+          ahead: e.git.ahead,
+          behind: e.git.behind,
+          dirty_files: e.git.changed.length,
+        }),
+      );
+      break;
+
+    case "WorkspaceAttentionChanged":
+      setStore("workspaces", (w) => w.id === e.id, "attention", e.level);
+      break;
+
+    case "WorkspaceReviewChanged":
+      setStore("workspaces", (w) => w.id === e.id, "ready_for_review", e.ready);
+      break;
+
+    default:
+      // Terminal, diff, git-action, branch, and progress events are handled
+      // by later milestones (workspace screen, git layer, creation).
+      break;
+  }
+}
