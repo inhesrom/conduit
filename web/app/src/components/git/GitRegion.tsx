@@ -1,4 +1,4 @@
-import { createEffect, createSignal, Match, onMount, Switch } from "solid-js";
+import { createEffect, createSignal, Match, onMount, Show, Switch } from "solid-js";
 import type { WorkspaceSummary } from "@conduit/shared";
 import { git } from "../../state/git-actions";
 import { store } from "../../state/store";
@@ -6,8 +6,9 @@ import { BranchesPanel } from "./BranchesPanel";
 import { ChangesPanel } from "./ChangesPanel";
 import { CommitsPanel } from "./CommitsPanel";
 import { DiffView } from "./DiffView";
+import { ReviewPanel } from "./ReviewPanel";
 
-type Tab = "changes" | "commits" | "branches";
+type Tab = "changes" | "commits" | "branches" | "review";
 
 export function GitRegion(props: { ws: WorkspaceSummary }) {
   const wsId = props.ws.id;
@@ -46,6 +47,12 @@ export function GitRegion(props: { ws: WorkspaceSummary }) {
           <button class="git-tab" classList={{ active: tab() === "branches" }} onClick={() => setTab("branches")}>
             Branches
           </button>
+          <button class="git-tab" classList={{ active: tab() === "review" }} onClick={() => setTab("review")}>
+            Review
+            <Show when={props.ws.ready_for_review}>
+              <span class="git-tab-review">◆</span>
+            </Show>
+          </button>
         </div>
         <div class="git-left-body">
           <Switch>
@@ -57,6 +64,9 @@ export function GitRegion(props: { ws: WorkspaceSummary }) {
             </Match>
             <Match when={tab() === "branches"}>
               <BranchesPanel wsId={wsId} />
+            </Match>
+            <Match when={tab() === "review"}>
+              <ReviewPanel ws={props.ws} selected={selected} onSelect={selectLoaded} />
             </Match>
           </Switch>
         </div>

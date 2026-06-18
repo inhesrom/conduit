@@ -1,8 +1,10 @@
 import { createStore } from "solid-js/store";
 import type {
+  ChangedFile,
   ConnStatus,
   GitState,
   RepositorySummary,
+  SavedCommand,
   WorkspaceSummary,
 } from "@conduit/shared";
 
@@ -33,6 +35,10 @@ export interface AppState {
   /** Prompt staged at create time; attaches to the next WorkspaceCreated
    * (creations are serial from the UI). */
   pendingCreatePrompt: string | null;
+  /** Branch-vs-base file lists for review mode, per workspace. */
+  reviewByWs: Record<string, { base: string; files: ChangedFile[] }>;
+  /** Pending shell-resurrection commands, keyed by `${wsId}/${tabId}`. */
+  resurrection: Record<string, SavedCommand>;
 }
 
 export const [store, setStore] = createStore<AppState>({
@@ -47,4 +53,6 @@ export const [store, setStore] = createStore<AppState>({
   createProgress: null,
   pendingPrompt: {},
   pendingCreatePrompt: null,
+  reviewByWs: {},
+  resurrection: {},
 });

@@ -1,5 +1,6 @@
 import { createSignal, Show } from "solid-js";
 import { navigate } from "../router";
+import { git } from "../state/git-actions";
 import { deleteWorkspace, renameWorkspace } from "../state/manage";
 import { repoName } from "../state/selectors";
 import { store } from "../state/store";
@@ -36,6 +37,15 @@ export function WorkspaceScreen(props: { id: string }) {
             <Show when={menu()}>
               <div class="menu-catcher" onClick={() => setMenu(false)} />
               <div class="menu">
+                <button
+                  class="menu-item"
+                  onClick={() => {
+                    setMenu(false);
+                    git.setReadyForReview(ws()!.id, !ws()!.ready_for_review);
+                  }}
+                >
+                  {ws()!.ready_for_review ? "Unmark ready for review" : "Mark ready for review"}
+                </button>
                 <button
                   class="menu-item"
                   onClick={() => {

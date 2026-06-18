@@ -35,4 +35,12 @@ export const git = {
   loadCommitFileDiff: (id: string, hash: string, file: string) =>
     client.send({ LoadCommitFileDiff: { id, hash, file } }),
   loadCommitDiff: (id: string, hash: string) => client.send({ LoadCommitDiff: { id, hash } }),
+
+  // Review
+  loadBranchDiff: (id: string) => client.send({ LoadBranchDiff: { id } }),
+  loadBranchFileDiff: (id: string, file: string) => client.send({ LoadBranchFileDiff: { id, file } }),
+  setReadyForReview: (id: string, ready: boolean) => client.send({ SetReadyForReview: { id, ready } }),
+  openPullRequest: (id: string) => client.send({ OpenPullRequest: { id } }),
+
+  runCommand: (id: string, command: string) => client.send({ RunWorkspaceCommand: { id, command } }),
 };

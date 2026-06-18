@@ -30,6 +30,25 @@ export function TerminalView(props: {
   let startedAt = 0;
   const key = termKey(props.wsId, props.kind, props.tabId);
   const term = () => store.terminals[key];
+  const resurrect = () =>
+    props.kind === "Shell" ? store.resurrection[`${props.wsId}/${props.tabId}`] : undefined;
+
+  const clearResurrect = () =>
+    client.send({ ClearShellResurrection: { id: props.wsId, tab_id: props.tabId } });
+  const runResurrect = () => {
+    const cmd = resurrect();
+    if (cmd) {
+      client.send({
+        SendTerminalInput: {
+          id: props.wsId,
+          kind: props.kind,
+          tab_id: props.tabId,
+          data_b64: textToB64(`${cmd.argv.join(" ")}\r`),
+        },
+      });
+    }
+    clearResurrect();
+  };
   // Optimistic until the server confirms — covers the gap between sending
   // StartTerminal and the TerminalStarted event.
   const [starting, setStarting] = createSignal(props.startOnMount);
@@ -130,6 +149,19 @@ export function TerminalView(props: {
           <button class="btn" onClick={() => start(props.cmd())}>
             {phase() === "exited" ? "Restart" : "Start"}
           </button>
+        </div>
+      </Show>
+      <Show when={resurrect()}>
+        <div class="term-resurrect">
+          <span class="mono term-resurrect-cmd">Re-run: {resurrect()!.argv.join(" ")}</span>
+          <span class="term-resurrect-actions">
+            <button class="btn xs primary" onClick={runResurrect}>
+              Run
+            </button>
+            <button class="btn xs" onClick={clearResurrect}>
+              Dismiss
+            </button>
+          </span>
         </div>
       </Show>
       <div class="term-host" ref={host} />

@@ -78,6 +78,17 @@ export function applyEvent(e: AppEvent): void {
       setStore("createProgress", { repoId: e.repo_id, stage: e.stage });
       break;
 
+    case "BranchDiffFilesLoaded":
+      setStore("reviewByWs", e.id, { base: e.base, files: e.files });
+      break;
+
+    case "ShellResurrectionChanged": {
+      const k = `${e.id}/${e.tab_id}`;
+      if (e.command) setStore("resurrection", k, e.command);
+      else setStore("resurrection", k, undefined!);
+      break;
+    }
+
     case "WorkspaceCreated": {
       setStore("createProgress", null);
       if (store.pendingCreatePrompt) {

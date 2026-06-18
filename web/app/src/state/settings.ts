@@ -51,6 +51,29 @@ export function persistSettings(): void {
   }
 }
 
+export function updateSettings(patch: Partial<Settings>): void {
+  setSettings(patch);
+  persistSettings();
+}
+
+export function updateAgent(name: string, patch: Partial<AgentProfile>): void {
+  setSettings("agents", (a) => a.name === name, patch);
+  persistSettings();
+}
+
+export function addAgent(profile: AgentProfile): void {
+  if (settings.agents.some((a) => a.name === profile.name)) return;
+  setSettings("agents", (a) => [...a, profile]);
+  persistSettings();
+}
+
+export function removeAgent(name: string): void {
+  if (settings.agents.length <= 1) return;
+  setSettings("agents", (a) => a.filter((x) => x.name !== name));
+  if (settings.defaultAgent === name) setSettings("defaultAgent", settings.agents[0]!.name);
+  persistSettings();
+}
+
 function profileFor(choice?: string | null): AgentProfile | undefined {
   const name = choice && choice.trim() ? choice.trim() : settings.defaultAgent;
   return settings.agents.find((a) => a.name === name);
