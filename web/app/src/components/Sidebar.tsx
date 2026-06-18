@@ -1,6 +1,8 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import type { RepositorySummary, WorkspaceSummary } from "@conduit/shared";
 import { hrefFor, navigate, route } from "../router";
+import { removeRepository } from "../state/manage";
+import { openAddRepository, openCreateWorkspace } from "../state/modals";
 import { byRepoThenName } from "../state/selectors";
 import { store } from "../state/store";
 import {
@@ -38,18 +40,35 @@ function WsItem(props: { ws: WorkspaceSummary }) {
   );
 }
 
-function RepoGroup(props: { name: string; reviewCount: number; workspaces: WorkspaceSummary[] }) {
+function RepoGroup(props: {
+  name: string;
+  repo?: RepositorySummary;
+  reviewCount: number;
+  workspaces: WorkspaceSummary[];
+}) {
   const [collapsed, setCollapsed] = createSignal(false);
   return (
     <section class="repo-group">
-      <button class="repo-head" onClick={() => setCollapsed((c) => !c)}>
-        <span class="repo-caret">{collapsed() ? "▸" : "▾"}</span>
-        <span class="repo-name">{props.name}</span>
-        <span class="repo-count">{props.workspaces.length}</span>
-        <Show when={props.reviewCount > 0}>
-          <span class="repo-review">◆{props.reviewCount}</span>
+      <div class="repo-head">
+        <button class="repo-head-main" onClick={() => setCollapsed((c) => !c)}>
+          <span class="repo-caret">{collapsed() ? "▸" : "▾"}</span>
+          <span class="repo-name">{props.name}</span>
+          <span class="repo-count">{props.workspaces.length}</span>
+          <Show when={props.reviewCount > 0}>
+            <span class="repo-review">◆{props.reviewCount}</span>
+          </Show>
+        </button>
+        <Show when={props.repo}>
+          <div class="repo-actions">
+            <button class="icon-btn sm" title="New workspace" onClick={() => openCreateWorkspace(props.repo!.id)}>
+              +
+            </button>
+            <button class="icon-btn sm" title="Remove repository" onClick={() => removeRepository(props.repo!)}>
+              ×
+            </button>
+          </div>
         </Show>
-      </button>
+      </div>
       <Show when={!collapsed()}>
         <For each={props.workspaces}>{(w) => <WsItem ws={w} />}</For>
       </Show>
@@ -93,6 +112,9 @@ export function Sidebar() {
             >
               ◆
             </button>
+            <button class="icon-btn" title="Add repository" onClick={openAddRepository}>
+              +
+            </button>
             <button class="icon-btn" title="Collapse sidebar (Ctrl+B)" onClick={cycleSidebar}>
               ‹
             </button>
@@ -103,6 +125,7 @@ export function Sidebar() {
             {(g) => (
               <RepoGroup
                 name={g.repo.name}
+                repo={g.repo}
                 reviewCount={g.items.filter((w) => w.ready_for_review).length}
                 workspaces={g.items}
               />

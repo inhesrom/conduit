@@ -1,6 +1,7 @@
 import { createEffect, createMemo, For, Show } from "solid-js";
 import type { WorkspaceSummary } from "@conduit/shared";
 import { makeFlip } from "../lib/flip";
+import { openAddRepository } from "../state/modals";
 import {
   BAND_LABEL,
   BAND_ORDER,
@@ -108,9 +109,16 @@ function EmptyBoard() {
     <div class="empty">
       <Show
         when={store.repositories.length > 0}
-        fallback={<p>Add a repository to start, then create a workspace.</p>}
+        fallback={
+          <>
+            <p>Add a repository to start.</p>
+            <button class="btn primary" onClick={openAddRepository}>
+              Add repository
+            </button>
+          </>
+        }
       >
-        <p>No workspaces yet — create one to put an agent to work.</p>
+        <p>No workspaces yet — use the + beside a repository in the sidebar to create one.</p>
       </Show>
     </div>
   );

@@ -24,6 +24,15 @@ export interface AppState {
   diffByWs: Record<string, { file: string; diff: string }>;
   /** File lists for expanded commits, keyed by workspace then commit hash. */
   commitFilesByWs: Record<string, Record<string, string[]>>;
+  /** Branch lists per repo for the create-workspace picker. */
+  repoBranches: Record<string, { local: string[]; remote: string[] }>;
+  /** Live stage text while a worktree is being created. */
+  createProgress: { repoId: string; stage: string } | null;
+  /** Initial agent prompts awaiting delivery, keyed by new workspace id. */
+  pendingPrompt: Record<string, string>;
+  /** Prompt staged at create time; attaches to the next WorkspaceCreated
+   * (creations are serial from the UI). */
+  pendingCreatePrompt: string | null;
 }
 
 export const [store, setStore] = createStore<AppState>({
@@ -34,4 +43,8 @@ export const [store, setStore] = createStore<AppState>({
   terminals: {},
   diffByWs: {},
   commitFilesByWs: {},
+  repoBranches: {},
+  createProgress: null,
+  pendingPrompt: {},
+  pendingCreatePrompt: null,
 });

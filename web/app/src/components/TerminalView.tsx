@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js";
-import { createTerminal, termKey, type TerminalHandle, type TerminalKind } from "@conduit/shared";
+import { createTerminal, termKey, textToB64, type TerminalHandle, type TerminalKind } from "@conduit/shared";
 import { client } from "../client";
 import { store } from "../state/store";
 
@@ -21,6 +21,9 @@ export function TerminalView(props: {
    * silent running PTY produces no output, so it isn't in the history replay;
    * the summary still knows it's alive. */
   externalRunning?: () => boolean;
+  /** Agent only: an initial prompt to type once the agent produces output. */
+  initialPrompt?: () => string | undefined;
+  onPromptSent?: () => void;
 }) {
   let host!: HTMLDivElement;
   let handle: TerminalHandle | null = null;
@@ -40,6 +43,23 @@ export function TerminalView(props: {
     return starting() ? "running" : "idle";
   });
 
+  let promptSent = false;
+  const maybeSendPrompt = () => {
+    if (promptSent) return;
+    const p = props.initialPrompt?.();
+    if (!p) return;
+    promptSent = true;
+    client.send({
+      SendTerminalInput: {
+        id: props.wsId,
+        kind: props.kind,
+        tab_id: props.tabId,
+        data_b64: textToB64(`${p}\r`),
+      },
+    });
+    props.onPromptSent?.();
+  };
+
   const start = (cmd: string[]) => {
     if (!handle) return;
     handle.fit();
@@ -56,6 +76,9 @@ export function TerminalView(props: {
       },
     });
     handle.focus();
+    // Deliver the initial prompt after the agent's first output (below);
+    // this is a fallback in case it stays silent.
+    if (props.initialPrompt?.()) setTimeout(maybeSendPrompt, 2500);
   };
 
   onMount(() => {
@@ -63,6 +86,7 @@ export function TerminalView(props: {
       workspaceId: props.wsId,
       kind: props.kind,
       tabId: props.tabId,
+      onData: () => maybeSendPrompt(),
     });
     handle.attach(host);
     if (props.startOnMount) start(props.cmd());

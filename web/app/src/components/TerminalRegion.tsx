@@ -2,7 +2,7 @@ import { createEffect, createSignal, For, Show } from "solid-js";
 import { termKey, type WorkspaceSummary } from "@conduit/shared";
 import { client } from "../client";
 import { agentCmdFor, agentVanillaCmdFor } from "../state/settings";
-import { store } from "../state/store";
+import { setStore, store } from "../state/store";
 import { createShell, removeShell, renameShell, shellTabs } from "../state/tabs";
 import { TerminalView } from "./TerminalView";
 
@@ -120,6 +120,8 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
               cmd={() => agentCmdFor(props.ws.agent)}
               fallbackCmd={() => agentVanillaCmdFor(props.ws.agent)}
               externalRunning={() => props.ws.agent_running}
+              initialPrompt={() => store.pendingPrompt[wsId]}
+              onPromptSent={() => setStore("pendingPrompt", wsId, undefined!)}
             />
           </div>
         </Show>

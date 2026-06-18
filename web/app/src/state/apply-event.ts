@@ -1,6 +1,8 @@
 import { reconcile } from "solid-js/store";
 import { type AppEvent, termKey } from "@conduit/shared";
-import { setStore } from "./store";
+import { navigate } from "../router";
+import { closeAppModal } from "./modals";
+import { setStore, store } from "./store";
 import { pushToast } from "./toasts";
 
 /** The single reducer from the event stream into the store. Snapshot events
@@ -67,6 +69,25 @@ export function applyEvent(e: AppEvent): void {
     case "Error":
       pushToast("error", e.message);
       break;
+
+    case "RepoBranches":
+      setStore("repoBranches", e.repo_id, { local: e.local, remote: e.remote });
+      break;
+
+    case "WorktreeCreateProgress":
+      setStore("createProgress", { repoId: e.repo_id, stage: e.stage });
+      break;
+
+    case "WorkspaceCreated": {
+      setStore("createProgress", null);
+      if (store.pendingCreatePrompt) {
+        setStore("pendingPrompt", e.id, store.pendingCreatePrompt);
+        setStore("pendingCreatePrompt", null);
+      }
+      closeAppModal();
+      navigate({ name: "workspace", id: e.id });
+      break;
+    }
 
     default:
       // Terminal, diff, git-action, branch, and progress events are handled

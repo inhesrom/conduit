@@ -41,6 +41,9 @@ export interface CreateTerminalOpts {
   /** Default: 10000 for Agent, 5000 for Shell. */
   scrollback?: number;
   fontSize?: number;
+  /** Called on each live output chunk (not history replay) — used to detect
+   * when an agent is ready for an initial prompt. */
+  onData?: (bytes: Uint8Array) => void;
 }
 
 export interface TerminalHandle {
@@ -165,7 +168,10 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       const history = client.getTerminalHistory(key);
       if (history.length > 0) term.write(history);
       detachSink = client.registerTerminalSink(key, {
-        write: (bytes) => term.write(bytes),
+        write: (bytes) => {
+          term.write(bytes);
+          opts.onData?.(bytes);
+        },
         reset: () => term.reset(),
       });
 

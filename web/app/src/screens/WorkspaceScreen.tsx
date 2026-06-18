@@ -1,5 +1,6 @@
-import { Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { navigate } from "../router";
+import { deleteWorkspace, renameWorkspace } from "../state/manage";
 import { repoName } from "../state/selectors";
 import { store } from "../state/store";
 import { StatusGlyph } from "../components/StatusGlyph";
@@ -8,6 +9,7 @@ import { GitRegion } from "../components/git/GitRegion";
 
 export function WorkspaceScreen(props: { id: string }) {
   const ws = () => store.workspaces.find((w) => w.id === props.id);
+  const [menu, setMenu] = createSignal(false);
   return (
     <div class="ws-screen">
       <Show when={ws()} fallback={<div class="empty">Workspace not found.</div>}>
@@ -27,6 +29,34 @@ export function WorkspaceScreen(props: { id: string }) {
               ◆ ready
             </span>
           </Show>
+          <div class="ws-actions">
+            <button class="icon-btn" title="Workspace actions" onClick={() => setMenu((m) => !m)}>
+              ⋯
+            </button>
+            <Show when={menu()}>
+              <div class="menu-catcher" onClick={() => setMenu(false)} />
+              <div class="menu">
+                <button
+                  class="menu-item"
+                  onClick={() => {
+                    setMenu(false);
+                    void renameWorkspace(ws()!);
+                  }}
+                >
+                  Rename
+                </button>
+                <button
+                  class="menu-item danger"
+                  onClick={() => {
+                    setMenu(false);
+                    void deleteWorkspace(ws()!);
+                  }}
+                >
+                  Delete workspace
+                </button>
+              </div>
+            </Show>
+          </div>
         </header>
         <div class="ws-grid">
           <TerminalRegion ws={ws()!} />

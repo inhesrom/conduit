@@ -1,6 +1,7 @@
 //! Embedded web server: bridges browser WebSocket clients onto the same
 //! Command/Event protocol the TUI speaks over the daemon's Unix socket.
 
+pub mod fs;
 pub mod ws;
 
 use std::net::SocketAddr;
@@ -81,6 +82,7 @@ pub async fn serve(
     let state = ServerState { core, history };
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/api/fs/list", get(fs::list_dir))
         .route("/healthz", get(healthz))
         .with_state(state);
 

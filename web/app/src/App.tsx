@@ -1,4 +1,5 @@
 import { Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { AppModals } from "./components/AppModals";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { Dialogs } from "./components/Dialogs";
 import { Sidebar } from "./components/Sidebar";
@@ -58,6 +59,7 @@ export function App() {
       </div>
       <Toasts />
       <Dialogs />
+      <AppModals />
     </>
   );
 }
