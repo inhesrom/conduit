@@ -3,6 +3,7 @@ import { navigate } from "../router";
 import { git } from "../state/git-actions";
 import { deleteWorkspace, renameWorkspace } from "../state/manage";
 import { repoName } from "../state/selectors";
+import { gitCollapsed, setTermPct, termPct, toggleGitCollapsed } from "../state/split";
 import { store } from "../state/store";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { TerminalRegion } from "../components/TerminalRegion";
@@ -11,6 +12,20 @@ import { GitRegion } from "../components/git/GitRegion";
 export function WorkspaceScreen(props: { id: string }) {
   const ws = () => store.workspaces.find((w) => w.id === props.id);
   const [menu, setMenu] = createSignal(false);
+
+  let gridEl: HTMLDivElement | undefined;
+  const onDragStart = (e: PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      if (gridEl) setTermPct((ev.clientY - gridEl.getBoundingClientRect().top) / gridEl.clientHeight);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   return (
     <div class="ws-screen">
       <Show when={ws()} fallback={<div class="empty">Workspace not found.</div>}>
@@ -68,9 +83,40 @@ export function WorkspaceScreen(props: { id: string }) {
             </Show>
           </div>
         </header>
-        <div class="ws-grid">
-          <TerminalRegion ws={ws()!} />
-          <GitRegion ws={ws()!} />
+        <div class="ws-grid" ref={gridEl}>
+          <div
+            class="ws-pane"
+            style={{
+              "flex-basis": gitCollapsed() ? "auto" : `${termPct() * 100}%`,
+              "flex-grow": gitCollapsed() ? "1" : "0",
+              "flex-shrink": "1",
+            }}
+          >
+            <TerminalRegion ws={ws()!} />
+          </div>
+          <div
+            class="ws-split-handle"
+            classList={{ collapsed: gitCollapsed() }}
+            onPointerDown={(e) => {
+              if (!gitCollapsed()) onDragStart(e);
+            }}
+            title={gitCollapsed() ? "" : "Drag to resize"}
+          >
+            <span class="ws-split-grip">⣿⣿⣿⣿</span>
+            <button
+              class="ws-split-toggle"
+              title={gitCollapsed() ? "Show git" : "Hide git"}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={toggleGitCollapsed}
+            >
+              {gitCollapsed() ? "▴ git" : "▾"}
+            </button>
+          </div>
+          <Show when={!gitCollapsed()}>
+            <div class="ws-pane">
+              <GitRegion ws={ws()!} />
+            </div>
+          </Show>
         </div>
       </Show>
     </div>

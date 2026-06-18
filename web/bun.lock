@@ -11,7 +11,8 @@
       "dependencies": {
         "@conduit/shared": "workspace:*",
         "@fontsource-variable/jetbrains-mono": "^5.2.8",
-        "@fontsource-variable/mona-sans": "^5.2.8",
+        "@fontsource-variable/pixelify-sans": "^5.2.7",
+        "@fontsource/silkscreen": "^5.2.8",
         "solid-js": "^1.9.0",
       },
       "devDependencies": {
@@ -126,7 +127,9 @@
 
     "@fontsource-variable/jetbrains-mono": ["@fontsource-variable/jetbrains-mono@5.2.8", "", {}, "sha512-WBA9elru6Jdp5df2mES55wuOO0WIrn3kpXnI4+W2ek5u3ZgLS9XS4gmIlcQhiZOWEKl95meYdvK7xI+ETLCq/Q=="],
 
-    "@fontsource-variable/mona-sans": ["@fontsource-variable/mona-sans@5.2.8", "", {}, "sha512-8OWdTcP8KvRxkU1Skkk+tX3D5XHN9buejxSDwrT7teRfGnpKBYxQUApV/+zS8TzeHiSU8H5Tc0HfBr57ahgcvA=="],
+    "@fontsource-variable/pixelify-sans": ["@fontsource-variable/pixelify-sans@5.2.7", "", {}, "sha512-IbQ7po3a7bQuguwyGQ7x7kMUCYvHjzxTdc7lYAcqzgR87MQb+vf8fuu4hjGyFLlWaDhS6QEe0jrS9dmCJ9ZlYw=="],
+
+    "@fontsource/silkscreen": ["@fontsource/silkscreen@5.2.8", "", {}, "sha512-PfVe2BRZdjY/UIEXsrpzCo/W8FIGo6jEEMHuQiKfma+E5LXb6WfFFBfCEsO89ZWOSwl2mLE1Yq0d8gagmcaBpQ=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

@@ -105,16 +105,35 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     }
   };
 
-  term.onData((data) => {
+  const sendText = (text: string) =>
     client.send({
       SendTerminalInput: {
         id: opts.workspaceId,
         kind: opts.kind,
         tab_id: opts.tabId ?? null,
-        data_b64: textToB64(data),
+        data_b64: textToB64(text),
       },
     });
+
+  // Shift+Enter must insert a newline rather than submit. xterm sends a plain
+  // CR for it (indistinguishable from Enter), so intercept it and send ESC+CR
+  // — the "meta-return" sequence agent TUIs (Claude Code) read as a newline.
+  term.attachCustomKeyEventHandler((e) => {
+    if (
+      e.type === "keydown" &&
+      e.key === "Enter" &&
+      e.shiftKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey
+    ) {
+      sendText("\x1b\r");
+      return false;
+    }
+    return true;
   });
+
+  term.onData((data) => sendText(data));
 
   term.onBinary((data) => {
     // onBinary delivers latin1: one charCode per byte.

@@ -12,6 +12,7 @@ import { BoardScreen } from "./screens/BoardScreen";
 import { WorkspaceScreen } from "./screens/WorkspaceScreen";
 import { openSettings } from "./state/modals";
 import { paletteOpen, togglePalette } from "./state/palette";
+import { theme, toggleTheme } from "./state/theme";
 import { authState, checkSession } from "./state/session";
 import { currentSession, loaded, pinned, refreshSessions, selectSession, sessions } from "./state/sessions";
 import { store } from "./state/store";
@@ -70,6 +71,13 @@ function Topbar() {
       <span class="topbar-spacer" />
       <button class="topbar-btn" title="Command palette (⌘K)" onClick={togglePalette}>
         ⌘K
+      </button>
+      <button
+        class="topbar-btn"
+        title={theme() === "dark" ? "Switch to light" : "Switch to dark"}
+        onClick={toggleTheme}
+      >
+        {theme() === "dark" ? "◐" : "◑"}
       </button>
       <button class="topbar-btn" title="Settings" onClick={openSettings}>
         ⚙

@@ -10,12 +10,12 @@ export function StatusGlyph(props: { ws: WorkspaceSummary }) {
     <Switch fallback={<span class="glyph idle">•</span>}>
       <Match when={a() === "Error"}>
         <span class="glyph error" title="Error">
-          ✖
+          ✕
         </span>
       </Match>
       <Match when={a() === "NeedsInput"}>
-        <span class="glyph needs pulse" title="Needs input">
-          ⚠
+        <span class="glyph needs" title="Needs input">
+          !
         </span>
       </Match>
       <Match when={props.ws.agent_active}>
