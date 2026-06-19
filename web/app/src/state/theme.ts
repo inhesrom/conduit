@@ -1,18 +1,25 @@
 import { createSignal } from "solid-js";
 
-/** Light/dark is a 1-bit swap of ink and paper. */
-export type Theme = "dark" | "light";
+/** The three brand palettes from the Conduit design kit. Amber (CRT phosphor)
+ *  is the default; mono is the original 1-bit black/white; paper is light. */
+export type Theme = "amber" | "mono" | "paper";
+
+const ORDER: Theme[] = ["amber", "mono", "paper"];
+
+function isTheme(v: unknown): v is Theme {
+  return v === "amber" || v === "mono" || v === "paper";
+}
 
 function initial(): Theme {
   try {
     const saved = localStorage.getItem("conduit.theme");
-    if (saved === "light" || saved === "dark") return saved;
+    if (isTheme(saved)) return saved;
+    // Anything else — no preference, or a stale "dark"/"light" from the old
+    // toggle — falls through to the amber default.
   } catch {
     // ignore
   }
-  return typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: light)").matches
-    ? "light"
-    : "dark";
+  return "amber";
 }
 
 const [theme, setTheme] = createSignal<Theme>(initial());
@@ -25,8 +32,9 @@ function apply(t: Theme): void {
 // Set the attribute immediately on load to avoid a flash of the wrong theme.
 apply(theme());
 
-export function toggleTheme(): void {
-  const next: Theme = theme() === "dark" ? "light" : "dark";
+/** Advance to the next palette: amber → mono → paper → amber. */
+export function cycleTheme(): void {
+  const next = ORDER[(ORDER.indexOf(theme()) + 1) % ORDER.length]!;
   setTheme(next);
   apply(next);
   try {

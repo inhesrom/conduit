@@ -1,6 +1,7 @@
 import { createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AppModals } from "./components/AppModals";
 import { CommandPalette } from "./components/CommandPalette";
+import { ConduitMark } from "./components/ConduitMark";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { Dialogs } from "./components/Dialogs";
 import { LoginScreen } from "./components/LoginScreen";
@@ -12,7 +13,7 @@ import { BoardScreen } from "./screens/BoardScreen";
 import { WorkspaceScreen } from "./screens/WorkspaceScreen";
 import { openSettings } from "./state/modals";
 import { paletteOpen, togglePalette } from "./state/palette";
-import { theme, toggleTheme } from "./state/theme";
+import { theme, cycleTheme } from "./state/theme";
 import { authState, checkSession } from "./state/session";
 import { currentSession, loaded, pinned, refreshSessions, selectSession, sessions } from "./state/sessions";
 import { store } from "./state/store";
@@ -63,7 +64,10 @@ function SessionSwitcher() {
 function Topbar() {
   return (
     <header class="topbar">
-      <span class="topbar-mark mono">conduit</span>
+      <span class="topbar-mark mono">
+        <ConduitMark size={20} class="topbar-logo" />
+        conduit
+      </span>
       <span class="topbar-sep">/</span>
       <SessionSwitcher />
       <span class="topbar-sep">/</span>
@@ -73,11 +77,11 @@ function Topbar() {
         ⌘K
       </button>
       <button
-        class="topbar-btn"
-        title={theme() === "dark" ? "Switch to light" : "Switch to dark"}
-        onClick={toggleTheme}
+        class="topbar-btn mono"
+        title={`Theme: ${theme()} — click to cycle (amber → mono → paper)`}
+        onClick={cycleTheme}
       >
-        {theme() === "dark" ? "◐" : "◑"}
+        {theme().charAt(0).toUpperCase()}
       </button>
       <button class="topbar-btn" title="Settings" onClick={openSettings}>
         ⚙

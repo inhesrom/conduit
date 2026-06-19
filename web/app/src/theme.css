@@ -1,38 +1,58 @@
-/* Conduit — 1-bit design system.
+/* Conduit — design tokens.
  *
- * A black-and-white, 8-bit/pixel aesthetic: pixel type, hard edges, dithering
- * for shading, inverse-video for emphasis, steps() motion. The palette is just
- * ink and paper, so the light/dark toggle simply swaps them; every grey is
- * derived from those two, so it flips automatically. There is no hue — state
- * (needs input / error / working / review / here) is carried by pixel glyph,
- * blink, and inverse-video, not color.
+ * An 8-bit/pixel aesthetic: pixel type, hard edges, dithering for shading,
+ * inverse-video for emphasis, steps() motion. Color comes from the brand kit
+ * (web/brand) as three swappable palettes — Amber (CRT phosphor, default),
+ * Mono (the original 1-bit black/white) and Paper (light). Each is essentially
+ * a single hue, so state (needs input / error / working / review) is still
+ * carried by pixel glyph, blink and inverse-video, not by color. The app's two
+ * base tokens (--paper/--ink) and a few surfaces are bridged onto each
+ * palette's --cd-* role contract; every remaining grey derives from
+ * --paper/--ink via color-mix, so the whole UI retints when data-theme flips.
  */
 
+/* ── Brand palettes (mirror of web/brand/tokens/colors.css) ────────────── */
 :root,
-:root[data-theme="dark"] {
-  --paper: #0c0c0c;
-  --ink: #e8e8e8;
+:root[data-theme="amber"] {
+  /* Amber · CRT phosphor warmth (default) */
+  --cd-bg: #0b0704;     --cd-surface: #120c05;   --cd-surface-2: #1d1408;
+  --cd-border: #36240f; --cd-text: #ffd591;      --cd-text-dim: #b5824a;
+  --cd-accent: #ffe0a6; --cd-accent-2: #ff9f4d;
   color-scheme: dark;
 }
-:root[data-theme="light"] {
-  --paper: #e6e6e6;
-  --ink: #111111;
+:root[data-theme="mono"] {
+  /* Mono · white + black, 1-bit grain */
+  --cd-bg: #000000;     --cd-surface: #0c0e11;   --cd-surface-2: #14171b;
+  --cd-border: #24282c; --cd-text: #e8eaed;      --cd-text-dim: #9aa0a6;
+  --cd-accent: #ffffff; --cd-accent-2: #b9bec2;
+  color-scheme: dark;
+}
+:root[data-theme="paper"] {
+  /* Paper · inverted, black on white */
+  --cd-bg: #ffffff;     --cd-surface: #f4f5f6;   --cd-surface-2: #e9ebed;
+  --cd-border: #d8dce0; --cd-text: #0b0d10;      --cd-text-dim: #4a525b;
+  --cd-accent: #0b0d10; --cd-accent-2: #2c3138;
   color-scheme: light;
 }
 
 :root {
-  /* Greys derived from ink+paper so they invert with the theme. */
-  --ink-dim: color-mix(in srgb, var(--ink) 60%, var(--paper));
+  /* Bridge: the app's two base tokens come from the active brand palette. */
+  --paper: var(--cd-bg);
+  --ink: var(--cd-text);
+
+  /* A few surfaces map straight to brand roles; the rest still derive from
+   * ink+paper via color-mix, so they retint with the theme. */
+  --ink-dim: var(--cd-text-dim);
   --ink-faint: color-mix(in srgb, var(--ink) 36%, var(--paper));
-  --line: color-mix(in srgb, var(--ink) 24%, var(--paper));
+  --line: var(--cd-border);
   --line-bright: color-mix(in srgb, var(--ink) 48%, var(--paper));
-  --panel: color-mix(in srgb, var(--ink) 5%, var(--paper));
-  --raised: color-mix(in srgb, var(--ink) 10%, var(--paper));
+  --panel: var(--cd-surface);
+  --raised: var(--cd-surface-2);
   --fill: color-mix(in srgb, var(--ink) 8%, var(--paper));
   --fill-strong: color-mix(in srgb, var(--ink) 16%, var(--paper));
 
-  /* The one sanctioned exception to monochrome: muted green/red for git
-   * added/removed. Kept low-saturation so they sit in the 1-bit world. */
+  /* The one sanctioned exception to the single-hue palette: muted green/red
+   * for git added/removed. Kept low-saturation so they sit in the 8-bit world. */
   --add: #4f9d63;
   --del: #cc5b54;
 

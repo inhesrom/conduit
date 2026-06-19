@@ -1,5 +1,6 @@
 import { createSignal, Show } from "solid-js";
 import { login } from "../state/session";
+import { ConduitMark } from "./ConduitMark";
 
 export function LoginScreen() {
   const [password, setPassword] = createSignal("");
@@ -27,6 +28,7 @@ export function LoginScreen() {
           void submit();
         }}
       >
+        <ConduitMark size={104} class="login-logo" />
         <span class="login-mark mono">conduit</span>
         <p class="login-prompt">Enter the password to continue.</p>
         <input

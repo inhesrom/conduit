@@ -14,9 +14,15 @@
   border-bottom: 2px solid var(--ink);
 }
 .topbar-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-family: var(--font-display);
   font-size: calc(16px * var(--ui-scale));
   color: var(--ink);
+}
+.topbar-logo {
+  flex: 0 0 auto;
 }
 .topbar-sep {
   color: var(--ink-faint);
@@ -1435,6 +1441,10 @@
   background: var(--panel);
   border: 2px solid var(--ink);
   box-shadow: 6px 6px 0 var(--line-bright);
+}
+.login-logo {
+  align-self: center;
+  margin-bottom: 4px;
 }
 .login-mark {
   font-family: var(--font-display);

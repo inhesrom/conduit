@@ -1,0 +1,41 @@
+{
+  "$schema": "conduit-palettes/v1",
+  "description": "Reusable Conduit color schemes. Each scheme maps to the same role contract so the logo, app, decks, and docs stay in sync. CSS variables in tokens/colors.css use the same role names prefixed with --cd-.",
+  "roleContract": {
+    "app": ["bg", "surface", "surface-2", "border", "text", "text-dim", "accent", "accent-2"],
+    "tube": ["tube-hi", "tube-mid", "tube-mid-alt", "tube-shadow", "tube-edge", "channel"],
+    "stream": ["stream-1", "stream-1-glow", "stream-2", "stream-2-glow"]
+  },
+  "schemes": {
+    "mono": {
+      "label": "Mono",
+      "blurb": "white + black, 1-bit grain",
+      "bg": "#000000", "surface": "#0c0e11", "surface-2": "#14171b", "border": "#24282c",
+      "text": "#e8eaed", "text-dim": "#9aa0a6", "accent": "#ffffff", "accent-2": "#b9bec2",
+      "tube-hi": "#ffffff", "tube-mid": "#d4d7da", "tube-mid-alt": "#9aa0a6",
+      "tube-shadow": "#5b6166", "tube-edge": "#24282c", "channel": "#0c0e11",
+      "stream-1": "#ffffff", "stream-1-glow": "#aab0b5",
+      "stream-2": "#b9bec2", "stream-2-glow": "#6b7176"
+    },
+    "amber": {
+      "label": "Amber",
+      "blurb": "CRT phosphor warmth",
+      "bg": "#0b0704", "surface": "#120c05", "surface-2": "#1d1408", "border": "#36240f",
+      "text": "#ffd591", "text-dim": "#b5824a", "accent": "#ffe0a6", "accent-2": "#ff9f4d",
+      "tube-hi": "#ffd591", "tube-mid": "#d99a4e", "tube-mid-alt": "#9c6a2c",
+      "tube-shadow": "#8a5e27", "tube-edge": "#36240f", "channel": "#140d05",
+      "stream-1": "#ffce7a", "stream-1-glow": "#c98a3a",
+      "stream-2": "#ff9f4d", "stream-2-glow": "#b5641f"
+    },
+    "paper": {
+      "label": "Paper",
+      "blurb": "inverted, black on white",
+      "bg": "#ffffff", "surface": "#f4f5f6", "surface-2": "#e9ebed", "border": "#d8dce0",
+      "text": "#0b0d10", "text-dim": "#4a525b", "accent": "#0b0d10", "accent-2": "#2c3138",
+      "tube-hi": "#454c54", "tube-mid": "#2c3138", "tube-mid-alt": "#20242a",
+      "tube-shadow": "#14171b", "tube-edge": "#08090b", "channel": "#ffffff",
+      "stream-1": "#0b0d10", "stream-1-glow": "#6b7682",
+      "stream-2": "#2c3138", "stream-2-glow": "#97a1ad"
+    }
+  }
+}
