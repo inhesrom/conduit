@@ -53,6 +53,34 @@ export function SettingsModal() {
       </label>
 
       <div class="settings-section">
+        <span class="eyebrow">Display</span>
+      </div>
+      <label class="field">
+        <span class="field-label">Terminal font size · {settings.termFontSize}px</span>
+        <input
+          type="range"
+          min="10"
+          max="28"
+          step="1"
+          style={{ width: "100%", "accent-color": "var(--ink)" }}
+          value={settings.termFontSize}
+          onInput={(e) => updateSettings({ termFontSize: parseInt(e.currentTarget.value, 10) })}
+        />
+      </label>
+      <label class="field">
+        <span class="field-label">Interface scale · {Math.round(settings.uiScale * 100)}%</span>
+        <input
+          type="range"
+          min="70"
+          max="130"
+          step="5"
+          style={{ width: "100%", "accent-color": "var(--ink)" }}
+          value={Math.round(settings.uiScale * 100)}
+          onInput={(e) => updateSettings({ uiScale: parseInt(e.currentTarget.value, 10) / 100 })}
+        />
+      </label>
+
+      <div class="settings-section">
         <span class="eyebrow">Agents</span>
         <button class="btn xs" onClick={addProfile}>
           Add agent

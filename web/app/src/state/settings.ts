@@ -16,6 +16,10 @@ export interface Settings {
   /** When on, agent launches include the profile's yolo flags. */
   yoloMode: boolean;
   attentionNotifications: boolean;
+  /** xterm font size (px) for terminal panes. */
+  termFontSize: number;
+  /** Multiplier for all UI chrome font sizes, pushed to the --ui-scale CSS var. */
+  uiScale: number;
 }
 
 // Mirrors the TUI defaults (crates/tui/src/app.rs).
@@ -27,6 +31,8 @@ const DEFAULTS: Settings = {
   defaultAgent: "claude",
   yoloMode: false,
   attentionNotifications: true,
+  termFontSize: 13,
+  uiScale: 0.85,
 };
 
 const STORAGE_KEY = "conduit.settings";
@@ -43,6 +49,14 @@ function loadInitial(): Settings {
 
 export const [settings, setSettings] = createStore<Settings>(loadInitial());
 
+/** Push the UI chrome scale into the CSS var that app.css/theme.css multiply
+ * their font sizes by. Applied on load (mirrors theme.ts's apply pattern) so
+ * there's no flash, then re-applied whenever the setting changes. */
+function applyUiScale(scale: number): void {
+  document.documentElement.style.setProperty("--ui-scale", String(scale));
+}
+applyUiScale(settings.uiScale);
+
 export function persistSettings(): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
@@ -53,6 +67,7 @@ export function persistSettings(): void {
 
 export function updateSettings(patch: Partial<Settings>): void {
   setSettings(patch);
+  if (patch.uiScale !== undefined) applyUiScale(patch.uiScale);
   persistSettings();
 }
 

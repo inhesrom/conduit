@@ -141,8 +141,10 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     });
 
   // Shift+Enter must insert a newline rather than submit. xterm sends a plain
-  // CR for it (indistinguishable from Enter), so intercept it and send ESC+CR
-  // — the "meta-return" sequence agent TUIs (Claude Code) read as a newline.
+  // CR for it (indistinguishable from Enter), so intercept it and send a bare
+  // LF — matching the native TUI's key encoder (key_to_terminal_bytes in
+  // crates/tui/src/main.rs), which maps Shift+Enter to "\n". Agent TUIs read
+  // the LF as a newline; CR is what submits.
   term.attachCustomKeyEventHandler((e) => {
     if (
       e.type === "keydown" &&
@@ -152,7 +154,7 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       !e.altKey &&
       !e.metaKey
     ) {
-      sendText("\x1b\r");
+      sendText("\n");
       return false;
     }
     return true;

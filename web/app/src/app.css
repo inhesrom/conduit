@@ -15,7 +15,7 @@
 }
 .topbar-mark {
   font-family: var(--font-display);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   color: var(--ink);
 }
 .topbar-sep {
@@ -24,7 +24,7 @@
 .topbar-context {
   font-family: var(--font-display);
   color: var(--ink-dim);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   text-transform: uppercase;
 }
 .topbar-spacer {
@@ -32,7 +32,7 @@
 }
 .conn-pill {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   text-transform: uppercase;
   padding: 3px 8px;
   border: 1px solid var(--line-bright);
@@ -94,7 +94,7 @@
   padding: 12px 12px 8px;
 }
 .sidebar-head .eyebrow {
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
 }
 .sidebar-controls {
   display: flex;
@@ -106,7 +106,7 @@
   display: grid;
   place-items: center;
   color: var(--ink-dim);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   border: 1px solid transparent;
   transition: var(--t-fast);
 }
@@ -128,7 +128,7 @@
 }
 .repo-caret {
   width: 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .repo-name {
@@ -138,16 +138,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink);
-  font-size: 18px;
+  font-size: calc(18px * var(--ui-scale));
 }
 .repo-count {
   font-family: var(--mono);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .repo-review {
   font-family: var(--mono);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   color: var(--ink);
 }
 .ws-item {
@@ -158,7 +158,7 @@
   border-left: 3px solid transparent;
   color: var(--ink);
   text-decoration: none;
-  font-size: 19px;
+  font-size: calc(19px * var(--ui-scale));
   transition: var(--t-fast);
 }
 .ws-item:hover {
@@ -177,7 +177,7 @@
   white-space: nowrap;
 }
 .ws-item-review {
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
 }
 .rail-badge {
   width: 36px;
@@ -186,7 +186,7 @@
   background: var(--paper);
   color: var(--ink-dim);
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   display: grid;
   place-items: center;
   transition: var(--t-fast);
@@ -197,7 +197,7 @@
 }
 .sidebar-empty {
   color: var(--ink-faint);
-  font-size: 17px;
+  font-size: calc(17px * var(--ui-scale));
   padding: 8px 10px;
 }
 
@@ -215,7 +215,7 @@
   gap: 8px;
   padding: 6px 16px;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   background: var(--ink);
   color: var(--paper);
 }
@@ -238,7 +238,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   color: var(--ink);
 }
 .glyph.error {
@@ -280,21 +280,21 @@
   align-items: baseline;
   gap: 16px;
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   text-transform: uppercase;
   color: var(--ink-dim);
 }
 .board-stat b {
   font-family: var(--mono);
   font-weight: 700;
-  font-size: 17px;
+  font-size: calc(17px * var(--ui-scale));
   margin-right: 5px;
   color: var(--ink);
 }
 .board-allclear {
   color: var(--ink-dim);
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   text-transform: uppercase;
 }
 .board-list {
@@ -318,7 +318,7 @@
 }
 .band-count {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .brow {
@@ -342,7 +342,7 @@
   color: var(--paper);
 }
 .brow-name {
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   flex: none;
   max-width: 42%;
   overflow: hidden;
@@ -351,7 +351,7 @@
 }
 .brow-repo {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .brow-spacer {
@@ -361,11 +361,11 @@
 .brow-counters,
 .brow-dirty {
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   color: var(--ink-dim);
 }
 .brow-review {
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
 }
 
 /* ---- Empty + workspace placeholder ----------------------------------- */
@@ -375,7 +375,7 @@
   padding: 64px 20px;
   text-align: center;
   color: var(--ink-faint);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -396,7 +396,7 @@
 }
 .back {
   color: var(--ink-dim);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   padding: 3px 9px;
   border: 1px solid transparent;
   transition: var(--t-fast);
@@ -406,24 +406,24 @@
   color: var(--paper);
 }
 .ws-screen-name {
-  font-size: 17px;
+  font-size: calc(17px * var(--ui-scale));
 }
 .ws-screen-repo {
   font-family: var(--mono);
   color: var(--ink-faint);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
 }
 .ws-screen-branch {
   font-family: var(--mono);
   color: var(--ink-dim);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
 }
 .ws-screen-spacer {
   flex: 1;
 }
 .ws-screen-review {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   text-transform: uppercase;
 }
 
@@ -468,7 +468,7 @@
 }
 .ws-split-grip {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale));
   line-height: 1;
   letter-spacing: 1px;
 }
@@ -480,7 +480,7 @@
   color: var(--ink);
   background: var(--fill);
   border: 1px solid var(--line-bright);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   line-height: 1;
   font-family: var(--font-display);
   text-transform: uppercase;
@@ -498,7 +498,7 @@
   border: 1px solid var(--ink);
   background: var(--paper);
   color: var(--ink);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   transition: var(--t-fast);
 }
 .btn:hover {
@@ -540,7 +540,7 @@
 }
 .btn.xs {
   padding: 3px 8px;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
 }
 
 /* ---- Terminal region ------------------------------------------------- */
@@ -567,7 +567,7 @@
   padding: 7px 12px;
   color: var(--ink-dim);
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   cursor: pointer;
   white-space: nowrap;
   border-right: 1px solid var(--line);
@@ -597,7 +597,7 @@
 .tab-close {
   color: inherit;
   opacity: 0.6;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   line-height: 1;
   width: 15px;
   height: 15px;
@@ -607,7 +607,7 @@
 }
 .tab-new {
   color: var(--ink-dim);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   padding: 0 11px;
 }
 .tab-new:hover {
@@ -653,7 +653,7 @@
 }
 .term-overlay-msg {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   color: var(--ink-dim);
 }
 
@@ -686,7 +686,7 @@
   gap: 6px;
   padding: 6px 11px;
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   text-transform: uppercase;
   color: var(--ink-dim);
   border-right: 1px solid var(--line);
@@ -702,13 +702,13 @@
 }
 .git-tab-count {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   color: inherit;
   border: 1px solid currentColor;
   padding: 0 4px;
 }
 .git-tab-review {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale));
 }
 .git-left-body {
   flex: 1;
@@ -738,12 +738,12 @@
 }
 .gpanel-empty {
   color: var(--ink-faint);
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--ui-scale));
   padding: 16px 12px;
 }
 .gpanel-empty.sm {
   padding: 6px 12px;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
 }
 
 .flist {
@@ -760,7 +760,7 @@
   gap: 8px;
   padding: 4px 10px;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
 }
 .frow:hover {
   background: var(--fill);
@@ -776,7 +776,7 @@
   border: 1px solid var(--line-bright);
   background: var(--paper);
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   line-height: 1;
 }
 .frow-stage.staged {
@@ -789,7 +789,7 @@
   flex: none;
   text-align: center;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   color: var(--ink-dim);
 }
 .frow-status.s-a {
@@ -807,14 +807,14 @@
   min-width: 0;
   text-align: left;
   color: var(--ink);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .frow-discard {
   color: var(--ink-faint);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   opacity: 0;
   flex: none;
   width: 18px;
@@ -849,17 +849,17 @@
 }
 .crow-caret {
   width: 10px;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale));
   color: var(--ink-faint);
   flex: none;
 }
 .crow-hash {
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-scale));
   color: var(--ink);
   flex: none;
 }
 .crow-msg {
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   color: var(--ink-dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -868,7 +868,7 @@
 .crow-meta {
   padding: 2px 10px 5px 28px;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   color: var(--ink-faint);
 }
 
@@ -893,7 +893,7 @@
   text-align: left;
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -904,7 +904,7 @@
 }
 .brow-b-mark {
   color: var(--ink-faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale));
   flex: none;
 }
 .brow-b.head .brow-b-mark {
@@ -912,7 +912,7 @@
 }
 .brow-b-track {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale));
   color: var(--ink-dim);
   flex: none;
 }
@@ -927,14 +927,14 @@
 .diff-empty {
   margin: auto;
   color: var(--ink-faint);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
 }
 .diff-head {
   padding: 7px 13px;
   border-bottom: 1px solid var(--line);
   font-family: var(--mono);
   color: var(--ink-dim);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -944,7 +944,7 @@
   overflow: auto;
   padding: 4px 0;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   line-height: 1.5;
 }
 .dl {
@@ -1010,13 +1010,13 @@
 .modal-title {
   font-family: var(--font-display);
   margin: 0 0 8px;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   text-transform: uppercase;
 }
 .modal-body {
   margin: 0 0 14px;
   color: var(--ink-dim);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   word-break: break-word;
 }
 .modal-input {
@@ -1026,7 +1026,7 @@
   padding: 8px 10px;
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   margin-bottom: 14px;
   resize: vertical;
 }
@@ -1054,7 +1054,7 @@
   max-width: 360px;
   padding: 9px 13px;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   color: var(--ink);
   background: var(--paper);
   border: 1px solid var(--ink);
@@ -1097,7 +1097,7 @@
 .icon-btn.sm {
   width: 20px;
   height: 20px;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
 }
 
 .ws-actions {
@@ -1124,7 +1124,7 @@
   width: 100%;
   text-align: left;
   padding: 7px 10px;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   color: var(--ink);
 }
 .menu-item:hover,
@@ -1142,7 +1142,7 @@
   display: block;
   margin-bottom: 5px;
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   text-transform: uppercase;
   color: var(--ink-dim);
 }
@@ -1153,7 +1153,7 @@
   display: block;
   margin-top: 5px;
   font-family: var(--mono);
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .seg {
@@ -1165,7 +1165,7 @@
 .seg-btn {
   flex: 1;
   padding: 6px 10px;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   color: var(--ink-dim);
   border-right: 1px solid var(--ink);
 }
@@ -1194,7 +1194,7 @@
   gap: 8px;
   padding: 5px 8px;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   cursor: pointer;
   color: var(--ink);
 }
@@ -1212,7 +1212,7 @@
   padding: 18px 4px;
   color: var(--ink-dim);
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
 }
 
 /* ---- Directory browser ----------------------------------------------- */
@@ -1231,7 +1231,7 @@
   direction: rtl;
   text-align: left;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   color: var(--ink-dim);
 }
 .browser-list {
@@ -1260,7 +1260,7 @@
   text-align: left;
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--ui-scale));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1276,7 +1276,7 @@
 /* ---- Topbar buttons + command palette -------------------------------- */
 .topbar-btn {
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
   color: var(--ink-dim);
   padding: 3px 8px;
   border: 1px solid var(--line-bright);
@@ -1294,7 +1294,7 @@
   padding: 10px 12px;
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   margin-bottom: 10px;
 }
 .palette-input:focus {
@@ -1323,11 +1323,11 @@
   color: var(--paper);
 }
 .palette-label {
-  font-size: 15.5px;
+  font-size: calc(15.5px * var(--ui-scale));
 }
 .palette-hint {
   font-family: var(--mono);
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-scale));
   color: var(--ink-faint);
 }
 
@@ -1345,12 +1345,12 @@
 }
 .toggle-title {
   display: block;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   color: var(--ink);
 }
 .toggle-hint {
   display: block;
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .settings-section {
@@ -1374,7 +1374,7 @@
   width: 72px;
   flex: none;
   font-family: var(--mono);
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--ui-scale));
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1382,7 +1382,7 @@
 .agent-row .modal-input {
   margin-bottom: 0;
   padding: 5px 8px;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
 }
 .agent-cmd {
   flex: 1;
@@ -1400,7 +1400,7 @@
   background: var(--ink);
   color: var(--paper);
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale));
 }
 .term-resurrect .btn {
   background: var(--paper);
@@ -1438,12 +1438,12 @@
 }
 .login-mark {
   font-family: var(--font-display);
-  font-size: 20px;
+  font-size: calc(20px * var(--ui-scale));
   color: var(--ink);
 }
 .login-prompt {
   margin: 0;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   color: var(--ink-dim);
 }
 .login-card .modal-input {
@@ -1452,7 +1452,7 @@
 .login-error {
   margin: 0;
   font-family: var(--mono);
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--ui-scale));
   color: var(--ink);
   background: var(--fill-strong);
   padding: 4px 8px;
@@ -1466,7 +1466,7 @@
   gap: 5px;
   padding: 2px 9px;
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   text-transform: uppercase;
   color: var(--ink);
   border: 1px solid var(--ink);
@@ -1481,7 +1481,7 @@
   color: var(--ink-dim);
 }
 .session-caret {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale));
 }
 .session-list {
   list-style: none;
@@ -1499,7 +1499,7 @@
   background: var(--paper);
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale));
   transition: var(--t-fast);
 }
 .session-opt:hover {
@@ -1508,7 +1508,7 @@
 }
 .session-empty {
   margin: 0;
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--ui-scale));
   color: var(--ink-faint);
 }
 .session-empty code {

@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js";
 import { createTerminal, termKey, textToB64, type TerminalHandle, type TerminalKind } from "@conduit/shared";
 import { client } from "../client";
+import { settings } from "../state/settings";
 import { store } from "../state/store";
 
 type Phase = "idle" | "running" | "exited";
@@ -105,12 +106,22 @@ export function TerminalView(props: {
       workspaceId: props.wsId,
       kind: props.kind,
       tabId: props.tabId,
+      fontSize: settings.termFontSize,
       onData: () => maybeSendPrompt(),
     });
     handle.attach(host);
     if (props.startOnMount) start(props.cmd());
   });
   onCleanup(() => handle?.dispose());
+
+  // Live-apply terminal font-size changes from Settings. fit() re-derives
+  // cols/rows for the new size and reports them to the PTY via ResizeTerminal.
+  createEffect(() => {
+    const size = settings.termFontSize;
+    if (!handle) return;
+    handle.term.options.fontSize = size;
+    handle.fit();
+  });
 
   // Refit when this tab becomes visible again (xterm can't measure while hidden).
   createEffect(() => {

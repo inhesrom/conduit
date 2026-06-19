@@ -41,6 +41,11 @@
   --font-ui: "Pixelify Sans Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
+  /* User-adjustable chrome type scale (Settings → Display). Every chrome
+   * font-size is multiplied by this; the terminal sizes itself via xterm's
+   * own option, so it stays independent. JS overrides it from saved settings. */
+  --ui-scale: 0.85;
+
   /* A 2px checkerboard dither, inked, for 8-bit shading. */
   --dither: repeating-conic-gradient(var(--ink) 0% 25%, transparent 0% 50%) 0 0 / 2px 2px;
 
@@ -64,7 +69,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-scale));
   line-height: 1.4;
   /* Crisp pixels: no smoothing softening the type. */
   -webkit-font-smoothing: none;
@@ -81,7 +86,7 @@ body {
   font-family: var(--font-display);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale));
   color: var(--ink-dim);
 }
 
