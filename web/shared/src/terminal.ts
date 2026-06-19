@@ -145,6 +145,16 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
   // LF — matching the native TUI's key encoder (key_to_terminal_bytes in
   // crates/tui/src/main.rs), which maps Shift+Enter to "\n". Agent TUIs read
   // the LF as a newline; CR is what submits.
+  //
+  // preventDefault() is load-bearing: returning false only makes xterm's
+  // _keyDown bail early, and its DOM listener discards that return value, so
+  // xterm never calls preventDefault itself (see @xterm Terminal.ts — the
+  // 'keydown' listener is `(ev) => this._keyDown(ev)`). Without it the browser
+  // still fires the follow-up `keypress`, which xterm's _keyPress converts to a
+  // CR (charCode 13) and emits via onData — submitting right after our LF. That
+  // trailing CR is why earlier attempts (both "\n" and "\x1b\r") appeared to do
+  // nothing but submit. Cancelling the keydown's default suppresses the
+  // keypress, so only the LF is sent.
   term.attachCustomKeyEventHandler((e) => {
     if (
       e.type === "keydown" &&
@@ -154,6 +164,7 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       !e.altKey &&
       !e.metaKey
     ) {
+      e.preventDefault();
       sendText("\n");
       return false;
     }
