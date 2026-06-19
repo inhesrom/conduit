@@ -798,8 +798,21 @@ pub fn spawn_core() -> CoreHandle {
                                             path.display()
                                         ),
                                     });
+                                    // Always answer the request so the UI's
+                                    // per-commit loading state resolves.
+                                    let _ = evt_tx.send(Event::CommitFilesLoaded {
+                                        id,
+                                        hash,
+                                        files: Vec::new(),
+                                    });
                                 }
                             }
+                        });
+                    } else {
+                        let _ = evt_tx_task.send(Event::CommitFilesLoaded {
+                            id,
+                            hash,
+                            files: Vec::new(),
                         });
                     }
                 }
@@ -826,6 +839,10 @@ pub fn spawn_core() -> CoreHandle {
                                     });
                                 }
                             }
+                        });
+                    } else {
+                        let _ = evt_tx_task.send(Event::Error {
+                            message: "LoadCommitFileDiff: unknown workspace".to_string(),
                         });
                     }
                 }

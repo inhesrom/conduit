@@ -19,7 +19,8 @@ export function CommitsPanel(props: {
     if (!store.commitFilesByWs[props.wsId]?.[hash]) git.loadCommitFiles(props.wsId, hash);
   };
 
-  const files = (hash: string) => store.commitFilesByWs[props.wsId]?.[hash] ?? [];
+  // undefined → not loaded yet (show "Loading…"); an array (even empty) → loaded.
+  const files = (hash: string): string[] | undefined => store.commitFilesByWs[props.wsId]?.[hash];
 
   return (
     <div class="gpanel">
@@ -38,22 +39,34 @@ export function CommitsPanel(props: {
                     {c.author} · {c.date}
                   </div>
                   <ul class="flist nested">
-                    <For each={files(c.hash)} fallback={<li class="gpanel-empty sm">Loading…</li>}>
-                      {(file) => (
-                        <li class="frow" classList={{ selected: props.selected() === file }}>
-                          <button
-                            class="frow-path mono"
-                            onClick={() => {
-                              git.loadCommitFileDiff(props.wsId, c.hash, file);
-                              props.onSelect(file);
-                            }}
-                            title={file}
-                          >
-                            {file}
-                          </button>
-                        </li>
+                    <Show
+                      when={files(c.hash)}
+                      fallback={<li class="gpanel-empty sm">Loading…</li>}
+                    >
+                      {(list) => (
+                        <Show
+                          when={list().length > 0}
+                          fallback={<li class="gpanel-empty sm">No files changed.</li>}
+                        >
+                          <For each={list()}>
+                            {(file) => (
+                              <li class="frow" classList={{ selected: props.selected() === file }}>
+                                <button
+                                  class="frow-path mono"
+                                  onClick={() => {
+                                    git.loadCommitFileDiff(props.wsId, c.hash, file);
+                                    props.onSelect(file);
+                                  }}
+                                  title={file}
+                                >
+                                  {file}
+                                </button>
+                              </li>
+                            )}
+                          </For>
+                        </Show>
                       )}
-                    </For>
+                    </Show>
                   </ul>
                 </Show>
               </li>

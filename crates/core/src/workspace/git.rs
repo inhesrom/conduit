@@ -595,14 +595,29 @@ pub async fn list_commit_files(
     hash: &str,
     ssh: Option<&SshTarget>,
 ) -> Result<Vec<String>> {
+    // `--root` makes the initial commit list its files (diff against the empty
+    // tree) instead of returning nothing.
     let out = ssh::build_command(
         ssh,
         repo,
         "git",
-        &["diff-tree", "--no-commit-id", "--name-only", "-r", hash],
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "--root",
+            hash,
+        ],
     )
     .output()
     .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git diff-tree failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| !l.is_empty())

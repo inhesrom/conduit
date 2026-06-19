@@ -59,7 +59,9 @@ export function applyEvent(e: AppEvent): void {
       break;
 
     case "CommitFilesLoaded":
-      setStore("commitFilesByWs", e.id, e.hash, e.files);
+      // Merge under the workspace key so the (possibly first) nested entry is
+      // created reliably; an empty array still marks the commit as loaded.
+      setStore("commitFilesByWs", e.id, (prev) => ({ ...prev, [e.hash]: e.files }));
       break;
 
     case "GitActionResult":
