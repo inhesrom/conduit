@@ -1,48 +1,67 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import { bytesToB64, textToB64 } from "./b64";
 import { termKey, type ConduitClient } from "./client";
 import type { TerminalKind } from "./protocol";
 
-/** The ANSI palette stays colorful — it's the agent's own output. Background,
- * text, cursor, and selection instead follow the app's 1-bit theme so the
- * terminal flips with the light/dark toggle. */
-const ANSI = {
-  black: "#1c2026",
-  red: "#e5534b",
-  green: "#57ab5a",
-  yellow: "#d4a72c",
-  blue: "#539bf5",
-  magenta: "#d75fd7",
-  cyan: "#2bc6d4",
-  white: "#d6dae2",
-  brightBlack: "#4d5260",
-  brightRed: "#f47067",
-  brightGreen: "#6bc46d",
-  brightYellow: "#e3b341",
-  brightBlue: "#6cb6ff",
-  brightMagenta: "#e58fe5",
-  brightCyan: "#56d4dd",
-  brightWhite: "#ffffff",
-};
+// The terminal is monochrome per theme: background, text, cursor, selection
+// AND the 16 ANSI colors are all derived from the active palette, so the whole
+// terminal tints with it (amber CRT, mono greyscale, paper black-on-white).
+// Colors come from the LIVE theme: we read the resolved background/foreground
+// off <body> — a standard property always resolves, unlike a custom-property
+// read (getComputedStyle().getPropertyValue("--ink")), which returned empty in
+// the observer context before — and interpolate between them for the ANSI ramp.
+type RGB = [number, number, number];
 
-// Mirrors theme.css ink/paper. Read the data-theme attribute directly rather
-// than getComputedStyle (which returned empty in the observer context).
-function xtermTheme() {
-  const light = document.documentElement.getAttribute("data-theme") === "light";
-  const paper = light ? "#e6e6e6" : "#0c0c0c";
-  const ink = light ? "#111111" : "#e8e8e8";
+function parseRgb(c: string): RGB {
+  const m = c.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  const h = c.replace(/[^0-9a-f]/gi, "");
+  const hex = h.length === 3 ? h.replace(/(.)/g, "$1$1") : h.padEnd(6, "0").slice(0, 6);
+  const n = parseInt(hex, 16) || 0;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** Interpolate between two colors; t=0 is `a`, t=1 is `b`. */
+function mix(a: RGB, b: RGB, t: number): string {
+  const ch = (i: 0 | 1 | 2) => Math.round(a[i] + (b[i] - a[i]) * t);
+  return `rgb(${ch(0)}, ${ch(1)}, ${ch(2)})`;
+}
+
+// Ramp positions for the 16 ANSI slots (0 = background … 1 = foreground),
+// spread so the dimmest is still legible and each "bright*" sits above its base.
+function xtermTheme(): ITheme {
+  const cs = getComputedStyle(document.body);
+  const bg = cs.backgroundColor || "#0b0704";
+  const fg = cs.color || "#ffd591";
+  const p = parseRgb(bg);
+  const k = parseRgb(fg);
   return {
-    ...ANSI,
-    background: paper,
-    foreground: ink,
-    cursor: ink,
-    cursorAccent: paper,
-    selectionBackground: ink,
-    selectionForeground: paper,
+    background: bg,
+    foreground: fg,
+    cursor: fg,
+    cursorAccent: bg,
+    selectionBackground: fg,
+    selectionForeground: bg,
+    black: mix(p, k, 0.16),
+    red: mix(p, k, 0.42),
+    green: mix(p, k, 0.5),
+    yellow: mix(p, k, 0.62),
+    blue: mix(p, k, 0.4),
+    magenta: mix(p, k, 0.52),
+    cyan: mix(p, k, 0.58),
+    white: mix(p, k, 0.8),
+    brightBlack: mix(p, k, 0.3),
+    brightRed: mix(p, k, 0.6),
+    brightGreen: mix(p, k, 0.68),
+    brightYellow: mix(p, k, 0.82),
+    brightBlue: mix(p, k, 0.56),
+    brightMagenta: mix(p, k, 0.7),
+    brightCyan: mix(p, k, 0.76),
+    brightWhite: mix(p, k, 1),
   };
 }
 
@@ -94,8 +113,8 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
-  // Re-skin the terminal when the app's light/dark theme changes (the DOM
-  // renderer repaints on theme assignment; refresh for good measure).
+  // Re-skin the terminal when the app's theme changes (the DOM renderer
+  // repaints on theme assignment; refresh for good measure).
   const themeObserver = new MutationObserver(() => {
     term.options.theme = xtermTheme();
     term.refresh(0, term.rows - 1);
@@ -211,7 +230,7 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       term.unicode.activeVersion = "11";
 
       // DOM renderer (no WebGL addon): repaints reliably on theme changes, so
-      // the terminal background follows the light/dark toggle.
+      // the terminal background follows the active theme.
       fitAddon.fit();
 
       // History snapshot + sink registration in one synchronous block: no
