@@ -5,13 +5,17 @@
 
 pub mod assets;
 pub mod auth;
+pub mod control;
 pub mod fs;
 pub mod proxy;
 pub mod tls;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::{
     extract::{ConnectInfo, Query, Request, State, WebSocketUpgrade},
@@ -39,6 +43,34 @@ pub struct ServerState {
     pub auth: Arc<Auth>,
     /// When set, every WS attaches to this one session and the picker is hidden.
     pub pinned_session: Option<String>,
+    /// Live WebSocket clients, keyed by a monotonic id — surfaced by `web status`.
+    pub clients: Arc<Mutex<HashMap<u64, ClientInfo>>>,
+    pub next_client_id: Arc<AtomicU64>,
+    /// Process start time, for uptime reporting.
+    pub started: Instant,
+}
+
+/// One connected browser WebSocket, tracked for `conduit web status`.
+#[derive(Clone)]
+pub struct ClientInfo {
+    pub addr: SocketAddr,
+    pub session: String,
+    pub connected: Instant,
+}
+
+/// Removes a client from `ServerState::clients` when its connection ends,
+/// covering every exit path of the proxy relay via `Drop`.
+struct ClientGuard {
+    clients: Arc<Mutex<HashMap<u64, ClientInfo>>>,
+    id: u64,
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        if let Ok(mut clients) = self.clients.lock() {
+            clients.remove(&self.id);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +82,7 @@ pub struct WebConfig {
     pub pinned_session: Option<String>,
 }
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         PathBuf::from(xdg).join("conduit")
     } else if let Ok(home) = std::env::var("HOME") {
@@ -88,10 +120,13 @@ impl WebConfig {
         let key = std::env::var("CONDUIT_WEB_KEY")
             .ok()
             .filter(|s| !s.is_empty());
+        // HTTPS is on by default (self-signed cert for localhost, generated on
+        // first run). Opt out with CONDUIT_WEB_TLS=off; a non-localhost bind
+        // always requires TLS regardless of the env var.
         let want_tls = !host.is_loopback()
-            || matches!(
+            || !matches!(
                 std::env::var("CONDUIT_WEB_TLS").as_deref(),
-                Ok("on" | "1" | "auto")
+                Ok("off" | "0" | "false")
             );
         let tls = match (cert, key) {
             (Some(c), Some(k)) => Some(TlsSource::Files {
@@ -133,6 +168,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<ServerState>,
     Query(q): Query<WsQuery>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Response {
     let Some(name) = state.pinned_session.clone().or(q.session) else {
         return (StatusCode::BAD_REQUEST, "missing ?session").into_response();
@@ -141,7 +177,17 @@ async fn ws_handler(
         Ok(p) => p,
         Err(_) => return (StatusCode::BAD_REQUEST, "bad session name").into_response(),
     };
-    ws.on_upgrade(move |socket| proxy::handle_proxy(socket, path))
+    let clients = state.clients.clone();
+    let id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
+    ws.on_upgrade(move |socket| async move {
+        clients.lock().unwrap().insert(
+            id,
+            ClientInfo { addr, session: name, connected: Instant::now() },
+        );
+        // Deregisters on every exit path of the relay (close, error, daemon EOF).
+        let _guard = ClientGuard { clients: clients.clone(), id };
+        proxy::handle_proxy(socket, path).await;
+    })
 }
 
 async fn sessions(State(state): State<ServerState>) -> impl IntoResponse {
@@ -258,6 +304,9 @@ pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
     let state = ServerState {
         auth,
         pinned_session: cfg.pinned_session.clone(),
+        clients: Arc::new(Mutex::new(HashMap::new())),
+        next_client_id: Arc::new(AtomicU64::new(1)),
+        started: Instant::now(),
     };
 
     let protected = Router::new()
@@ -273,23 +322,74 @@ pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
         .route("/healthz", get(healthz))
         .merge(protected)
         .fallback(assets::static_handler)
-        .with_state(state)
+        .with_state(state.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
 
     let scheme = if cfg.tls.is_some() { "https" } else { "http" };
-    eprintln!("[conduit] web server listening on {scheme}://{}", cfg.bind);
+    let url = format!("{scheme}://{}", cfg.bind);
+    eprintln!("[conduit] web server listening on {url}");
+
+    // Local control channel for `conduit web status` / `conduit web shutdown`.
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    {
+        let state = state.clone();
+        let url = url.clone();
+        let tls = cfg.tls.is_some();
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = control::serve_control(state, url, tls, shutdown_tx).await {
+                eprintln!("[conduit] control socket unavailable: {e}");
+            }
+        });
+    }
+
+    // Resolves on a control `Shutdown` request, SIGTERM, or Ctrl-C.
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    let shutdown = async move {
+        let ctrl_c = async {
+            let _ = tokio::signal::ctrl_c().await;
+        };
+        #[cfg(unix)]
+        let term = async {
+            use tokio::signal::unix::{signal, SignalKind};
+            if let Ok(mut s) = signal(SignalKind::terminate()) {
+                s.recv().await;
+            }
+        };
+        #[cfg(not(unix))]
+        let term = std::future::pending::<()>();
+        tokio::select! {
+            _ = shutdown_rx.recv() => {}
+            _ = ctrl_c => {}
+            _ = term => {}
+        }
+    };
 
     match &cfg.tls {
         Some(src) => {
             let tls_config = tls::rustls_config(src).await?;
+            let handle = axum_server::Handle::new();
+            tokio::spawn({
+                let handle = handle.clone();
+                async move {
+                    shutdown.await;
+                    handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
+                }
+            });
             axum_server::bind_rustls(cfg.bind, tls_config)
+                .handle(handle)
                 .serve(app)
                 .await?;
         }
         None => {
             let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
-            axum::serve(listener, app).await?;
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown)
+                .await?;
         }
     }
+
+    // Best-effort cleanup so a later `web status` doesn't find a stale socket.
+    let _ = std::fs::remove_file(control::control_socket_path());
     Ok(())
 }

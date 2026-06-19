@@ -46,6 +46,8 @@ enum LaunchMode {
     Reinstall,
     WebSetPassword,
     WebServe { session: Option<String> },
+    WebShutdown,
+    WebStatus,
 }
 
 #[derive(Debug)]
@@ -78,7 +80,7 @@ fn print_help() {
 conduit {}
 
 USAGE:
-    conduit[OPTIONS]
+    conduit [OPTIONS]
 
 OPTIONS:
     -s, --session <name>   Create (or reattach to) a named session
@@ -93,16 +95,24 @@ OPTIONS:
 
 SUBCOMMANDS:
     web serve [--session <name>]   Serve the web UI, attaching to running sessions
+    web status                     Show web server status and connected clients
+    web shutdown                   Stop the running web server
     web set-password               Set the web UI password (required for remote access)
 
 EXAMPLES:
-    conduit                  Launch in local (non-session) mode
-    conduit-s work           Create or reattach to session 'work'
-    conduit-s work -d        Start session 'work' in background
-    conduit-a work           Attach to running session 'work'
-    conduit-l                List sessions
-    conduit-r work           Remove session 'work'
-    conduit web serve        Serve the web UI for all running sessions",
+    conduit                     Launch in local (non-session) mode
+    conduit -s work             Create or reattach to session 'work'
+    conduit -s work -d          Start session 'work' in background
+    conduit -a work             Attach to running session 'work'
+    conduit -l                  List sessions
+    conduit -r work             Remove session 'work'
+    conduit web serve           Serve the web UI for all running sessions
+    conduit web status          Show web server status and connected clients
+    conduit web shutdown        Stop the running web server
+    conduit web set-password    Set the web UI password (for remote access)
+
+The web UI listens on https://127.0.0.1:3001 by default (override with
+CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -138,9 +148,25 @@ fn parse_cli(args: Vec<String>) -> Result<Cli> {
                     help: false,
                 });
             }
+            Some("shutdown") => {
+                return Ok(Cli {
+                    mode: LaunchMode::WebShutdown,
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            Some("status") => {
+                return Ok(Cli {
+                    mode: LaunchMode::WebStatus,
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
             _ => {
                 return Err(anyhow!(
-                    "unknown web subcommand; try: conduit web serve | conduit web set-password"
+                    "unknown web subcommand; try: conduit web serve | conduit web status | conduit web shutdown | conduit web set-password"
                 ));
             }
         }
@@ -271,6 +297,20 @@ async fn main() -> Result<()> {
             };
             conduit_server::serve(cfg).await
         }
+        LaunchMode::WebShutdown => {
+            match conduit_server::control::shutdown().await {
+                Ok(()) => println!("web server stopped"),
+                Err(e) => println!("{e}"),
+            }
+            Ok(())
+        }
+        LaunchMode::WebStatus => {
+            match conduit_server::control::status().await {
+                Ok(report) => print_web_status(&report),
+                Err(e) => println!("{e}"),
+            }
+            Ok(())
+        }
         LaunchMode::RunDaemon { name } => run_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
@@ -312,6 +352,25 @@ async fn main() -> Result<()> {
             }
             let (backend, _core) = build_local_backend();
             run_tui(backend).await
+        }
+    }
+}
+
+fn print_web_status(r: &conduit_server::control::StatusReport) {
+    println!("web server: running (pid {})", r.pid);
+    println!("  url:     {}", r.url);
+    println!("  tls:     {}", if r.tls { "on" } else { "off" });
+    println!("  auth:    {}", if r.auth_enabled { "on" } else { "off" });
+    println!("  uptime:  {}s", r.uptime_secs);
+    if r.clients.is_empty() {
+        println!("  clients: none");
+    } else {
+        println!("  clients: {}", r.clients.len());
+        for c in &r.clients {
+            println!(
+                "    - {}  (session {}, connected {}s ago)",
+                c.addr, c.session, c.connected_secs
+            );
         }
     }
 }
