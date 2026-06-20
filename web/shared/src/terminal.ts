@@ -106,8 +106,12 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     allowProposedApi: true,
     scrollback: opts.scrollback ?? (opts.kind === "Agent" ? 10_000 : 5_000),
     fontSize: opts.fontSize ?? 15,
+    // "JetBrains Mono Variable" is the family the bundled @fontsource-variable
+    // web font actually registers (matches the app chrome's --font-mono). Using
+    // the non-variable "JetBrains Mono" silently fell back to a system/monospace
+    // font, which mis-measured cell width in the WebKitGTK webview.
     fontFamily:
-      '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+      '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
     theme: xtermTheme(),
   });
   const fitAddon = new FitAddon();
@@ -232,6 +236,32 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       // DOM renderer (no WebGL addon): repaints reliably on theme changes, so
       // the terminal background follows the active theme.
       fitAddon.fit();
+
+      // If the terminal font isn't loaded yet, xterm measures the cell width
+      // from a fallback font and glyphs then render in too-wide cells (the
+      // "C l a u d e" spacing seen in the WebKitGTK webview). Once fonts are
+      // ready, bust xterm's cached char dimensions (toggle fontFamily), refit,
+      // and repaint so the cell width matches the real glyph.
+      const fontSize = opts.fontSize ?? 15;
+      if (typeof document !== "undefined" && document.fonts) {
+        const ready = (() => {
+          try {
+            return !document.fonts.check(`${fontSize}px "JetBrains Mono Variable"`);
+          } catch {
+            return true;
+          }
+        })();
+        if (ready) {
+          document.fonts.ready.then(() => {
+            if (disposed) return;
+            const family = term.options.fontFamily ?? "";
+            term.options.fontFamily = `${family} `;
+            term.options.fontFamily = family;
+            fitAddon.fit();
+            term.refresh(0, term.rows - 1);
+          });
+        }
+      }
 
       // History snapshot + sink registration in one synchronous block: no
       // TerminalOutput can interleave, so ordering is exact.

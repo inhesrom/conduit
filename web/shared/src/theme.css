@@ -28,8 +28,8 @@
   --cdt-select-bg: rgb(32 32 40);
 
   /* Type */
-  --cdt-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --cdt-font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+    "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --cdt-font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
