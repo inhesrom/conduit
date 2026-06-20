@@ -97,13 +97,15 @@ OPTIONS:
 
 SUBCOMMANDS:
     desktop                        Open the web UI in a native desktop window
+    tui                            Launch the terminal UI (non-session mode)
     web serve [--session <name>]   Serve the web UI, attaching to running sessions
     web status                     Show web server status and connected clients
     web shutdown                   Stop the running web server
     web set-password               Set the web UI password (required for remote access)
 
 EXAMPLES:
-    conduit                     Launch in local (non-session) mode
+    conduit                     Open the desktop app (the default)
+    conduit tui                 Launch the terminal UI
     conduit -s work             Create or reattach to session 'work'
     conduit -s work -d          Start session 'work' in background
     conduit -a work             Attach to running session 'work'
@@ -125,6 +127,17 @@ fn parse_cli(args: Vec<String>) -> Result<Cli> {
     if args.first().map(String::as_str) == Some("desktop") {
         return Ok(Cli {
             mode: LaunchMode::Desktop,
+            detach: false,
+            version: false,
+            help: false,
+        });
+    }
+
+    // `conduit tui` — launch the terminal UI. Bare `conduit` opens the desktop
+    // app by default, so this is how you ask for the TUI explicitly.
+    if args.first().map(String::as_str) == Some("tui") {
+        return Ok(Cli {
+            mode: LaunchMode::Local,
             detach: false,
             version: false,
             help: false,
@@ -186,6 +199,12 @@ fn parse_cli(args: Vec<String>) -> Result<Cli> {
     }
 
     let mut i = 0usize;
+    // Bare `conduit` (no subcommand, no flags) defaults to the desktop window.
+    // Headless builds (`--no-default-features`) have no desktop UI, so they fall
+    // back to the terminal UI instead.
+    #[cfg(feature = "desktop")]
+    let mut mode = LaunchMode::Desktop;
+    #[cfg(not(feature = "desktop"))]
     let mut mode = LaunchMode::Local;
     let mut detach = false;
     let mut version = false;

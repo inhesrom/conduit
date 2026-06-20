@@ -63,7 +63,8 @@ cargo run
 ## Usage
 
 ```
-conduit                    Local mode (no session)
+conduit                    Open the desktop app (default)
+conduit tui                Terminal UI (no session)
 conduit -s <name>          Create and start a named session
 conduit -a <name>          Attach to an existing session
 conduit -l                 List sessions
@@ -143,15 +144,15 @@ CONDUIT_WEB_BIND=0.0.0.0 conduit web serve   # refused unless a password is set
 
 ### Desktop app
 
-`conduit desktop` opens the same web UI in a native OS window (system webview
-via `wry`/`tao` — no Electron, no bundled browser). It runs the core and web
-server in-process on a private loopback port, so no separate session daemon is
-needed. The desktop UI is compiled in behind a Cargo feature, keeping headless
-server builds free of GTK/WebKit:
+A plain `conduit` (no arguments) opens the web UI in a native OS window (system
+webview via `wry`/`tao` — no Electron, no bundled browser). It runs the core and
+web server in-process on a private loopback port, so no separate session daemon
+is needed. `conduit desktop` does the same thing explicitly. The desktop UI is on
+by default, so it links GTK/WebKit on Linux:
 
 ```sh
-cd web && bun install && bun run build           # build the web UI first
-cd .. && cargo run -p tui --features desktop -- desktop   # then run from source
+cd web && bun install && bun run build   # build the web UI first
+cd .. && cargo run                       # then run from source
 ```
 
 (From-source debug builds read the web UI from `web/app/dist/`; if it isn't
@@ -159,8 +160,15 @@ built you'll see a "web UI hasn't been built yet" placeholder. Released bundles
 embed it at compile time, so this step is only needed for local dev.)
 
 Releases ship double-clickable bundles — a macOS `.dmg`/`.app` and a Linux
-`.deb`/`.AppImage` — that launch straight into the window. Headless installs
-(the `install.sh` tarball) are unaffected and never link GTK/WebKit.
+`.deb`/`.AppImage` — that launch straight into the window.
+
+**Headless / server builds:** compile with `--no-default-features` to drop the
+GTK/WebKit link. There, a bare `conduit` falls back to the terminal UI and
+`conduit web serve` runs without any desktop dependencies:
+
+```sh
+cargo build --release -p tui --no-default-features
+```
 
 ### Config Paths
 
