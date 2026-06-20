@@ -48,6 +48,8 @@ enum LaunchMode {
     WebServe { session: Option<String> },
     WebShutdown,
     WebStatus,
+    /// Open the web UI in a native desktop window (requires the `desktop` feature).
+    Desktop,
 }
 
 #[derive(Debug)]
@@ -94,6 +96,7 @@ OPTIONS:
     -h, --help             Print this help
 
 SUBCOMMANDS:
+    desktop                        Open the web UI in a native desktop window
     web serve [--session <name>]   Serve the web UI, attaching to running sessions
     web status                     Show web server status and connected clients
     web shutdown                   Stop the running web server
@@ -118,6 +121,16 @@ CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).",
 }
 
 fn parse_cli(args: Vec<String>) -> Result<Cli> {
+    // `conduit desktop` — open the web UI in a native window.
+    if args.first().map(String::as_str) == Some("desktop") {
+        return Ok(Cli {
+            mode: LaunchMode::Desktop,
+            detach: false,
+            version: false,
+            help: false,
+        });
+    }
+
     // Subcommands: `conduit web set-password` / `conduit web serve [--session <name>]`
     if args.first().map(String::as_str) == Some("web") {
         match args.get(1).map(String::as_str) {
@@ -274,9 +287,8 @@ fn parse_cli(args: Vec<String>) -> Result<Cli> {
     })
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = parse_cli(std::env::args().skip(1).collect::<Vec<_>>())?;
+fn main() -> Result<()> {
+    let mut cli = parse_cli(std::env::args().skip(1).collect::<Vec<_>>())?;
     if cli.help {
         print_help();
         return Ok(());
@@ -285,6 +297,28 @@ async fn main() -> Result<()> {
         println!("conduit {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+
+    // GUI launchers (the macOS `.app`, the Linux `.desktop`) set CONDUIT_DESKTOP=1
+    // and run the bare binary — with no explicit mode, open the desktop window.
+    if matches!(cli.mode, LaunchMode::Local) && std::env::var_os("CONDUIT_DESKTOP").is_some() {
+        cli.mode = LaunchMode::Desktop;
+    }
+
+    // The desktop app builds its own tokio runtime and owns the main thread for
+    // the GUI event loop (required by macOS), so it must run *before* we enter a
+    // runtime here — not from inside one.
+    #[cfg(feature = "desktop")]
+    if matches!(cli.mode, LaunchMode::Desktop) {
+        return conduit_desktop::run();
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(run_cli(cli))
+}
+
+async fn run_cli(cli: Cli) -> Result<()> {
     match cli.mode {
         LaunchMode::Update => self_update(false),
         LaunchMode::Reinstall => self_update(true),
@@ -311,7 +345,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        LaunchMode::RunDaemon { name } => run_daemon(&name).await,
+        LaunchMode::RunDaemon { name } => conduit_core::daemon::run_session_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
         LaunchMode::CreateSession { name } => {
@@ -353,6 +387,9 @@ async fn main() -> Result<()> {
             let (backend, _core) = build_local_backend();
             run_tui(backend).await
         }
+        LaunchMode::Desktop => Err(anyhow!(
+            "this build of conduit has no desktop UI; rebuild with `--features desktop`"
+        )),
     }
 }
 
@@ -651,106 +688,8 @@ fn build_local_backend() -> (Backend, CoreHandle) {
 // Unix-domain-socket session infrastructure
 // ---------------------------------------------------------------------------
 
-use conduit_core::history::{snapshot_and_subscribe, spawn_recorder, CombinedHistory};
-
-async fn run_daemon(name: &str) -> Result<()> {
-    let sock_path = session_socket_path(name)?;
-    if let Some(parent) = sock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Remove stale socket file if it exists
-    let _ = std::fs::remove_file(&sock_path);
-
-    let core = spawn_core();
-    let listener = tokio::net::UnixListener::bind(&sock_path)
-        .with_context(|| format!("failed to bind unix socket: {}", sock_path.display()))?;
-
-    // Clean up socket on exit
-    struct CleanupGuard(PathBuf);
-    impl Drop for CleanupGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _guard = CleanupGuard(sock_path.clone());
-
-    // Shared history buffer for replaying events to reconnecting clients
-    let history = std::sync::Arc::new(tokio::sync::Mutex::new(CombinedHistory::new()));
-
-    // Background task: record replayable events into history
-    spawn_recorder(&core.evt_tx, history.clone());
-
-    // The web UI is served by the standalone `conduit web serve`, which
-    // attaches to this daemon over its socket — the daemon itself runs no
-    // web server.
-
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let (mut reader, mut writer) = stream.into_split();
-        let cmd_tx = core.cmd_tx.clone();
-        let history = history.clone();
-        let core_evt_tx = core.evt_tx.clone();
-
-        // Bridge: read Commands from socket, send Events back
-        tokio::spawn(async move {
-            // Write events to socket
-            let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(2048);
-            tokio::spawn(async move {
-                while let Some(data) = write_rx.recv().await {
-                    if write_frame(&mut writer, &data).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // Snapshot history and subscribe to the broadcast atomically, then
-            // send the replay after the lock is released so a slow client
-            // can't stall the recorder.
-            let (payloads, mut evt_rx) = snapshot_and_subscribe(&history, &core_evt_tx).await;
-            for frame in payloads {
-                if write_tx.send(frame).await.is_err() {
-                    return;
-                }
-            }
-
-            // Forward live broadcast events directly to socket writer
-            let write_tx2 = write_tx.clone();
-            tokio::spawn(async move {
-                loop {
-                    match evt_rx.recv().await {
-                        Ok(evt) => {
-                            if let Ok(payload) = serde_json::to_vec(&evt) {
-                                if write_tx2.send(payload).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(RecvError::Closed) => break,
-                        Err(RecvError::Lagged(n)) => {
-                            eprintln!("[conduit] client event forwarder lagged by {n} events");
-                            continue;
-                        }
-                    }
-                }
-            });
-
-            // Read commands from socket
-            loop {
-                match read_frame(&mut reader).await {
-                    Ok(Some(data)) => {
-                        if let Ok(cmd) = serde_json::from_slice::<Command>(&data) {
-                            if cmd_tx.send(cmd).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-}
+// The session daemon (`run_session_daemon`) lives in `conduit_core::daemon` so
+// embedders (e.g. the desktop app's in-process server) can reuse it.
 
 async fn build_remote_backend(socket_path: &str) -> Result<Backend> {
     let stream = tokio::net::UnixStream::connect(socket_path)

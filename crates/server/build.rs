@@ -14,7 +14,7 @@ fn main() {
             &index,
             "<!doctype html><meta charset=utf-8><title>conduit</title>\
              <body style=\"font-family:sans-serif;background:#0e1116;color:#dce1e8;padding:40px\">\
-             <p>The conduit web UI hasn't been built yet. Run <code>bun --cwd web run build</code>.</p>",
+             <p>The conduit web UI hasn't been built yet. Run <code>cd web &amp;&amp; bun install &amp;&amp; bun run build</code>.</p>",
         );
     }
     println!("cargo:rerun-if-changed=../../web/app/dist");

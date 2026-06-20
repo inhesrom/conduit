@@ -7,10 +7,16 @@ edition = "2021"
 name = "conduit"
 path = "src/main.rs"
 
+[features]
+# Compile in the native desktop window (`conduit desktop`). Off by default so
+# headless builds (servers running `conduit web serve`) don't link GTK/WebKit.
+desktop = ["dep:conduit_desktop"]
+
 [dependencies]
 protocol = { path = "../protocol" }
 conduit_core = { path = "../core" }
 conduit_server = { path = "../server" }
+conduit_desktop = { path = "../desktop", optional = true }
 anyhow = "1"
 alacritty_terminal = "0.26"
 base64 = "0.22"
@@ -25,3 +31,21 @@ arboard = "3"
 uuid = "1"
 regex = "1"
 rpassword = "7"
+
+# Desktop bundle metadata (cargo-packager). Bundles the `conduit` binary built
+# with `--features desktop`. The macOS `.app` (via Info.plist LSEnvironment) and
+# the Linux `.desktop` launcher both make a double-click open the web UI window.
+[package.metadata.packager]
+product-name = "Conduit"
+identifier = "space.citra.conduit"
+formats = ["app", "dmg", "deb", "appimage"]
+icons = ["icons/icon.png"]
+
+[package.metadata.packager.macos]
+# Merged over cargo-packager's generated Info.plist: sets CONDUIT_DESKTOP=1 so
+# the bare binary the `.app` launches opens the desktop window (see main.rs).
+info-plist-path = "macos/Info.plist"
+
+[package.metadata.packager.deb]
+# Custom launcher: `Exec=conduit desktop`. Reused by the AppImage build too.
+desktop-template = "linux/conduit.desktop"

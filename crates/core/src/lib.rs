@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod daemon;
 pub mod events;
 mod foreground_commands;
 pub mod history;
