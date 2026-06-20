@@ -288,7 +288,9 @@ fn changed_path_line(
     trailing_slash: bool,
 ) -> Line<'static> {
     let indent = "  ".repeat(depth);
-    let marker = marker.map(|marker| format!("{marker} ")).unwrap_or_default();
+    let marker = marker
+        .map(|marker| format!("{marker} "))
+        .unwrap_or_default();
     let slash = if trailing_slash { "/" } else { "" };
 
     Line::from(vec![

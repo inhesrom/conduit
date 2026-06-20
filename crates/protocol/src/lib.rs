@@ -5,6 +5,7 @@ pub type WorkspaceId = Uuid;
 pub type RepositoryId = Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SshTarget {
     pub host: String,
     pub user: Option<String>,
@@ -12,6 +13,7 @@ pub struct SshTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Route {
     Home,
     /// Status summary of a single repository's workspaces, shown in the detail pane.
@@ -20,6 +22,7 @@ pub enum Route {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum AttentionLevel {
     None,
     Notice,
@@ -28,18 +31,21 @@ pub enum AttentionLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum TerminalKind {
     Agent,
     Shell,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SavedCommand {
     pub argv: Vec<String>,
     pub cwd: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct WorkspaceSummary {
     pub id: WorkspaceId,
     pub name: String,
@@ -53,6 +59,8 @@ pub struct WorkspaceSummary {
     #[serde(default)]
     pub agent_active: bool,
     pub shell_running: bool,
+    // JSON.parse yields a plain number, not a bigint — and unix ms fits in 2^53.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub last_activity_unix_ms: u64,
     #[serde(default)]
     pub ssh_host: Option<String>,
@@ -70,6 +78,7 @@ pub struct WorkspaceSummary {
 
 /// Summary of a base Repository sent to clients for the sidebar tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RepositorySummary {
     pub id: RepositoryId,
     pub name: String,
@@ -87,6 +96,7 @@ pub struct RepositorySummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ChangedFile {
     pub path: String,
     pub index_status: char,
@@ -94,6 +104,7 @@ pub struct ChangedFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CommitInfo {
     pub hash: String,
     pub message: String,
@@ -102,6 +113,7 @@ pub struct CommitInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
@@ -110,6 +122,7 @@ pub struct BranchInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RemoteBranchInfo {
     pub full_name: String,
 }
@@ -117,14 +130,20 @@ pub struct RemoteBranchInfo {
 /// An existing branch to check out into a new workspace's worktree, instead
 /// of creating a fresh branch off a base ref.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum CheckoutSource {
-    LocalBranch { name: String },
+    LocalBranch {
+        name: String,
+    },
     /// A remote-only branch (full ref, e.g. "origin/feature-x"); checking it
     /// out creates a local tracking branch.
-    RemoteBranch { remote_ref: String },
+    RemoteBranch {
+        remote_ref: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct TagInfo {
     pub name: String,
     pub hash: String,
@@ -132,6 +151,7 @@ pub struct TagInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GitState {
     pub branch: Option<String>,
     pub upstream: Option<String>,
@@ -146,6 +166,7 @@ pub struct GitState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Command {
     SetRoute(Route),
     AddWorkspace {
@@ -360,6 +381,7 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Event {
     WorkspaceList {
         items: Vec<WorkspaceSummary>,
@@ -507,6 +529,30 @@ mod tests {
         let json = serde_json::to_string(val).expect("serialize");
         let back: T = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(*val, back);
+    }
+
+    /// The web UI's TypeScript bindings assume serde's externally-tagged enum
+    /// representation; adding #[serde(tag)]/#[serde(untagged)] would silently
+    /// break every browser client.
+    #[test]
+    fn externally_tagged_wire_shape() {
+        let cmd = Command::SetReadyForReview {
+            id: Uuid::nil(),
+            ready: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&cmd).unwrap(),
+            r#"{"SetReadyForReview":{"id":"00000000-0000-0000-0000-000000000000","ready":true}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&AttentionLevel::NeedsInput).unwrap(),
+            r#""NeedsInput""#
+        );
+        assert_eq!(serde_json::to_string(&Route::Home).unwrap(), r#""Home""#);
+        assert_eq!(
+            serde_json::to_string(&Route::Workspace { id: Uuid::nil() }).unwrap(),
+            r#"{"Workspace":{"id":"00000000-0000-0000-0000-000000000000"}}"#
+        );
     }
 
     #[test]

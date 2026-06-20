@@ -29,8 +29,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     Terminal,
 };
-use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
@@ -45,6 +44,10 @@ enum LaunchMode {
     RunDaemon { name: String },
     Update,
     Reinstall,
+    WebSetPassword,
+    WebServe { session: Option<String> },
+    WebShutdown,
+    WebStatus,
 }
 
 #[derive(Debug)]
@@ -60,17 +63,11 @@ struct Backend {
     evt_rx: mpsc::Receiver<CoreEvent>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionEntry {
-    name: String,
-    socket_path: String,
-    pid: u32,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct SessionRegistry {
-    sessions: Vec<SessionEntry>,
-}
+use conduit_core::ipc::{read_frame, write_frame};
+use conduit_core::sessions::{
+    load_registry, sanitize_session_name, save_registry, session_socket_path, socket_alive,
+    SessionEntry,
+};
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
@@ -83,7 +80,7 @@ fn print_help() {
 conduit {}
 
 USAGE:
-    conduit[OPTIONS]
+    conduit [OPTIONS]
 
 OPTIONS:
     -s, --session <name>   Create (or reattach to) a named session
@@ -96,18 +93,85 @@ OPTIONS:
     -V, --version          Print version
     -h, --help             Print this help
 
+SUBCOMMANDS:
+    web serve [--session <name>]   Serve the web UI, attaching to running sessions
+    web status                     Show web server status and connected clients
+    web shutdown                   Stop the running web server
+    web set-password               Set the web UI password (required for remote access)
+
 EXAMPLES:
-    conduit                  Launch in local (non-session) mode
-    conduit-s work           Create or reattach to session 'work'
-    conduit-s work -d        Start session 'work' in background
-    conduit-a work           Attach to running session 'work'
-    conduit-l                List sessions
-    conduit-r work           Remove session 'work'",
+    conduit                     Launch in local (non-session) mode
+    conduit -s work             Create or reattach to session 'work'
+    conduit -s work -d          Start session 'work' in background
+    conduit -a work             Attach to running session 'work'
+    conduit -l                  List sessions
+    conduit -r work             Remove session 'work'
+    conduit web serve           Serve the web UI for all running sessions
+    conduit web status          Show web server status and connected clients
+    conduit web shutdown        Stop the running web server
+    conduit web set-password    Set the web UI password (for remote access)
+
+The web UI listens on https://127.0.0.1:3001 by default (override with
+CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn parse_cli(args: Vec<String>) -> Result<Cli> {
+    // Subcommands: `conduit web set-password` / `conduit web serve [--session <name>]`
+    if args.first().map(String::as_str) == Some("web") {
+        match args.get(1).map(String::as_str) {
+            Some("set-password") => {
+                return Ok(Cli {
+                    mode: LaunchMode::WebSetPassword,
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            Some("serve") => {
+                let mut session = None;
+                let mut j = 2;
+                while j < args.len() {
+                    match args[j].as_str() {
+                        "--session" | "-a" => {
+                            session = args.get(j + 1).cloned();
+                            j += 2;
+                        }
+                        _ => j += 1,
+                    }
+                }
+                return Ok(Cli {
+                    mode: LaunchMode::WebServe { session },
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            Some("shutdown") => {
+                return Ok(Cli {
+                    mode: LaunchMode::WebShutdown,
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            Some("status") => {
+                return Ok(Cli {
+                    mode: LaunchMode::WebStatus,
+                    detach: false,
+                    version: false,
+                    help: false,
+                });
+            }
+            _ => {
+                return Err(anyhow!(
+                    "unknown web subcommand; try: conduit web serve | conduit web status | conduit web shutdown | conduit web set-password"
+                ));
+            }
+        }
+    }
+
     let mut i = 0usize;
     let mut mode = LaunchMode::Local;
     let mut detach = false;
@@ -224,6 +288,29 @@ async fn main() -> Result<()> {
     match cli.mode {
         LaunchMode::Update => self_update(false),
         LaunchMode::Reinstall => self_update(true),
+        LaunchMode::WebSetPassword => set_web_password(),
+        LaunchMode::WebServe { session } => {
+            let Some(cfg) = conduit_server::WebConfig::from_env(session) else {
+                return Err(anyhow!(
+                    "web server not started (a non-localhost bind needs a password and TLS)"
+                ));
+            };
+            conduit_server::serve(cfg).await
+        }
+        LaunchMode::WebShutdown => {
+            match conduit_server::control::shutdown().await {
+                Ok(()) => println!("web server stopped"),
+                Err(e) => println!("{e}"),
+            }
+            Ok(())
+        }
+        LaunchMode::WebStatus => {
+            match conduit_server::control::status().await {
+                Ok(report) => print_web_status(&report),
+                Err(e) => println!("{e}"),
+            }
+            Ok(())
+        }
         LaunchMode::RunDaemon { name } => run_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
@@ -267,6 +354,43 @@ async fn main() -> Result<()> {
             run_tui(backend).await
         }
     }
+}
+
+fn print_web_status(r: &conduit_server::control::StatusReport) {
+    println!("web server: running (pid {})", r.pid);
+    println!("  url:     {}", r.url);
+    println!("  tls:     {}", if r.tls { "on" } else { "off" });
+    println!("  auth:    {}", if r.auth_enabled { "on" } else { "off" });
+    println!("  uptime:  {}s", r.uptime_secs);
+    if r.clients.is_empty() {
+        println!("  clients: none");
+    } else {
+        println!("  clients: {}", r.clients.len());
+        for c in &r.clients {
+            println!(
+                "    - {}  (session {}, connected {}s ago)",
+                c.addr, c.session, c.connected_secs
+            );
+        }
+    }
+}
+
+fn set_web_password() -> Result<()> {
+    let pw = rpassword::prompt_password("New web password: ")?;
+    if pw.is_empty() {
+        return Err(anyhow!("password cannot be empty"));
+    }
+    let confirm = rpassword::prompt_password("Confirm password: ")?;
+    if pw != confirm {
+        return Err(anyhow!("passwords don't match"));
+    }
+    let path = conduit_server::web_auth_path();
+    conduit_server::auth::set_password(&path, &pw)?;
+    println!(
+        "Web password set ({}). Non-localhost access now requires it over TLS.",
+        path.display()
+    );
+    Ok(())
 }
 
 fn self_update(force: bool) -> Result<()> {
@@ -527,202 +651,7 @@ fn build_local_backend() -> (Backend, CoreHandle) {
 // Unix-domain-socket session infrastructure
 // ---------------------------------------------------------------------------
 
-fn session_socket_dir() -> Result<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return Err(anyhow!("cannot determine config directory"));
-    };
-    Ok(base.join("conduit").join("sessions"))
-}
-
-fn session_socket_path(name: &str) -> Result<PathBuf> {
-    let safe = sanitize_session_name(name);
-    Ok(session_socket_dir()?.join(format!("{safe}.sock")))
-}
-
-/// 4-byte big-endian length prefix + JSON payload.
-async fn read_frame<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    match r.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    }
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 16 * 1024 * 1024 {
-        return Err(anyhow!("frame too large: {} bytes", len));
-    }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
-    Ok(Some(buf))
-}
-
-async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, data: &[u8]) -> Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    w.write_all(&len).await?;
-    w.write_all(data).await?;
-    w.flush().await?;
-    Ok(())
-}
-
-use std::collections::HashMap;
-use uuid::Uuid;
-
-/// Per-workspace keyed state store — keeps only the latest of each state event type.
-struct WorkspaceState {
-    git: Option<Vec<u8>>,
-    attention: Option<Vec<u8>>,
-}
-
-/// Keyed state store for non-terminal events. No eviction needed — each workspace
-/// stores only the latest of each event type.
-struct EventHistory {
-    repository_list: Option<Vec<u8>>,
-    workspace_list: Option<Vec<u8>>,
-    per_workspace: HashMap<Uuid, WorkspaceState>,
-}
-
-impl EventHistory {
-    fn new() -> Self {
-        Self {
-            repository_list: None,
-            workspace_list: None,
-            per_workspace: HashMap::new(),
-        }
-    }
-
-    fn update(&mut self, evt: &CoreEvent, payload: Vec<u8>) {
-        match evt {
-            CoreEvent::RepositoryList { .. } => {
-                self.repository_list = Some(payload);
-            }
-            CoreEvent::WorkspaceList { .. } => {
-                self.workspace_list = Some(payload);
-            }
-            CoreEvent::WorkspaceGitUpdated { id, .. } => {
-                self.per_workspace
-                    .entry(*id)
-                    .or_insert_with(|| WorkspaceState {
-                        git: None,
-                        attention: None,
-                    })
-                    .git = Some(payload);
-            }
-            CoreEvent::WorkspaceAttentionChanged { id, .. } => {
-                self.per_workspace
-                    .entry(*id)
-                    .or_insert_with(|| WorkspaceState {
-                        git: None,
-                        attention: None,
-                    })
-                    .attention = Some(payload);
-            }
-            _ => {}
-        }
-    }
-
-    fn snapshot(&self) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        // Repositories first so the client populates the sidebar tree before
-        // workspaces are slotted into it.
-        if let Some(ref frame) = self.repository_list {
-            out.push(frame.clone());
-        }
-        if let Some(ref frame) = self.workspace_list {
-            out.push(frame.clone());
-        }
-        for ws in self.per_workspace.values() {
-            if let Some(ref frame) = ws.git {
-                out.push(frame.clone());
-            }
-            if let Some(ref frame) = ws.attention {
-                out.push(frame.clone());
-            }
-        }
-        out
-    }
-}
-
-/// Per-terminal ring buffer — stores raw terminal bytes (base64-decoded) per tab.
-struct TerminalBuffer {
-    kind: protocol::TerminalKind,
-    data: Vec<u8>,
-}
-
-struct TerminalHistory {
-    buffers: HashMap<(Uuid, String), TerminalBuffer>,
-}
-
-const TERMINAL_HISTORY_MAX_BYTES: usize = 512 * 1024; // 512 KB per terminal tab
-
-impl TerminalHistory {
-    fn new() -> Self {
-        Self {
-            buffers: HashMap::new(),
-        }
-    }
-
-    fn append(&mut self, id: Uuid, kind: protocol::TerminalKind, tab_id: String, raw_bytes: &[u8]) {
-        let entry = self
-            .buffers
-            .entry((id, tab_id))
-            .or_insert_with(|| TerminalBuffer {
-                kind,
-                data: Vec::new(),
-            });
-        entry.kind = kind;
-        entry.data.extend_from_slice(raw_bytes);
-        if entry.data.len() > TERMINAL_HISTORY_MAX_BYTES {
-            let excess = entry.data.len() - TERMINAL_HISTORY_MAX_BYTES;
-            entry.data.drain(..excess);
-        }
-    }
-
-    fn reset(&mut self, id: Uuid, tab_id: String) {
-        self.buffers.remove(&(id, tab_id));
-    }
-
-    /// Emit a TerminalStarted + single TerminalOutput per buffer for replay.
-    fn snapshot(&self) -> Vec<CoreEvent> {
-        let mut out = Vec::new();
-        for ((id, tab_id), entry) in &self.buffers {
-            if entry.data.is_empty() {
-                continue;
-            }
-            out.push(CoreEvent::TerminalStarted {
-                id: *id,
-                kind: entry.kind,
-                tab_id: Some(tab_id.clone()),
-            });
-            let data_b64 = base64::engine::general_purpose::STANDARD.encode(&entry.data);
-            out.push(CoreEvent::TerminalOutput {
-                id: *id,
-                kind: entry.kind,
-                tab_id: Some(tab_id.clone()),
-                data_b64,
-            });
-        }
-        out
-    }
-}
-
-/// Combined history shared under a single mutex for atomic snapshots.
-struct CombinedHistory {
-    state: EventHistory,
-    terminals: TerminalHistory,
-}
-
-impl CombinedHistory {
-    fn new() -> Self {
-        Self {
-            state: EventHistory::new(),
-            terminals: TerminalHistory::new(),
-        }
-    }
-}
+use conduit_core::history::{snapshot_and_subscribe, spawn_recorder, CombinedHistory};
 
 async fn run_daemon(name: &str) -> Result<()> {
     let sock_path = session_socket_path(name)?;
@@ -749,53 +678,11 @@ async fn run_daemon(name: &str) -> Result<()> {
     let history = std::sync::Arc::new(tokio::sync::Mutex::new(CombinedHistory::new()));
 
     // Background task: record replayable events into history
-    {
-        let history = history.clone();
-        let mut evt_rx = core.evt_tx.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match evt_rx.recv().await {
-                    Ok(ref evt) => {
-                        match evt {
-                            CoreEvent::TerminalOutput {
-                                id,
-                                kind,
-                                tab_id,
-                                data_b64,
-                            } => {
-                                if let Ok(raw) =
-                                    base64::engine::general_purpose::STANDARD.decode(data_b64)
-                                {
-                                    let tab =
-                                        tab_id.clone().unwrap_or_else(|| "default".to_string());
-                                    history.lock().await.terminals.append(*id, *kind, tab, &raw);
-                                }
-                            }
-                            CoreEvent::TerminalStarted { id, tab_id, .. } => {
-                                let tab = tab_id.clone().unwrap_or_else(|| "default".to_string());
-                                history.lock().await.terminals.reset(*id, tab);
-                            }
-                            CoreEvent::RepositoryList { .. }
-                            | CoreEvent::WorkspaceList { .. }
-                            | CoreEvent::WorkspaceGitUpdated { .. }
-                            | CoreEvent::WorkspaceAttentionChanged { .. } => {
-                                if let Ok(payload) = serde_json::to_vec(evt) {
-                                    history.lock().await.state.update(evt, payload);
-                                }
-                            }
-                            // TerminalExited: leave buffer intact (shows last output)
-                            _ => {}
-                        }
-                    }
-                    Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(n)) => {
-                        eprintln!("[conduit] event recorder lagged by {n} events");
-                        continue;
-                    }
-                }
-            }
-        });
-    }
+    spawn_recorder(&core.evt_tx, history.clone());
+
+    // The web UI is served by the standalone `conduit web serve`, which
+    // attaches to this daemon over its socket — the daemon itself runs no
+    // web server.
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -816,31 +703,15 @@ async fn run_daemon(name: &str) -> Result<()> {
                 }
             });
 
-            // Lock history, take snapshot, subscribe to broadcast — all under lock
-            // to guarantee no gap or overlap between snapshot and live events.
-            let mut evt_rx = {
-                let combined = history.lock().await;
-
-                // Send state events first
-                for frame in combined.state.snapshot() {
-                    if write_tx.send(frame).await.is_err() {
-                        return;
-                    }
+            // Snapshot history and subscribe to the broadcast atomically, then
+            // send the replay after the lock is released so a slow client
+            // can't stall the recorder.
+            let (payloads, mut evt_rx) = snapshot_and_subscribe(&history, &core_evt_tx).await;
+            for frame in payloads {
+                if write_tx.send(frame).await.is_err() {
+                    return;
                 }
-                // Then terminal history (TerminalStarted + TerminalOutput per tab)
-                for evt in combined.terminals.snapshot() {
-                    if let Ok(payload) = serde_json::to_vec(&evt) {
-                        if write_tx.send(payload).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                // Subscribe while still holding lock — no events can be missed
-                let rx = core_evt_tx.subscribe();
-                // Lock is dropped when `combined` goes out of scope
-                rx
-            };
+            }
 
             // Forward live broadcast events directly to socket writer
             let write_tx2 = write_tx.clone();
@@ -1045,10 +916,6 @@ async fn wait_for_socket(path: &str, timeout: Duration) -> Result<()> {
     Err(anyhow!("daemon did not become ready at {}", path))
 }
 
-fn socket_alive(path: &str) -> bool {
-    std::os::unix::net::UnixStream::connect(path).is_ok()
-}
-
 fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
     let output = match OsCommand::new("ps")
         .arg("-p")
@@ -1065,17 +932,6 @@ fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
     }
     let cmdline = String::from_utf8_lossy(&output.stdout);
     cmdline.contains("--run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
-}
-
-fn session_registry_path() -> Option<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return None;
-    };
-    Some(base.join("conduit").join("sessions.json"))
 }
 
 fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
@@ -1098,48 +954,6 @@ fn session_repositories_persist_path(name: &str) -> Option<PathBuf> {
             .join("conduit")
             .join(format!("repositories.{safe}.json")),
     )
-}
-
-fn sanitize_session_name(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return "default".to_string();
-    }
-    let mut out = String::with_capacity(trimmed.len());
-    for c in trimmed.chars() {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    out
-}
-
-fn load_registry() -> Result<SessionRegistry> {
-    let Some(path) = session_registry_path() else {
-        return Ok(SessionRegistry::default());
-    };
-    if !path.exists() {
-        return Ok(SessionRegistry::default());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read session registry: {}", path.display()))?;
-    let registry = serde_json::from_str::<SessionRegistry>(&raw).unwrap_or_default();
-    Ok(registry)
-}
-
-fn save_registry(registry: &SessionRegistry) -> Result<()> {
-    let Some(path) = session_registry_path() else {
-        return Ok(());
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let raw = serde_json::to_string_pretty(registry)?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("failed to write session registry: {}", path.display()))?;
-    Ok(())
 }
 
 async fn run_tui(mut backend: Backend) -> Result<()> {
@@ -3042,8 +2856,10 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 })
                 .unwrap_or(false);
             if unresolved_branch {
-                app.git_action_message =
-                    Some(("No matching branch to check out".to_string(), Instant::now()));
+                app.git_action_message = Some((
+                    "No matching branch to check out".to_string(),
+                    Instant::now(),
+                ));
                 return true;
             }
             if let Some(qc) = app.quick_create.take() {
@@ -4101,16 +3917,22 @@ async fn handle_mouse(
                 }
                 // Otherwise start a text selection confined to the clicked element.
                 let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
-                app.mouse_selection =
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
+                app.mouse_selection = Some(app::MouseSelection::at_confined(
+                    mouse.column,
+                    mouse.row,
+                    rect,
+                ));
             }
             _ => {}
         },
         Route::Workspace { id } => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
-                app.mouse_selection =
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
+                app.mouse_selection = Some(app::MouseSelection::at_confined(
+                    mouse.column,
+                    mouse.row,
+                    rect,
+                ));
                 if let Some(hit) =
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
@@ -4991,7 +4813,10 @@ mod tests {
             confine: None,
         };
         let text = extract_selected_text_from_buf(&buf, &sel, &[]);
-        assert!(text.contains("abcdefghij"), "middle row not full width: {text:?}");
+        assert!(
+            text.contains("abcdefghij"),
+            "middle row not full width: {text:?}"
+        );
     }
 
     // --- confine-rect resolver ---
@@ -5043,7 +4868,11 @@ fn apply_selection_highlight(frame: &mut ratatui::Frame, sel: &app::MouseSelecti
         None => (0, width.saturating_sub(1)),
     };
     for row in start_row..=end_row {
-        let row_start = if row == start_row { start_col } else { left_bound };
+        let row_start = if row == start_row {
+            start_col
+        } else {
+            left_bound
+        };
         let row_end = if row == end_row { end_col } else { right_bound };
         for col in row_start..=row_end {
             if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(col, row)) {
@@ -5084,7 +4913,11 @@ fn extract_selected_text_from_buf(
     };
     let mut lines: Vec<String> = Vec::new();
     for row in start_row..=end_row {
-        let row_start = if row == start_row { start_col } else { left_bound };
+        let row_start = if row == start_row {
+            start_col
+        } else {
+            left_bound
+        };
         let row_end = if row == end_row { end_col } else { right_bound };
         let mut line = String::new();
         for col in row_start..=row_end {

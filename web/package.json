@@ -1,0 +1,13 @@
+{
+  "name": "conduit-web",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "app"
+  ],
+  "scripts": {
+    "gen:protocol": "TS_RS_EXPORT_DIR=$PWD/shared/src/protocol cargo test -p protocol --features ts",
+    "dev": "cd app && bun run dev",
+    "build": "cd app && bun run build"
+  }
+}

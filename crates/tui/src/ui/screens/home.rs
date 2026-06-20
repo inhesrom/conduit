@@ -1191,7 +1191,10 @@ mod tests {
         // real body text rows (e.g. "Repository: …") during clipboard extraction.
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
         let chunks = super::home_chunks(area);
-        assert_eq!(super::border_rects(area), vec![chunks[0], chunks[1], chunks[2]]);
+        assert_eq!(
+            super::border_rects(area),
+            vec![chunks[0], chunks[1], chunks[2]]
+        );
     }
 
     // --- chunk_at (mouse-selection confinement) ---

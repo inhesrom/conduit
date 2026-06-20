@@ -1,0 +1,201 @@
+/* Conduit — design tokens.
+ *
+ * An 8-bit/pixel aesthetic: pixel type, hard edges, dithering for shading,
+ * inverse-video for emphasis, steps() motion. Color comes from the brand kit
+ * (web/brand) as three swappable palettes — Amber (CRT phosphor, default),
+ * Mono (the original 1-bit black/white) and Paper (light). Each is essentially
+ * a single hue, so state (needs input / error / working / review) is still
+ * carried by pixel glyph, blink and inverse-video, not by color. The app's two
+ * base tokens (--paper/--ink) and a few surfaces are bridged onto each
+ * palette's --cd-* role contract; every remaining grey derives from
+ * --paper/--ink via color-mix, so the whole UI retints when data-theme flips.
+ */
+
+/* ── Brand palettes (mirror of web/brand/tokens/colors.css) ────────────── */
+:root,
+:root[data-theme="amber"] {
+  /* Amber · CRT phosphor warmth (default) */
+  --cd-bg: #0b0704;     --cd-surface: #120c05;   --cd-surface-2: #1d1408;
+  --cd-border: #36240f; --cd-text: #ffd591;      --cd-text-dim: #b5824a;
+  --cd-accent: #ffe0a6; --cd-accent-2: #ff9f4d;
+  color-scheme: dark;
+}
+:root[data-theme="mono"] {
+  /* Mono · white + black, 1-bit grain */
+  --cd-bg: #000000;     --cd-surface: #0c0e11;   --cd-surface-2: #14171b;
+  --cd-border: #24282c; --cd-text: #e8eaed;      --cd-text-dim: #9aa0a6;
+  --cd-accent: #ffffff; --cd-accent-2: #b9bec2;
+  color-scheme: dark;
+}
+:root[data-theme="paper"] {
+  /* Paper · inverted, black on white */
+  --cd-bg: #ffffff;     --cd-surface: #f4f5f6;   --cd-surface-2: #e9ebed;
+  --cd-border: #d8dce0; --cd-text: #0b0d10;      --cd-text-dim: #4a525b;
+  --cd-accent: #0b0d10; --cd-accent-2: #2c3138;
+  color-scheme: light;
+}
+
+:root {
+  /* Bridge: the app's two base tokens come from the active brand palette. */
+  --paper: var(--cd-bg);
+  --ink: var(--cd-text);
+
+  /* A few surfaces map straight to brand roles; the rest still derive from
+   * ink+paper via color-mix, so they retint with the theme. */
+  --ink-dim: var(--cd-text-dim);
+  --ink-faint: color-mix(in srgb, var(--ink) 36%, var(--paper));
+  --line: var(--cd-border);
+  --line-bright: color-mix(in srgb, var(--ink) 48%, var(--paper));
+  --panel: var(--cd-surface);
+  --raised: var(--cd-surface-2);
+  --fill: color-mix(in srgb, var(--ink) 8%, var(--paper));
+  --fill-strong: color-mix(in srgb, var(--ink) 16%, var(--paper));
+
+  /* The one sanctioned exception to the single-hue palette: muted green/red
+   * for git added/removed. Kept low-saturation so they sit in the 8-bit world. */
+  --add: #4f9d63;
+  --del: #cc5b54;
+
+  /* Pixel display faces for chrome; mono stays legible for terminal + diffs. */
+  --font-display: "Silkscreen", "Pixelify Sans Variable", monospace;
+  --font-ui: "Pixelify Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* User-adjustable chrome type scale (Settings → Display). Every chrome
+   * font-size is multiplied by this; the terminal sizes itself via xterm's
+   * own option, so it stays independent. JS overrides it from saved settings. */
+  --ui-scale: 0.85;
+
+  /* A 2px checkerboard dither, inked, for 8-bit shading. */
+  --dither: repeating-conic-gradient(var(--ink) 0% 25%, transparent 0% 50%) 0 0 / 2px 2px;
+
+  /* Steppy, near-instant motion — no smooth easing in an 8-bit world. */
+  --t-fast: 70ms steps(2, end);
+}
+
+* {
+  box-sizing: border-box;
+  border-radius: 0 !important; /* 8-bit: no rounded corners, anywhere. */
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: calc(16px * var(--ui-scale));
+  line-height: 1.4;
+  /* Crisp pixels: no smoothing softening the type. */
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Eyebrow / section labels — chunky pixel caps, the structural device. */
+.eyebrow {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: calc(12px * var(--ui-scale));
+  color: var(--ink-dim);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "calt", "liga";
+}
+
+/* Inverse video — the 8-bit emphasis/selection device. */
+.inverse {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+button {
+  font-family: var(--font-ui);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+::selection {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+/* Chunky square scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-bright);
+  border: 2px solid var(--paper);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-dim);
+}
+
+/* Braille activity glyph — the TUI's ⠋⠙⠹… spinner, in ink. */
+.spinner::before {
+  content: "⠋";
+  font-family: var(--font-mono);
+  animation: braille 0.85s steps(1) infinite;
+}
+@keyframes braille {
+  0% { content: "⠋"; }
+  10% { content: "⠙"; }
+  20% { content: "⠹"; }
+  30% { content: "⠸"; }
+  40% { content: "⠼"; }
+  50% { content: "⠴"; }
+  60% { content: "⠦"; }
+  70% { content: "⠧"; }
+  80% { content: "⠇"; }
+  90% { content: "⠏"; }
+}
+
+/* Hard 8-bit blink (used for needs-input / error). */
+@keyframes blink {
+  0%,
+  49% { opacity: 1; }
+  50%,
+  100% { opacity: 0; }
+}
+.blink {
+  animation: blink 1.06s steps(1, end) infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

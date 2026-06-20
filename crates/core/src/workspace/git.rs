@@ -595,14 +595,29 @@ pub async fn list_commit_files(
     hash: &str,
     ssh: Option<&SshTarget>,
 ) -> Result<Vec<String>> {
+    // `--root` makes the initial commit list its files (diff against the empty
+    // tree) instead of returning nothing.
     let out = ssh::build_command(
         ssh,
         repo,
         "git",
-        &["diff-tree", "--no-commit-id", "--name-only", "-r", hash],
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "--root",
+            hash,
+        ],
     )
     .output()
     .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git diff-tree failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| !l.is_empty())
@@ -809,7 +824,9 @@ pub async fn create_worktree_tracking(
         ssh,
         repo,
         "git",
-        &["worktree", "add", "--track", "-b", local_name, &wt, remote_ref],
+        &[
+            "worktree", "add", "--track", "-b", local_name, &wt, remote_ref,
+        ],
     )
     .output()
     .await?;
@@ -870,7 +887,10 @@ pub async fn list_branch_names(
 }
 
 /// Lists existing worktrees of `repo` as `(path, branch)` pairs.
-pub async fn list_worktrees(repo: &Path, ssh: Option<&SshTarget>) -> Result<Vec<(PathBuf, String)>> {
+pub async fn list_worktrees(
+    repo: &Path,
+    ssh: Option<&SshTarget>,
+) -> Result<Vec<(PathBuf, String)>> {
     let out = ssh::build_command(ssh, repo, "git", &["worktree", "list", "--porcelain"])
         .output()
         .await?;
@@ -962,7 +982,10 @@ pub async fn diff_branch_file(
         .output()
         .await?;
     if !out.status.success() {
-        anyhow::bail!("git diff failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }

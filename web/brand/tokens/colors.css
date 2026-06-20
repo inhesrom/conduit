@@ -1,0 +1,86 @@
+/* Conduit — color schemes
+ * Three reusable themes derived from the logo system. Switch by setting
+ * data-theme on a root element: <html data-theme="amber">. The default
+ * (:root) is Mono. Every theme exposes the same contract of semantic tokens,
+ * so the app, the logo, decks, and docs all stay in sync.
+ *
+ *   App roles : --cd-bg --cd-surface --cd-surface-2 --cd-border
+ *               --cd-text --cd-text-dim --cd-accent --cd-accent-2
+ *   Logo tubes: --cd-tube-hi --cd-tube-mid --cd-tube-mid-alt
+ *               --cd-tube-shadow --cd-tube-edge --cd-channel
+ *   Streams   : --cd-stream-1 --cd-stream-1-glow
+ *               --cd-stream-2 --cd-stream-2-glow
+ */
+
+/* ── Mono · white + black, 1-bit grain (default) ───────────────────── */
+:root,
+[data-theme="mono"] {
+  --cd-bg:           #000000;
+  --cd-surface:      #0c0e11;
+  --cd-surface-2:    #14171b;
+  --cd-border:       #24282c;
+  --cd-text:         #e8eaed;
+  --cd-text-dim:     #9aa0a6;
+  --cd-accent:       #ffffff;
+  --cd-accent-2:     #b9bec2;
+
+  --cd-tube-hi:      #ffffff;
+  --cd-tube-mid:     #d4d7da;
+  --cd-tube-mid-alt: #9aa0a6;
+  --cd-tube-shadow:  #5b6166;
+  --cd-tube-edge:    #24282c;
+  --cd-channel:      #0c0e11;
+
+  --cd-stream-1:      #ffffff;
+  --cd-stream-1-glow: #aab0b5;
+  --cd-stream-2:      #b9bec2;
+  --cd-stream-2-glow: #6b7176;
+}
+
+/* ── Amber · CRT phosphor warmth ───────────────────────────────────── */
+[data-theme="amber"] {
+  --cd-bg:           #0b0704;
+  --cd-surface:      #120c05;
+  --cd-surface-2:    #1d1408;
+  --cd-border:       #36240f;
+  --cd-text:         #ffd591;
+  --cd-text-dim:     #b5824a;
+  --cd-accent:       #ffe0a6;
+  --cd-accent-2:     #ff9f4d;
+
+  --cd-tube-hi:      #ffd591;
+  --cd-tube-mid:     #d99a4e;
+  --cd-tube-mid-alt: #9c6a2c;
+  --cd-tube-shadow:  #8a5e27;
+  --cd-tube-edge:    #36240f;
+  --cd-channel:      #140d05;
+
+  --cd-stream-1:      #ffce7a;
+  --cd-stream-1-glow: #c98a3a;
+  --cd-stream-2:      #ff9f4d;
+  --cd-stream-2-glow: #b5641f;
+}
+
+/* ── Paper · inverted, black on white ──────────────────────────────── */
+[data-theme="paper"] {
+  --cd-bg:           #ffffff;
+  --cd-surface:      #f4f5f6;
+  --cd-surface-2:    #e9ebed;
+  --cd-border:       #d8dce0;
+  --cd-text:         #0b0d10;
+  --cd-text-dim:     #4a525b;
+  --cd-accent:       #0b0d10;
+  --cd-accent-2:     #2c3138;
+
+  --cd-tube-hi:      #454c54;
+  --cd-tube-mid:     #2c3138;
+  --cd-tube-mid-alt: #20242a;
+  --cd-tube-shadow:  #14171b;
+  --cd-tube-edge:    #08090b;
+  --cd-channel:      #ffffff;
+
+  --cd-stream-1:      #0b0d10;
+  --cd-stream-1-glow: #6b7682;
+  --cd-stream-2:      #2c3138;
+  --cd-stream-2-glow: #97a1ad;
+}
