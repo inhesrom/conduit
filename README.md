@@ -141,6 +141,27 @@ conduit web set-password
 CONDUIT_WEB_BIND=0.0.0.0 conduit web serve   # refused unless a password is set
 ```
 
+### Desktop app
+
+`conduit desktop` opens the same web UI in a native OS window (system webview
+via `wry`/`tao` — no Electron, no bundled browser). It runs the core and web
+server in-process on a private loopback port, so no separate session daemon is
+needed. The desktop UI is compiled in behind a Cargo feature, keeping headless
+server builds free of GTK/WebKit:
+
+```sh
+cd web && bun install && bun run build           # build the web UI first
+cd .. && cargo run -p tui --features desktop -- desktop   # then run from source
+```
+
+(From-source debug builds read the web UI from `web/app/dist/`; if it isn't
+built you'll see a "web UI hasn't been built yet" placeholder. Released bundles
+embed it at compile time, so this step is only needed for local dev.)
+
+Releases ship double-clickable bundles — a macOS `.dmg`/`.app` and a Linux
+`.deb`/`.AppImage` — that launch straight into the window. Headless installs
+(the `install.sh` tarball) are unaffected and never link GTK/WebKit.
+
 ### Config Paths
 
 Conduit stores configuration under `~/.config/conduit/` (respects `XDG_CONFIG_HOME`):

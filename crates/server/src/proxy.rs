@@ -7,8 +7,13 @@
 use std::path::PathBuf;
 
 use axum::extract::ws::{Message, WebSocket};
+use conduit_core::history::snapshot_and_subscribe;
 use conduit_core::ipc::{read_frame, write_frame};
+use protocol::Command;
 use tokio::net::UnixStream;
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::EmbeddedCore;
 
 pub async fn handle_proxy(mut socket: WebSocket, socket_path: PathBuf) {
     let stream = match UnixStream::connect(&socket_path).await {
@@ -45,6 +50,69 @@ pub async fn handle_proxy(mut socket: WebSocket, socket_path: PathBuf) {
                     Some(Ok(Message::Text(txt))) => {
                         if write_frame(&mut writer, txt.as_bytes()).await.is_err() {
                             break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
+    }
+    let _ = socket.send(Message::Close(None)).await;
+}
+
+/// Bridge a browser WebSocket directly to an in-process core (no daemon socket).
+/// Mirrors the daemon's per-connection contract: replay the history snapshot on
+/// connect, then forward live events, while relaying browser commands into the
+/// core. Used by the desktop app's embedded server.
+pub async fn handle_embedded(mut socket: WebSocket, embedded: EmbeddedCore) {
+    let EmbeddedCore { core, history } = embedded;
+
+    // Snapshot history and subscribe atomically, then send the replay so a
+    // late-connecting client sees the session's full live state.
+    let (payloads, mut evt_rx) = snapshot_and_subscribe(&history, &core.evt_tx).await;
+    for frame in payloads {
+        match String::from_utf8(frame) {
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    return;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    loop {
+        tokio::select! {
+            // core -> browser
+            evt = evt_rx.recv() => {
+                match evt {
+                    Ok(evt) => {
+                        let Ok(payload) = serde_json::to_vec(&evt) else { continue };
+                        match String::from_utf8(payload) {
+                            Ok(text) => {
+                                if socket.send(Message::Text(text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(RecvError::Closed) => break,
+                    Err(RecvError::Lagged(n)) => {
+                        eprintln!("[conduit] embedded event forwarder lagged by {n} events");
+                        continue;
+                    }
+                }
+            }
+            // browser -> core
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Text(txt))) => {
+                        if let Ok(cmd) = serde_json::from_slice::<Command>(txt.as_bytes()) {
+                            if core.cmd_tx.send(cmd).await.is_err() {
+                                break;
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,

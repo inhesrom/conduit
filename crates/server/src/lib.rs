@@ -35,6 +35,10 @@ use serde_json::json;
 use auth::Auth;
 use tls::TlsSource;
 
+use conduit_core::history::CombinedHistory;
+use conduit_core::CoreHandle;
+use tokio::sync::Mutex as AsyncMutex;
+
 pub const DEFAULT_WEB_PORT: u16 = 3001;
 const SESSION_COOKIE: &str = "conduit_session";
 
@@ -48,6 +52,18 @@ pub struct ServerState {
     pub next_client_id: Arc<AtomicU64>,
     /// Process start time, for uptime reporting.
     pub started: Instant,
+    /// When set, WebSockets bridge directly to this in-process core instead of
+    /// proxying to a session daemon's Unix socket (used by the desktop app).
+    pub embedded: Option<EmbeddedCore>,
+}
+
+/// An in-process core that the server bridges browser WebSockets straight to,
+/// replaying history on connect — the same contract the daemon socket provides,
+/// but without a separate process or Unix socket. See `serve_embedded`.
+#[derive(Clone)]
+pub struct EmbeddedCore {
+    pub core: CoreHandle,
+    pub history: Arc<AsyncMutex<CombinedHistory>>,
 }
 
 /// One connected browser WebSocket, tracked for `conduit web status`.
@@ -173,12 +189,25 @@ async fn ws_handler(
     let Some(name) = state.pinned_session.clone().or(q.session) else {
         return (StatusCode::BAD_REQUEST, "missing ?session").into_response();
     };
+    let clients = state.clients.clone();
+    let id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
+
+    // Embedded mode: bridge straight to the in-process core — no daemon socket.
+    if let Some(embedded) = state.embedded.clone() {
+        return ws.on_upgrade(move |socket| async move {
+            clients.lock().unwrap().insert(
+                id,
+                ClientInfo { addr, session: name, connected: Instant::now() },
+            );
+            let _guard = ClientGuard { clients: clients.clone(), id };
+            proxy::handle_embedded(socket, embedded).await;
+        });
+    }
+
     let path = match conduit_core::sessions::session_socket_path(&name) {
         Ok(p) => p,
         Err(_) => return (StatusCode::BAD_REQUEST, "bad session name").into_response(),
     };
-    let clients = state.clients.clone();
-    let id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
     ws.on_upgrade(move |socket| async move {
         clients.lock().unwrap().insert(
             id,
@@ -292,6 +321,63 @@ async fn require_auth(
 
 // ---- serve -----------------------------------------------------------------
 
+/// Assemble the full router: public routes, auth-protected routes, and the
+/// embedded static web UI with SPA fallback. Shared by `serve`/`serve_embedded`.
+fn build_router(state: ServerState) -> Router {
+    let protected = Router::new()
+        .route("/ws", get(ws_handler))
+        .route("/api/sessions", get(sessions))
+        .route("/api/fs/list", get(fs::list_dir))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    Router::new()
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
+        .route("/api/session", get(session))
+        .route("/healthz", get(healthz))
+        .merge(protected)
+        .fallback(assets::static_handler)
+        .with_state(state)
+}
+
+/// Serve the web UI bound to an in-process core — no daemon, no TLS, no auth,
+/// no control socket. Used by the desktop app. Binds `bind` (pass port 0 for an
+/// ephemeral loopback port), reports the actual bound address through `ready`,
+/// then serves until Ctrl-C or the process exits.
+pub async fn serve_embedded(
+    bind: SocketAddr,
+    pinned_session: String,
+    embedded: EmbeddedCore,
+    ready: tokio::sync::oneshot::Sender<SocketAddr>,
+) -> anyhow::Result<()> {
+    // Auth disabled: a loopback-only local server needs no password. Point the
+    // auth/session paths at a guaranteed-absent location so nothing loads.
+    let void = PathBuf::from("/nonexistent/conduit-desktop");
+    let auth = Arc::new(Auth::load(void.clone(), void, false));
+    let state = ServerState {
+        auth,
+        pinned_session: Some(pinned_session),
+        clients: Arc::new(Mutex::new(HashMap::new())),
+        next_client_id: Arc::new(AtomicU64::new(1)),
+        started: Instant::now(),
+        embedded: Some(embedded),
+    };
+    let app = build_router(state).into_make_service_with_connect_info::<SocketAddr>();
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    let local = listener.local_addr()?;
+    let _ = ready.send(local);
+    eprintln!("[conduit] desktop web server listening on http://{local}");
+
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    Ok(())
+}
+
 pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
     let auth = Arc::new(Auth::load(
         cfg.auth_path.clone(),
@@ -307,23 +393,10 @@ pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
         clients: Arc::new(Mutex::new(HashMap::new())),
         next_client_id: Arc::new(AtomicU64::new(1)),
         started: Instant::now(),
+        embedded: None,
     };
 
-    let protected = Router::new()
-        .route("/ws", get(ws_handler))
-        .route("/api/sessions", get(sessions))
-        .route("/api/fs/list", get(fs::list_dir))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
-
-    let app = Router::new()
-        .route("/api/login", post(login))
-        .route("/api/logout", post(logout))
-        .route("/api/session", get(session))
-        .route("/healthz", get(healthz))
-        .merge(protected)
-        .fallback(assets::static_handler)
-        .with_state(state.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
+    let app = build_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
 
     let scheme = if cfg.tls.is_some() { "https" } else { "http" };
     let url = format!("{scheme}://{}", cfg.bind);
