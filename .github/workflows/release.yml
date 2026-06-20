@@ -21,6 +21,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Ensure web UI is bundled (not the placeholder)
+        run: |
+          if grep -q "been built yet" web/app/dist/index.html; then
+            echo "::error::web UI build produced the placeholder; aborting release"
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build
