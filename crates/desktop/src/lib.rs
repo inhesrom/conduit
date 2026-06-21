@@ -3,27 +3,20 @@
 //!
 //! There is no Electron and no bundled browser — we run the same Axum server
 //! the `conduit` binary already serves, but in-process on an ephemeral loopback
-//! port with TLS/auth off, driving an in-process core (so no session daemon is
-//! needed), and open a webview at that URL. The web UI is unchanged: it talks
-//! to the server same-origin over WebSocket/REST exactly as in a browser.
+//! port with TLS/auth off, proxying to the user's running session daemons. The
+//! web UI is unchanged: it talks to the server same-origin over WebSocket/REST
+//! exactly as in a browser, and shows the session picker on startup.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use conduit_core::history::{spawn_recorder, CombinedHistory};
-use conduit_server::EmbeddedCore;
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
-use tokio::sync::Mutex;
 use wry::WebViewBuilder;
-
-/// The pinned session name the embedded server attaches every WebSocket to.
-const SESSION: &str = "desktop";
 
 /// Launch the desktop app. Blocks (runs the GUI event loop) until the window is
 /// closed, then exits the process. Must be called on the main thread.
@@ -38,17 +31,10 @@ pub fn run() -> Result<()> {
     // Start the core + embedded server and wait for the bound (ephemeral) port.
     // The spawned server task keeps running on the runtime after this returns.
     let addr: SocketAddr = rt.block_on(async {
-        let core = conduit_core::spawn_core();
-        let history = Arc::new(Mutex::new(CombinedHistory::new()));
-        spawn_recorder(&core.evt_tx, history.clone());
-        let embedded = EmbeddedCore { core, history };
-
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
         let bind: SocketAddr = ([127, 0, 0, 1], 0).into();
         tokio::spawn(async move {
-            if let Err(e) =
-                conduit_server::serve_embedded(bind, SESSION.to_string(), embedded, ready_tx).await
-            {
+            if let Err(e) = conduit_server::serve_desktop(bind, ready_tx).await {
                 eprintln!("[conduit] desktop server exited: {e}");
             }
         });

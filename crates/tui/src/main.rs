@@ -67,8 +67,7 @@ struct Backend {
 
 use conduit_core::ipc::{read_frame, write_frame};
 use conduit_core::sessions::{
-    load_registry, sanitize_session_name, save_registry, session_socket_path, socket_alive,
-    SessionEntry,
+    load_registry, sanitize_session_name, save_registry, socket_alive, SessionEntry,
 };
 
 #[derive(Debug, Deserialize)]
@@ -368,7 +367,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
         LaunchMode::CreateSession { name } => {
-            let entry = ensure_session_running(&name).await?;
+            let entry = conduit_core::daemon::ensure_session_running(&name).await?;
             if cli.detach {
                 println!("session '{}' running in background (detached)", entry.name);
                 return Ok(());
@@ -386,7 +385,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
             })?;
             let entry = if !socket_alive(&entry.socket_path) {
                 eprintln!("session '{}' is stale, restarting…", name);
-                ensure_session_running(&name).await?
+                conduit_core::daemon::ensure_session_running(&name).await?
             } else {
                 entry
             };
@@ -755,32 +754,6 @@ async fn build_remote_backend(socket_path: &str) -> Result<Backend> {
 // Session management
 // ---------------------------------------------------------------------------
 
-async fn ensure_session_running(name: &str) -> Result<SessionEntry> {
-    let mut registry = load_registry()?;
-    if let Some(existing) = registry.sessions.iter().find(|s| s.name == name).cloned() {
-        if socket_alive(&existing.socket_path) {
-            return Ok(existing);
-        }
-        registry.sessions.retain(|s| s.name != name);
-    }
-
-    let pid = spawn_daemon_process(name)?;
-    let sock_path = session_socket_path(name)?;
-    let sock_str = sock_path.display().to_string();
-
-    wait_for_socket(&sock_str, Duration::from_secs(8)).await?;
-
-    let entry = SessionEntry {
-        name: name.to_string(),
-        socket_path: sock_str,
-        pid,
-    };
-    registry.sessions.retain(|s| s.name != name);
-    registry.sessions.push(entry.clone());
-    save_registry(&registry)?;
-    Ok(entry)
-}
-
 fn get_session(name: &str) -> Result<Option<SessionEntry>> {
     let registry = load_registry()?;
     Ok(registry.sessions.into_iter().find(|s| s.name == name))
@@ -847,32 +820,6 @@ fn list_sessions() -> Result<()> {
         println!("- {}  (pid {} {})", s.name, s.pid, state);
     }
     Ok(())
-}
-
-fn spawn_daemon_process(name: &str) -> Result<u32> {
-    let exe = std::env::current_exe()?;
-    let child = OsCommand::new(exe)
-        .env("CONDUIT_SESSION_NAME", name)
-        .arg("--run-daemon")
-        .arg("--session-name")
-        .arg(name)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("failed to spawn daemon for session '{}'", name))?;
-    Ok(child.id())
-}
-
-async fn wait_for_socket(path: &str, timeout: Duration) -> Result<()> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if socket_alive(path) {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(120)).await;
-    }
-    Err(anyhow!("daemon did not become ready at {}", path))
 }
 
 fn is_expected_daemon_process(entry: &SessionEntry) -> bool {

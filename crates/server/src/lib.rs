@@ -55,6 +55,10 @@ pub struct ServerState {
     /// When set, WebSockets bridge directly to this in-process core instead of
     /// proxying to a session daemon's Unix socket (used by the desktop app).
     pub embedded: Option<EmbeddedCore>,
+    /// True when this server backs the native desktop window. Surfaced to the
+    /// web UI (so it always shows the session picker on startup) and gates the
+    /// local-only session-creation endpoint.
+    pub desktop: bool,
 }
 
 /// An in-process core that the server bridges browser WebSockets straight to,
@@ -227,7 +231,40 @@ async fn sessions(State(state): State<ServerState>) -> impl IntoResponse {
             .map(|s| s.name)
             .collect(),
     };
-    Json(json!({ "sessions": names, "pinned": state.pinned_session.is_some() }))
+    Json(json!({
+        "sessions": names,
+        "pinned": state.pinned_session.is_some(),
+        "desktop": state.desktop,
+    }))
+}
+
+#[derive(Deserialize)]
+struct CreateSessionReq {
+    name: String,
+}
+
+/// Create (or restart) a named session daemon and return its name. Only the
+/// local desktop window may spawn daemons — reject it on the shared `web serve`
+/// server, where spawning processes on the host would be a privilege.
+async fn create_session(
+    State(state): State<ServerState>,
+    Json(body): Json<CreateSessionReq>,
+) -> Response {
+    if !state.desktop {
+        return (StatusCode::FORBIDDEN, "session creation is desktop-only").into_response();
+    }
+    let name = body.name.trim();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "session name is required").into_response();
+    }
+    match conduit_core::daemon::ensure_session_running(name).await {
+        Ok(entry) => Json(json!({ "ok": true, "name": entry.name })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -340,7 +377,7 @@ async fn require_auth(
 fn build_router(state: ServerState) -> Router {
     let protected = Router::new()
         .route("/ws", get(ws_handler))
-        .route("/api/sessions", get(sessions))
+        .route("/api/sessions", get(sessions).post(create_session))
         .route("/api/fs/list", get(fs::list_dir))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -355,9 +392,10 @@ fn build_router(state: ServerState) -> Router {
 }
 
 /// Serve the web UI bound to an in-process core — no daemon, no TLS, no auth,
-/// no control socket. Used by the desktop app. Binds `bind` (pass port 0 for an
-/// ephemeral loopback port), reports the actual bound address through `ready`,
-/// then serves until Ctrl-C or the process exits.
+/// no control socket. Binds `bind` (pass port 0 for an ephemeral loopback
+/// port), reports the actual bound address through `ready`, then serves until
+/// Ctrl-C or the process exits. Pins every WebSocket to one session bridged to
+/// the given in-process core. (The desktop app uses `serve_desktop` instead.)
 pub async fn serve_embedded(
     bind: SocketAddr,
     pinned_session: String,
@@ -375,6 +413,45 @@ pub async fn serve_embedded(
         next_client_id: Arc::new(AtomicU64::new(1)),
         started: Instant::now(),
         embedded: Some(embedded),
+        desktop: false,
+    };
+    let app = build_router(state).into_make_service_with_connect_info::<SocketAddr>();
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    let local = listener.local_addr()?;
+    let _ = ready.send(local);
+    eprintln!("[conduit] embedded web server listening on http://{local}");
+
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    Ok(())
+}
+
+/// Serve the web UI for the native desktop window — no TLS, no auth, no control
+/// socket — proxying WebSockets to the user's running session daemons (no
+/// pinned session, so the UI shows the session picker on startup). Binds `bind`
+/// (pass port 0 for an ephemeral loopback port), reports the actual bound
+/// address through `ready`, then serves until Ctrl-C or the process exits.
+pub async fn serve_desktop(
+    bind: SocketAddr,
+    ready: tokio::sync::oneshot::Sender<SocketAddr>,
+) -> anyhow::Result<()> {
+    // Auth disabled: a loopback-only local server needs no password. Point the
+    // auth/session paths at a guaranteed-absent location so nothing loads.
+    let void = PathBuf::from("/nonexistent/conduit-desktop");
+    let auth = Arc::new(Auth::load(void.clone(), void, false));
+    let state = ServerState {
+        auth,
+        pinned_session: None,
+        clients: Arc::new(Mutex::new(HashMap::new())),
+        next_client_id: Arc::new(AtomicU64::new(1)),
+        started: Instant::now(),
+        embedded: None,
+        desktop: true,
     };
     let app = build_router(state).into_make_service_with_connect_info::<SocketAddr>();
 
@@ -408,6 +485,7 @@ pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
         next_client_id: Arc::new(AtomicU64::new(1)),
         started: Instant::now(),
         embedded: None,
+        desktop: false,
     };
 
     let app = build_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();

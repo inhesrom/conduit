@@ -230,6 +230,19 @@ pub fn spawn_core() -> CoreHandle {
     let evt_tx_task = evt_tx.clone();
 
     tokio::spawn(async move {
+        // The event recorder (and any client bridge) subscribes to `evt_tx`
+        // just after spawn_core() returns. On a multi-thread runtime this task
+        // can run first and broadcast the startup snapshot before that
+        // subscription exists — and a broadcast channel drops messages sent
+        // before a receiver subscribes, so the snapshot would be lost and a
+        // later client would observe an empty state. Wait briefly for the first
+        // subscriber (bounded, so we never hang if a caller uses no recorder).
+        for _ in 0..200u32 {
+            if evt_tx_task.receiver_count() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let mut state = AppState::default();
         restore_repositories(&mut state).await;
         restore_workspaces(&mut state, &evt_tx_task).await;

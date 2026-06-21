@@ -4,7 +4,6 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-conduit_core = { path = "../core" }
 conduit_server = { path = "../server" }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal"] }
