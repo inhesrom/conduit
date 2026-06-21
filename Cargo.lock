@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "conduit_core"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "anyhow",
  "base64",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "conduit_desktop"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "anyhow",
  "conduit_core",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "conduit_server"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2662,7 +2662,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "serde",
  "serde_json",
@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "tui"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
