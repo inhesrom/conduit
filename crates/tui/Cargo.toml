@@ -9,9 +9,9 @@ path = "src/main.rs"
 
 [features]
 # On by default so a plain `conduit` opens the native desktop window. Headless
-# builds (servers running `conduit web serve`) opt out with
-# `--no-default-features`, which drops the GTK/WebKit link and makes bare
-# `conduit` fall back to the terminal UI.
+# builds (servers running `conduit web`) opt out with `--no-default-features`,
+# which drops the GTK/WebKit link and makes bare `conduit` fall back to the
+# terminal UI.
 default = ["desktop"]
 desktop = ["dep:conduit_desktop"]
 
@@ -21,6 +21,7 @@ conduit_core = { path = "../core" }
 conduit_server = { path = "../server" }
 conduit_desktop = { path = "../desktop", optional = true }
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 alacritty_terminal = "0.26"
 base64 = "0.22"
 vt100 = "0.15"

@@ -1,9 +1,9 @@
 //! Session daemon: runs the core event loop behind a Unix socket so multiple
 //! clients (TUI attach, web proxy) can drive the same live session. Both the
-//! `conduit` binary's `--run-daemon` mode and any embedder call this.
+//! `conduit` binary's hidden `run-daemon` subcommand and any embedder call this.
 //!
-//! The daemon runs no web server — the standalone `conduit web serve` attaches
-//! to this socket and bridges browser WebSockets to it.
+//! The daemon runs no web server — `conduit web` attaches to this socket and
+//! bridges browser WebSockets to it.
 
 use std::path::PathBuf;
 use std::process::{Command as OsCommand, Stdio};
@@ -149,13 +149,13 @@ pub async fn ensure_session_running(name: &str) -> Result<SessionEntry> {
     Ok(entry)
 }
 
-/// Spawn a detached `conduit --run-daemon --session-name <name>` process and
+/// Spawn a detached `conduit run-daemon --session-name <name>` process and
 /// return its pid. The child re-execs the current binary.
 fn spawn_daemon_process(name: &str) -> Result<u32> {
     let exe = std::env::current_exe()?;
     let child = OsCommand::new(exe)
         .env("CONDUIT_SESSION_NAME", name)
-        .arg("--run-daemon")
+        .arg("run-daemon")
         .arg("--session-name")
         .arg(name)
         .stdin(Stdio::null())

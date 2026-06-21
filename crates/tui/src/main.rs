@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use app::TuiApp;
 use base64::Engine as _;
+use clap::{Args, Parser, Subcommand};
 use conduit_core::{spawn_core, CoreHandle};
 use crossterm::{
     event::{
@@ -36,9 +37,10 @@ use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 #[derive(Debug)]
 enum LaunchMode {
+    /// Bare `conduit tui` — terminal UI on an in-process core, no session.
     Local,
-    CreateSession { name: String },
-    AttachSession { name: String },
+    /// `conduit tui attach <name>` — attach the TUI to a session, creating it if missing.
+    Session { name: String },
     RemoveSession { name: String },
     ListSessions,
     RunDaemon { name: String },
@@ -49,15 +51,18 @@ enum LaunchMode {
     WebShutdown,
     WebStatus,
     /// Open the web UI in a native desktop window (requires the `desktop` feature).
-    Desktop,
+    /// `session` pins the window to one session (created if missing); `None` shows
+    /// the session picker. The field is unused on headless builds (no desktop UI).
+    Desktop {
+        #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+        session: Option<String>,
+    },
 }
 
 #[derive(Debug)]
 struct Cli {
     mode: LaunchMode,
     detach: bool,
-    version: bool,
-    help: bool,
 }
 
 struct Backend {
@@ -75,259 +80,250 @@ struct GitHubRelease {
     tag_name: String,
 }
 
-fn print_help() {
-    println!(
-        "\
-conduit {}
-
-USAGE:
-    conduit [OPTIONS]
-
-OPTIONS:
-    -s, --session <name>   Create (or reattach to) a named session
-    -a <name>              Attach to an existing session
-    -r, --remove <name>    Remove a session (stops its daemon)
-    -l, --list             List active sessions
-    -d, --detach           Start session in background only (with -s or -a)
-    -u, --update           Update to the latest release from GitHub
-        --reinstall        Reinstall the latest release (even if already up to date)
-    -V, --version          Print version
-    -h, --help             Print this help
-
-SUBCOMMANDS:
-    desktop                        Open the web UI in a native desktop window
-    tui                            Launch the terminal UI (non-session mode)
-    web serve [--session <name>]   Serve the web UI, attaching to running sessions
-    web status                     Show web server status and connected clients
-    web shutdown                   Stop the running web server
-    web set-password               Set the web UI password (required for remote access)
-
+const AFTER_HELP: &str = "\
 EXAMPLES:
-    conduit                     Open the desktop app (the default)
-    conduit tui                 Launch the terminal UI
-    conduit -s work             Create or reattach to session 'work'
-    conduit -s work -d          Start session 'work' in background
-    conduit -a work             Attach to running session 'work'
-    conduit -l                  List sessions
-    conduit -r work             Remove session 'work'
-    conduit web serve           Serve the web UI for all running sessions
-    conduit web status          Show web server status and connected clients
-    conduit web shutdown        Stop the running web server
-    conduit web set-password    Set the web UI password (for remote access)
+    conduit                       Open the default surface (desktop, or TUI on headless builds)
+    conduit tui                   Terminal UI on an in-process core (no session)
+    conduit tui attach work       Attach the TUI to session 'work' (created if missing)
+    conduit tui attach work -d    Start session 'work' in the background, don't open the UI
+    conduit web                   Serve the web UI for all running sessions (picker)
+    conduit web attach work       Serve the web UI pinned to session 'work'
+    conduit desktop attach work   Open the desktop window pinned to session 'work'
+    conduit list                  List active sessions
+    conduit remove work           Remove session 'work'
 
+Each surface accepts the `-a <name>` shorthand for `attach <name>`.
 The web UI listens on https://127.0.0.1:3001 by default (override with
-CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).",
-        env!("CARGO_PKG_VERSION")
-    );
+CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).";
+
+/// Conduit — a terminal multi-repository agent manager.
+///
+/// A *surface* (tui, web, desktop) is an interchangeable view onto a *session*
+/// (a named daemon). Attach a surface to a session — creating it if missing —
+/// with `conduit <surface> attach <name>` (or the `-a <name>` shorthand).
+#[derive(Parser, Debug)]
+#[command(
+    name = "conduit",
+    bin_name = "conduit",
+    version,
+    disable_version_flag = true,
+    after_help = AFTER_HELP
+)]
+struct CliArgs {
+    /// List active sessions.
+    #[arg(short = 'l', long = "list")]
+    list: bool,
+
+    /// Remove a session (stops its daemon).
+    #[arg(short = 'r', long = "remove", value_name = "NAME")]
+    remove: Option<String>,
+
+    /// Update to the latest release from GitHub.
+    #[arg(short = 'u', long = "update")]
+    update: bool,
+
+    /// Print version.
+    #[arg(short = 'v', long = "version", visible_short_alias = 'V')]
+    version: bool,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
 }
 
-fn parse_cli(args: Vec<String>) -> Result<Cli> {
-    // `conduit desktop` — open the web UI in a native window.
-    if args.first().map(String::as_str) == Some("desktop") {
-        return Ok(Cli {
-            mode: LaunchMode::Desktop,
-            detach: false,
-            version: false,
-            help: false,
-        });
-    }
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Launch the terminal UI (bare: in-process core, no session).
+    Tui(TuiArgs),
+    /// Serve or manage the web UI.
+    Web(WebArgs),
+    /// Open the web UI in a native desktop window.
+    Desktop(SurfaceArgs),
+    /// List active sessions.
+    List,
+    /// Remove a session (stops its daemon).
+    Remove {
+        /// Session name.
+        name: String,
+    },
+    /// Update to the latest release from GitHub.
+    Update,
+    /// Reinstall the latest release (even if already up to date).
+    Reinstall,
+    /// Print version.
+    Version,
+    /// (internal) Run a session daemon in the foreground.
+    #[command(hide = true)]
+    RunDaemon {
+        #[arg(long = "session-name", value_name = "NAME")]
+        session_name: String,
+    },
+}
 
-    // `conduit tui` — launch the terminal UI. Bare `conduit` opens the desktop
-    // app by default, so this is how you ask for the TUI explicitly.
-    if args.first().map(String::as_str) == Some("tui") {
-        return Ok(Cli {
-            mode: LaunchMode::Local,
-            detach: false,
-            version: false,
-            help: false,
-        });
-    }
+/// `conduit tui [attach <name>] [-d]` — terminal UI surface.
+#[derive(Args, Debug)]
+struct TuiArgs {
+    /// Attach to the named session, creating it if it doesn't exist.
+    #[arg(short = 'a', long = "attach", value_name = "NAME")]
+    attach: Option<String>,
 
-    // Subcommands: `conduit web set-password` / `conduit web serve [--session <name>]`
-    if args.first().map(String::as_str) == Some("web") {
-        match args.get(1).map(String::as_str) {
-            Some("set-password") => {
-                return Ok(Cli {
-                    mode: LaunchMode::WebSetPassword,
-                    detach: false,
-                    version: false,
-                    help: false,
-                });
-            }
-            Some("serve") => {
-                let mut session = None;
-                let mut j = 2;
-                while j < args.len() {
-                    match args[j].as_str() {
-                        "--session" | "-a" => {
-                            session = args.get(j + 1).cloned();
-                            j += 2;
-                        }
-                        _ => j += 1,
-                    }
-                }
-                return Ok(Cli {
-                    mode: LaunchMode::WebServe { session },
-                    detach: false,
-                    version: false,
-                    help: false,
-                });
-            }
-            Some("shutdown") => {
-                return Ok(Cli {
-                    mode: LaunchMode::WebShutdown,
-                    detach: false,
-                    version: false,
-                    help: false,
-                });
-            }
-            Some("status") => {
-                return Ok(Cli {
-                    mode: LaunchMode::WebStatus,
-                    detach: false,
-                    version: false,
-                    help: false,
-                });
-            }
-            _ => {
-                return Err(anyhow!(
-                    "unknown web subcommand; try: conduit web serve | conduit web status | conduit web shutdown | conduit web set-password"
-                ));
-            }
-        }
-    }
+    /// Start the session daemon in the background without opening the UI
+    /// (only valid together with a session).
+    #[arg(short = 'd', long = "detach")]
+    detach: bool,
 
-    let mut i = 0usize;
-    // Bare `conduit` (no subcommand, no flags) defaults to the desktop window.
-    // Headless builds (`--no-default-features`) have no desktop UI, so they fall
-    // back to the terminal UI instead.
+    #[command(subcommand)]
+    sub: Option<TuiCmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum TuiCmd {
+    /// Attach the TUI to the named session, creating it if it doesn't exist.
+    Attach {
+        /// Session name.
+        name: String,
+        /// Start the daemon in the background without opening the UI.
+        #[arg(short = 'd', long = "detach")]
+        detach: bool,
+    },
+}
+
+/// `conduit web [attach <name> | status | shutdown | set-password]`.
+#[derive(Args, Debug)]
+struct WebArgs {
+    /// Serve the web UI pinned to the named session (created if missing).
+    #[arg(short = 'a', long = "attach", value_name = "NAME")]
+    attach: Option<String>,
+
+    #[command(subcommand)]
+    sub: Option<WebCmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum WebCmd {
+    /// Serve the web UI pinned to the named session (created if missing).
+    Attach {
+        /// Session name.
+        name: String,
+    },
+    /// Show web server status and connected clients.
+    Status,
+    /// Stop the running web server.
+    Shutdown,
+    /// Set the web UI password (required for remote access).
+    SetPassword,
+}
+
+/// Shared surface arguments: `<surface> attach <name>` or `<surface> -a <name>`.
+#[derive(Args, Debug)]
+struct SurfaceArgs {
+    /// Attach to the named session, creating it if it doesn't exist.
+    #[arg(short = 'a', long = "attach", value_name = "NAME")]
+    attach: Option<String>,
+
+    #[command(subcommand)]
+    sub: Option<AttachCmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum AttachCmd {
+    /// Attach to the named session, creating it if it doesn't exist.
+    Attach {
+        /// Session name.
+        name: String,
+    },
+}
+
+/// Bare `conduit` (no subcommand, no flags). Defaults to the desktop window;
+/// headless builds (`--no-default-features`) have no desktop UI and fall back to
+/// the terminal UI.
+fn default_mode() -> LaunchMode {
     #[cfg(feature = "desktop")]
-    let mut mode = LaunchMode::Desktop;
+    {
+        LaunchMode::Desktop { session: None }
+    }
     #[cfg(not(feature = "desktop"))]
-    let mut mode = LaunchMode::Local;
-    let mut detach = false;
-    let mut version = false;
-    let mut help = false;
-    let mut daemon_name: Option<String> = None;
+    {
+        LaunchMode::Local
+    }
+}
 
-    while i < args.len() {
-        match args[i].as_str() {
-            "-s" | "--session" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing session name for {}", args[i]));
-                };
-                mode = LaunchMode::CreateSession { name };
-                i += 2;
-            }
-            "-a" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing session name for -a"));
-                };
-                mode = LaunchMode::AttachSession { name };
-                i += 2;
-            }
-            "-r" | "--remove" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing session name for {}", args[i]));
-                };
-                mode = LaunchMode::RemoveSession { name };
-                i += 2;
-            }
-            "-V" | "--version" => {
-                version = true;
-                i += 1;
-            }
-            "-d" | "--detach" => {
-                detach = true;
-                i += 1;
-            }
-            "-l" | "--list" => {
-                mode = LaunchMode::ListSessions;
-                i += 1;
-            }
-            "-u" | "--update" => {
-                mode = LaunchMode::Update;
-                i += 1;
-            }
-            "--reinstall" => {
-                mode = LaunchMode::Reinstall;
-                i += 1;
-            }
-            "-h" | "--help" => {
-                help = true;
-                i += 1;
-            }
-            "--run-daemon" => {
-                mode = LaunchMode::RunDaemon {
-                    name: String::new(),
-                };
-                i += 1;
-            }
-            "--session-name" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing name for --session-name"));
-                };
-                daemon_name = Some(name);
-                i += 2;
-            }
-            other => {
-                return Err(anyhow!("unknown argument: {other}"));
+/// Collapse the parsed clap tree into a `LaunchMode` + detach flag. A subcommand,
+/// when present, wins over the top-level convenience flags (`-l`/`-r`/`-u`).
+/// `Command::Version` is handled in `main` before this runs.
+fn resolve(args: CliArgs) -> Result<Cli> {
+    let mode = match args.command {
+        Some(Cmd::Tui(t)) => {
+            let (session, detach) = match t.sub {
+                Some(TuiCmd::Attach { name, detach }) => (Some(name), detach),
+                None => (t.attach, t.detach),
+            };
+            match session {
+                Some(name) => return Ok(Cli { mode: LaunchMode::Session { name }, detach }),
+                None if detach => {
+                    return Err(anyhow!(
+                        "--detach needs a session: try `conduit tui attach <name> -d`"
+                    ));
+                }
+                None => LaunchMode::Local,
             }
         }
-    }
-
-    if matches!(mode, LaunchMode::RunDaemon { .. }) {
-        let name = daemon_name.unwrap_or_default();
-        return Ok(Cli {
-            mode: LaunchMode::RunDaemon { name },
-            detach,
-            version,
-            help,
-        });
-    }
-
-    if detach
-        && matches!(
-            mode,
-            LaunchMode::RemoveSession { .. } | LaunchMode::ListSessions
-        )
-    {
-        return Err(anyhow!(
-            "--detach is only valid with session create/attach (-s or -a)"
-        ));
-    }
-
-    Ok(Cli {
-        mode,
-        detach,
-        version,
-        help,
-    })
+        Some(Cmd::Web(w)) => match w.sub {
+            Some(WebCmd::Status) => LaunchMode::WebStatus,
+            Some(WebCmd::Shutdown) => LaunchMode::WebShutdown,
+            Some(WebCmd::SetPassword) => LaunchMode::WebSetPassword,
+            Some(WebCmd::Attach { name }) => LaunchMode::WebServe { session: Some(name) },
+            None => LaunchMode::WebServe { session: w.attach },
+        },
+        Some(Cmd::Desktop(s)) => {
+            let session = match s.sub {
+                Some(AttachCmd::Attach { name }) => Some(name),
+                None => s.attach,
+            };
+            LaunchMode::Desktop { session }
+        }
+        Some(Cmd::List) => LaunchMode::ListSessions,
+        Some(Cmd::Remove { name }) => LaunchMode::RemoveSession { name },
+        Some(Cmd::Update) => LaunchMode::Update,
+        Some(Cmd::Reinstall) => LaunchMode::Reinstall,
+        Some(Cmd::Version) => unreachable!("version is handled in main()"),
+        Some(Cmd::RunDaemon { session_name }) => LaunchMode::RunDaemon { name: session_name },
+        None => {
+            if args.list {
+                LaunchMode::ListSessions
+            } else if let Some(name) = args.remove {
+                LaunchMode::RemoveSession { name }
+            } else if args.update {
+                LaunchMode::Update
+            } else {
+                default_mode()
+            }
+        }
+    };
+    Ok(Cli { mode, detach: false })
 }
 
 fn main() -> Result<()> {
-    let mut cli = parse_cli(std::env::args().skip(1).collect::<Vec<_>>())?;
-    if cli.help {
-        print_help();
-        return Ok(());
-    }
-    if cli.version {
+    let args = CliArgs::parse();
+    // `-h`/`--help` is handled by clap. Version is ours (`-v`/`-V`/`--version`
+    // flag or the `version` subcommand), since clap's auto flag is disabled.
+    if args.version || matches!(args.command, Some(Cmd::Version)) {
         println!("conduit {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    let mut cli = resolve(args)?;
 
     // GUI launchers (the macOS `.app`, the Linux `.desktop`) set CONDUIT_DESKTOP=1
     // and run the bare binary — with no explicit mode, open the desktop window.
     if matches!(cli.mode, LaunchMode::Local) && std::env::var_os("CONDUIT_DESKTOP").is_some() {
-        cli.mode = LaunchMode::Desktop;
+        cli.mode = LaunchMode::Desktop { session: None };
     }
 
     // The desktop app builds its own tokio runtime and owns the main thread for
     // the GUI event loop (required by macOS), so it must run *before* we enter a
     // runtime here — not from inside one.
     #[cfg(feature = "desktop")]
-    if matches!(cli.mode, LaunchMode::Desktop) {
-        return conduit_desktop::run();
+    if let LaunchMode::Desktop { session } = cli.mode {
+        return conduit_desktop::run(session);
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -342,6 +338,11 @@ async fn run_cli(cli: Cli) -> Result<()> {
         LaunchMode::Reinstall => self_update(true),
         LaunchMode::WebSetPassword => set_web_password(),
         LaunchMode::WebServe { session } => {
+            // `conduit web attach <name>` pins the web UI to one session; ensure
+            // that session's daemon is running (created if missing) before serving.
+            if let Some(name) = &session {
+                conduit_core::daemon::ensure_session_running(name).await?;
+            }
             let Some(cfg) = conduit_server::WebConfig::from_env(session) else {
                 return Err(anyhow!(
                     "web server not started (a non-localhost bind needs a password and TLS)"
@@ -366,7 +367,9 @@ async fn run_cli(cli: Cli) -> Result<()> {
         LaunchMode::RunDaemon { name } => conduit_core::daemon::run_session_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
-        LaunchMode::CreateSession { name } => {
+        LaunchMode::Session { name } => {
+            // Create-if-missing: `ensure_session_running` spawns the daemon when
+            // absent and restarts a stale one, then we attach the TUI to it.
             let entry = conduit_core::daemon::ensure_session_running(&name).await?;
             if cli.detach {
                 println!("session '{}' running in background (detached)", entry.name);
@@ -375,37 +378,11 @@ async fn run_cli(cli: Cli) -> Result<()> {
             let backend = build_remote_backend(&entry.socket_path).await?;
             run_tui(backend).await
         }
-        LaunchMode::AttachSession { name } => {
-            let entry = get_session(&name)?.ok_or_else(|| {
-                anyhow!(
-                    "session '{}' not found. create it with: conduit -s {}",
-                    name,
-                    name
-                )
-            })?;
-            let entry = if !socket_alive(&entry.socket_path) {
-                eprintln!("session '{}' is stale, restarting…", name);
-                conduit_core::daemon::ensure_session_running(&name).await?
-            } else {
-                entry
-            };
-            if cli.detach {
-                println!("session '{}' is running (detached)", entry.name);
-                return Ok(());
-            }
-            let backend = build_remote_backend(&entry.socket_path).await?;
-            run_tui(backend).await
-        }
         LaunchMode::Local => {
-            if cli.detach {
-                return Err(anyhow!(
-                    "--detach requires a named session: use `conduit -s <name> -d` or `conduit -a <name> -d`"
-                ));
-            }
             let (backend, _core) = build_local_backend();
             run_tui(backend).await
         }
-        LaunchMode::Desktop => Err(anyhow!(
+        LaunchMode::Desktop { .. } => Err(anyhow!(
             "this build of conduit has no desktop UI; rebuild with `--features desktop`"
         )),
     }
@@ -443,7 +420,7 @@ fn set_web_password() -> Result<()> {
     conduit_server::auth::set_password(&path, &pw)?;
     println!(
         "Web password set ({}). Non-localhost access now requires it over TLS. \
-         A running `conduit web serve` picks this up immediately — no restart needed.",
+         A running `conduit web` picks this up immediately — no restart needed.",
         path.display()
     );
     Ok(())
@@ -754,11 +731,6 @@ async fn build_remote_backend(socket_path: &str) -> Result<Backend> {
 // Session management
 // ---------------------------------------------------------------------------
 
-fn get_session(name: &str) -> Result<Option<SessionEntry>> {
-    let registry = load_registry()?;
-    Ok(registry.sessions.into_iter().find(|s| s.name == name))
-}
-
 fn delete_session(name: &str) -> Result<()> {
     let mut registry = load_registry()?;
     let Some(entry) = registry.sessions.iter().find(|s| s.name == name).cloned() else {
@@ -837,7 +809,8 @@ fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
         return false;
     }
     let cmdline = String::from_utf8_lossy(&output.stdout);
-    cmdline.contains("--run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
+    // Matches the `run-daemon` subcommand (and any stale `--run-daemon` daemons).
+    cmdline.contains("run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
 }
 
 fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {

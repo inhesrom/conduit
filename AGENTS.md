@@ -62,13 +62,13 @@ Config lives under `~/.config/conduit/` (respects `XDG_CONFIG_HOME`):
 
 | Variable | Description | Default |
 |---|---|---|
-| `CONDUIT_WEB_PORT` | `conduit web serve` port | `3001` |
+| `CONDUIT_WEB_PORT` | `conduit web` port | `3001` |
 | `CONDUIT_WEB_BIND` | Web server bind address (non-localhost needs password + TLS) | `127.0.0.1` |
 | `CONDUIT_WEB_TLS` | Force TLS on localhost (`on`) | — |
 | `CONDUIT_WEB_CERT` / `CONDUIT_WEB_KEY` | TLS cert/key PEM paths (else self-signed) | — |
 | `CONDUIT_SESSION_NAME` | Passed to daemon subprocess | — |
 | `SHELL` | Shell for terminal sessions | `zsh` |
 
-The web UI is served by the standalone `conduit web serve` (lists running
-sessions and attaches the browser to one); session daemons no longer run their
-own web server.
+The web UI is served by the standalone `conduit web` (lists running sessions and
+attaches the browser to one); session daemons no longer run their own web
+server.

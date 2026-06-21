@@ -1,7 +1,7 @@
 //! Standalone web server: serves the web UI, authenticates, and relays each
 //! browser WebSocket to a chosen running session daemon's Unix socket — so the
 //! browser can attach to and drive already-running sessions (and their live
-//! agents), the way the TUI's `conduit -a` does.
+//! agents), the way the TUI's `conduit tui attach` does.
 
 pub mod assets;
 pub mod auth;
@@ -244,7 +244,7 @@ struct CreateSessionReq {
 }
 
 /// Create (or restart) a named session daemon and return its name. Only the
-/// local desktop window may spawn daemons — reject it on the shared `web serve`
+/// local desktop window may spawn daemons — reject it on the shared `conduit web`
 /// server, where spawning processes on the host would be a privilege.
 async fn create_session(
     State(state): State<ServerState>,
@@ -432,12 +432,14 @@ pub async fn serve_embedded(
 }
 
 /// Serve the web UI for the native desktop window — no TLS, no auth, no control
-/// socket — proxying WebSockets to the user's running session daemons (no
-/// pinned session, so the UI shows the session picker on startup). Binds `bind`
-/// (pass port 0 for an ephemeral loopback port), reports the actual bound
-/// address through `ready`, then serves until Ctrl-C or the process exits.
+/// socket — proxying WebSockets to the user's running session daemons. With
+/// `pinned_session = None` the UI shows the session picker on startup; with
+/// `Some(name)` it locks the window to that one session. Binds `bind` (pass port
+/// 0 for an ephemeral loopback port), reports the actual bound address through
+/// `ready`, then serves until Ctrl-C or the process exits.
 pub async fn serve_desktop(
     bind: SocketAddr,
+    pinned_session: Option<String>,
     ready: tokio::sync::oneshot::Sender<SocketAddr>,
 ) -> anyhow::Result<()> {
     // Auth disabled: a loopback-only local server needs no password. Point the
@@ -446,7 +448,7 @@ pub async fn serve_desktop(
     let auth = Arc::new(Auth::load(void.clone(), void, false));
     let state = ServerState {
         auth,
-        pinned_session: None,
+        pinned_session,
         clients: Arc::new(Mutex::new(HashMap::new())),
         next_client_id: Arc::new(AtomicU64::new(1)),
         started: Instant::now(),

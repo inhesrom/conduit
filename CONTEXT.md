@@ -32,12 +32,21 @@ _Avoid_: working, busy, running.
 Unchanged infrastructure concept — a named daemon process bound to a Unix socket. A process/isolation boundary, NOT a domain grouping. Repositories are global (above sessions); Workspaces are per-session.
 _Avoid_: workspace, project.
 
+**Surface**:
+An interchangeable view onto a **Session** — the terminal UI (`tui`), the browser UI (`web`), or the native window (`desktop`). Surfaces are orthogonal to Sessions: any surface can attach to any session. Opened with `conduit <surface>`; pinned to one session with `conduit <surface> attach <name>`. The CLI surface keyword is the first word after `conduit`.
+_Avoid_: launch type, app version, mode.
+
+**Attach**:
+Connecting a **Surface** to a **Session**, creating the session (spawning its daemon) if it doesn't exist. `conduit <surface> attach <name>` is idempotent — it starts the daemon when absent and reattaches when present. Bare `conduit tui` is the exception: a Sessionless **Local** view on an in-process core. (See ADR 0003.)
+_Avoid_: open, connect, launch.
+
 ## Relationships
 
 - A **Repository** has many **Workspaces** (reference by `repository_id`).
 - A **Workspace** has exactly one **Worktree**, one branch, one agent terminal, and optional **AgentActive** and **ReadyForReview** states.
 - **Repositories** live in a global `repositories.json`; **Workspaces** live per-session with a `repository_id` foreign key.
 - A **Session** owns many **Workspaces** but does not own **Repositories**.
+- A **Surface** attaches to at most one **Session** at a time (the `web`/`desktop` picker switches between them); bare `conduit tui` runs Sessionless on an in-process core.
 
 ## Example dialogue
 
@@ -53,3 +62,4 @@ _Avoid_: workspace, project.
 - "Workspace" previously meant *the repo directory itself*. It was renamed: today's repo-directory concept is now **Repository**, and **Workspace** means a per-task worktree. (See ADR 0001.)
 - "done"/"ready" was used loosely — resolved to **ReadyForReview**, an explicit state kept orthogonal to **AttentionLevel**. (See ADR 0002.)
 - "working"/"busy" is ambiguous — resolved to **AgentActive**, a transient output-within-settle-window signal rather than process liveness.
+- "launch type"/"app version" for tui/web/desktop — resolved to **Surface**, with the unified `conduit <surface> [attach <name>]` CLI grammar. The old top-level `-s`/`-a` session flags were removed. (See ADR 0003.)

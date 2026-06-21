@@ -62,15 +62,29 @@ cargo run
 
 ## Usage
 
+A *surface* (`tui`, `web`, `desktop`) is an interchangeable view onto a
+*session* (a named daemon). Attach a surface to a session — creating it if it
+doesn't exist — with `conduit <surface> attach <name>` (or the `-a <name>`
+shorthand). Session management lives at the top level.
+
 ```
-conduit                    Open the desktop app (default)
-conduit tui                Terminal UI (no session)
-conduit -s <name>          Create and start a named session
-conduit -a <name>          Attach to an existing session
-conduit -l                 List sessions
-conduit -r <name>          Remove a session
-conduit -d                 Detach (use with -s or -a)
+conduit                       Open the default surface (desktop, or TUI on headless builds)
+conduit tui                   Terminal UI on an in-process core (no session)
+conduit tui attach <name>     Attach the TUI to a session (created if missing)
+conduit tui attach <name> -d  Start the session daemon in the background, don't open the UI
+conduit web                   Serve the web UI for all running sessions (picker)
+conduit web attach <name>     Serve the web UI pinned to one session
+conduit desktop               Open the native desktop window (session picker)
+conduit desktop attach <name> Open the desktop window pinned to one session
+conduit list                  List active sessions          (alias: -l)
+conduit remove <name>         Remove a session              (alias: -r <name>)
+conduit version               Print version                 (alias: -v)
+conduit help                  Print help                    (alias: -h)
 ```
+
+Each surface accepts `-a <name>` as shorthand for `attach <name>`
+(e.g. `conduit tui -a work`). `web` also takes `status`, `shutdown`, and
+`set-password` subcommands.
 
 ## Key Bindings
 
@@ -122,16 +136,16 @@ conduit -d                 Detach (use with -s or -a)
 
 ### Web UI
 
-`conduit web serve` runs a standalone web server (`web/`) that lists your
-running sessions and attaches the browser to whichever you pick — `conduit -a`
+`conduit web` runs a standalone web server (`web/`) that lists your running
+sessions and attaches the browser to whichever you pick — `conduit tui attach`
 for the browser. It connects to sessions over their existing daemon sockets, so
 it drives already-running sessions and their live agents without restarting
 them. Run it once; browse `http://localhost:3001`.
 
 ```sh
-conduit -s work                      # start your session(s) as usual
-conduit web serve                    # then serve the web UI for all of them
-conduit web serve --session work     # …or pin it to one session
+conduit tui attach work -d   # start your session(s) in the background
+conduit web                  # then serve the web UI for all of them
+conduit web attach work      # …or pin it to one session (created if missing)
 ```
 
 For remote access, set a password and bind beyond localhost — both are
@@ -139,7 +153,7 @@ required, and TLS is used automatically (self-signed if no cert is provided):
 
 ```sh
 conduit web set-password
-CONDUIT_WEB_BIND=0.0.0.0 conduit web serve   # refused unless a password is set
+CONDUIT_WEB_BIND=0.0.0.0 conduit web   # refused unless a password is set
 ```
 
 ### Desktop app
@@ -164,7 +178,7 @@ Releases ship double-clickable bundles — a macOS `.dmg`/`.app` and a Linux
 
 **Headless / server builds:** compile with `--no-default-features` to drop the
 GTK/WebKit link. There, a bare `conduit` falls back to the terminal UI and
-`conduit web serve` runs without any desktop dependencies:
+`conduit web` runs without any desktop dependencies:
 
 ```sh
 cargo build --release -p tui --no-default-features

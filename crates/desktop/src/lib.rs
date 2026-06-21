@@ -20,7 +20,10 @@ use wry::WebViewBuilder;
 
 /// Launch the desktop app. Blocks (runs the GUI event loop) until the window is
 /// closed, then exits the process. Must be called on the main thread.
-pub fn run() -> Result<()> {
+///
+/// `session` pins the window to one session (created if missing); `None` shows
+/// the session picker on startup.
+pub fn run(session: Option<String>) -> Result<()> {
     // The tokio runtime hosts the in-process core + embedded web server on
     // worker threads; the GUI event loop owns the main thread (macOS requires
     // the NSApplication loop to run there).
@@ -31,10 +34,15 @@ pub fn run() -> Result<()> {
     // Start the core + embedded server and wait for the bound (ephemeral) port.
     // The spawned server task keeps running on the runtime after this returns.
     let addr: SocketAddr = rt.block_on(async {
+        // `desktop attach <name>`: ensure the pinned session's daemon is running
+        // (created if missing) before the window connects to it.
+        if let Some(name) = &session {
+            conduit_core::daemon::ensure_session_running(name).await?;
+        }
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
         let bind: SocketAddr = ([127, 0, 0, 1], 0).into();
         tokio::spawn(async move {
-            if let Err(e) = conduit_server::serve_desktop(bind, ready_tx).await {
+            if let Err(e) = conduit_server::serve_desktop(bind, session, ready_tx).await {
                 eprintln!("[conduit] desktop server exited: {e}");
             }
         });
@@ -60,7 +68,8 @@ pub fn run() -> Result<()> {
             std::process::exit(0);
         });
 
-        ready_rx.await
+        let addr = ready_rx.await?;
+        Ok::<SocketAddr, anyhow::Error>(addr)
     })?;
 
     let url = format!("http://{addr}/");

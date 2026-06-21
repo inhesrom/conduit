@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 conduit_server = { path = "../server" }
+conduit_core = { path = "../core" }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal"] }
 wry = "0.55.1"
