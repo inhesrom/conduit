@@ -443,7 +443,8 @@ fn set_web_password() -> Result<()> {
     let path = conduit_server::web_auth_path();
     conduit_server::auth::set_password(&path, &pw)?;
     println!(
-        "Web password set ({}). Non-localhost access now requires it over TLS.",
+        "Web password set ({}). Non-localhost access now requires it over TLS. \
+         A running `conduit web serve` picks this up immediately — no restart needed.",
         path.display()
     );
     Ok(())

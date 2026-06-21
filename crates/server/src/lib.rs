@@ -21,7 +21,7 @@ use axum::{
     extract::{ConnectInfo, Query, Request, State, WebSocketUpgrade},
     http::{
         header::{HOST, ORIGIN},
-        HeaderMap, StatusCode,
+        HeaderMap, StatusCode, Uri,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -248,28 +248,42 @@ struct LoginReq {
 }
 
 /// Reject cross-origin form posts (defense in depth atop SameSite cookies).
-fn origin_ok(headers: &HeaderMap) -> bool {
-    let origin = headers.get(ORIGIN).and_then(|v| v.to_str().ok());
-    let host = headers.get(HOST).and_then(|v| v.to_str().ok());
-    match origin {
+///
+/// The effective host is the `Host` header on HTTP/1, but on HTTP/2 there is no
+/// `Host` header — the authority arrives in the `:authority` pseudo-header,
+/// which hyper surfaces via the request URI. We must check both, or every
+/// browser login over the default HTTPS server (which negotiates HTTP/2) is
+/// rejected as a bad origin. With no resolvable host we allow it, since the
+/// `SameSite=Strict` session cookie is the primary CSRF protection.
+fn origin_ok(headers: &HeaderMap, uri: &Uri) -> bool {
+    let Some(origin) = headers.get(ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return true; // non-browser client (e.g. curl) — SameSite still guards
+    };
+    let Some(origin_host) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    else {
+        return false; // opaque/"null" or malformed Origin
+    };
+    let effective_host = headers
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| uri.authority().map(|a| a.as_str()));
+    match effective_host {
+        Some(host) => origin_host == host,
         None => true,
-        Some(o) => {
-            let stripped = o
-                .strip_prefix("https://")
-                .or_else(|| o.strip_prefix("http://"));
-            matches!((stripped, host), (Some(oh), Some(h)) if oh == h)
-        }
     }
 }
 
 async fn login(
     State(state): State<ServerState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    uri: Uri,
     headers: HeaderMap,
     jar: CookieJar,
     Json(body): Json<LoginReq>,
 ) -> Response {
-    if !origin_ok(&headers) {
+    if !origin_ok(&headers, &uri) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     if !state.auth.enabled() {
@@ -465,4 +479,59 @@ pub async fn serve(cfg: WebConfig) -> anyhow::Result<()> {
     // Best-effort cleanup so a later `web status` doesn't find a stale socket.
     let _ = std::fs::remove_file(control::control_socket_path());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderName;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    // HTTP/1: the authority is in the `Host` header; the URI is path-only.
+    #[test]
+    fn origin_ok_http1_uses_host_header() {
+        let uri: Uri = "/api/login".parse().unwrap();
+        assert!(origin_ok(
+            &headers(&[("host", "127.0.0.1:3001"), ("origin", "https://127.0.0.1:3001")]),
+            &uri
+        ));
+        assert!(!origin_ok(
+            &headers(&[("host", "127.0.0.1:3001"), ("origin", "https://evil.example")]),
+            &uri
+        ));
+    }
+
+    // HTTP/2: no `Host` header — the authority rides in the URI. This is the
+    // case every browser hits over the default HTTPS server.
+    #[test]
+    fn origin_ok_http2_uses_uri_authority() {
+        let uri: Uri = "https://127.0.0.1:3001/api/login".parse().unwrap();
+        assert!(origin_ok(&headers(&[("origin", "https://127.0.0.1:3001")]), &uri));
+        assert!(!origin_ok(&headers(&[("origin", "https://evil.example")]), &uri));
+    }
+
+    // Non-browser clients (curl) send no Origin; SameSite=Strict still guards.
+    #[test]
+    fn origin_ok_no_origin_allowed() {
+        let uri: Uri = "/api/login".parse().unwrap();
+        assert!(origin_ok(&headers(&[]), &uri));
+        assert!(origin_ok(&headers(&[("host", "127.0.0.1:3001")]), &uri));
+    }
+
+    // An opaque ("null") or schemeless Origin is rejected.
+    #[test]
+    fn origin_ok_opaque_origin_rejected() {
+        let uri: Uri = "https://127.0.0.1:3001/api/login".parse().unwrap();
+        assert!(!origin_ok(&headers(&[("origin", "null")]), &uri));
+    }
 }

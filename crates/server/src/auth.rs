@@ -1,11 +1,13 @@
 //! Password auth + opaque cookie sessions for remote access.
 //!
-//! A single shared password (argon2id) gates the WebSocket and APIs. On login
-//! the server hands out a random token; it stores only sha256(token) plus an
-//! expiry, persisted so a daemon restart doesn't log everyone out. The browser
-//! sends the cookie automatically on the WS upgrade, so no auth plumbing leaks
-//! into the protocol. When no password is set the server binds localhost only
-//! and auth is disabled.
+//! A single shared password (argon2id) gates the WebSocket and APIs. The hash
+//! is re-read from `web_auth.json` on each auth check (not cached at startup),
+//! so `conduit web set-password` takes effect on a running server with no
+//! restart. On login the server hands out a random token; it stores only
+//! sha256(token) plus an expiry, persisted so a daemon restart doesn't log
+//! everyone out. The browser sends the cookie automatically on the WS upgrade,
+//! so no auth plumbing leaks into the protocol. When no password is set the
+//! server binds localhost only and auth is disabled.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -81,7 +83,7 @@ fn set_mode_600(path: &PathBuf) {
 fn set_mode_600(_path: &PathBuf) {}
 
 pub struct Auth {
-    password: Option<String>,
+    auth_path: PathBuf,
     sessions: RwLock<HashMap<String, u64>>,
     rate: RwLock<HashMap<IpAddr, (u32, u64)>>,
     sessions_path: PathBuf,
@@ -90,17 +92,13 @@ pub struct Auth {
 
 impl Auth {
     pub fn load(auth_path: PathBuf, sessions_path: PathBuf, secure_cookie: bool) -> Self {
-        let password = std::fs::read(&auth_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<PasswordFile>(&b).ok())
-            .and_then(|p| p.argon2);
         let sessions = std::fs::read(&sessions_path)
             .ok()
             .and_then(|b| serde_json::from_slice::<SessionFile>(&b).ok())
             .map(|f| f.sessions)
             .unwrap_or_default();
         Auth {
-            password,
+            auth_path,
             sessions: RwLock::new(sessions),
             rate: RwLock::new(HashMap::new()),
             sessions_path,
@@ -108,9 +106,21 @@ impl Auth {
         }
     }
 
+    /// The current password hash, re-read from disk on every call. Reading per
+    /// attempt (rather than caching at startup) means `conduit web set-password`
+    /// is honored immediately by a running server — otherwise a server that was
+    /// up when the password changed keeps verifying against the old hash and
+    /// rejects the new password as incorrect.
+    fn current_password(&self) -> Option<String> {
+        std::fs::read(&self.auth_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<PasswordFile>(&b).ok())
+            .and_then(|p| p.argon2)
+    }
+
     /// Whether a password is configured. When false, auth is disabled.
     pub fn enabled(&self) -> bool {
-        self.password.is_some()
+        self.current_password().is_some()
     }
 
     fn persist(&self) {
@@ -147,8 +157,8 @@ impl Auth {
     /// Verify a password; on success mint a session token (returned raw, to be
     /// set as a cookie). Returns None on mismatch.
     pub fn login(&self, ip: IpAddr, plain: &str) -> Option<String> {
-        let phc = self.password.as_ref()?;
-        let parsed = PasswordHash::new(phc).ok()?;
+        let phc = self.current_password()?;
+        let parsed = PasswordHash::new(&phc).ok()?;
         if Argon2::default()
             .verify_password(plain.as_bytes(), &parsed)
             .is_err()
@@ -229,6 +239,35 @@ mod tests {
 
         auth.logout(Some(&token));
         assert!(!auth.validate(Some(&token)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn password_change_takes_effect_without_reload() {
+        let dir =
+            std::env::temp_dir().join(format!("conduit-auth-reload-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let auth_path = dir.join("web_auth.json");
+        let sess_path = dir.join("web_sessions.json");
+
+        set_password(&auth_path, "first").unwrap();
+        let auth = Auth::load(auth_path.clone(), sess_path.clone(), false);
+        assert!(auth.login(ip(), "first").is_some());
+
+        // Change the password on disk while the same Auth instance stays live —
+        // exactly the case a running `conduit web serve` hits when the user runs
+        // `set-password`. The old password must stop working and the new one
+        // must work, with no reload of the Auth instance.
+        set_password(&auth_path, "second").unwrap();
+        assert!(
+            auth.login(ip(), "first").is_none(),
+            "old password must stop working after set-password"
+        );
+        assert!(
+            auth.login(ip(), "second").is_some(),
+            "new password must work without restarting the server"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
