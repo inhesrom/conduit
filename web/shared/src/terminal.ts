@@ -1,5 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
@@ -66,6 +67,39 @@ function xtermTheme(): ITheme {
 }
 
 const RESIZE_DEBOUNCE_MS = 150;
+
+/**
+ * Write text to the system clipboard. Prefers the async Clipboard API, but
+ * falls back to a hidden <textarea> + execCommand("copy") because that path
+ * (a) works in the web UI when served over plain HTTP from a non-loopback
+ * host, where `navigator.clipboard` is undefined (insecure context), and
+ * (b) is a reliable backstop inside the WebKitGTK desktop webview. Must be
+ * called from within a user gesture (a keydown handler) for the fallback.
+ */
+function copyToClipboard(text: string): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => execCommandCopy(text));
+    return;
+  }
+  execCommandCopy(text);
+}
+
+function execCommandCopy(text: string): void {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  ta.style.pointerEvents = "none";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    /* nothing more we can do */
+  }
+  document.body.removeChild(ta);
+}
 
 export interface CreateTerminalOpts {
   workspaceId: string;
@@ -179,18 +213,30 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
   // nothing but submit. Cancelling the keydown's default suppresses the
   // keypress, so only the LF is sent.
   term.attachCustomKeyEventHandler((e) => {
-    if (
-      e.type === "keydown" &&
-      e.key === "Enter" &&
-      e.shiftKey &&
-      !e.ctrlKey &&
-      !e.altKey &&
-      !e.metaKey
-    ) {
+    if (e.type !== "keydown") return true;
+
+    if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       sendText("\n");
       return false;
     }
+
+    // Ctrl+C (or Cmd+C) copies the selection when there is one; otherwise it
+    // falls through to xterm, which encodes it as 0x03 (SIGINT) as usual. This
+    // matches native terminals — xterm consumes the keystroke before the
+    // browser can copy, so without this Ctrl+C could never copy.
+    const copyCombo =
+      e.key.toLowerCase() === "c" &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey &&
+      !e.shiftKey &&
+      !(e.ctrlKey && e.metaKey);
+    if (copyCombo && term.hasSelection()) {
+      e.preventDefault();
+      copyToClipboard(term.getSelection());
+      return false;
+    }
+
     return true;
   });
 
@@ -232,6 +278,13 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       const unicode11 = new Unicode11Addon();
       term.loadAddon(unicode11);
       term.unicode.activeVersion = "11";
+
+      // Make URLs clickable. The handler passes the real uri to window.open so
+      // that in the desktop webview wry's new-window handler receives it (and
+      // routes to the OS browser); in a plain browser it opens a new tab.
+      term.loadAddon(
+        new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener,noreferrer")),
+      );
 
       // DOM renderer (no WebGL addon): repaints reliably on theme changes, so
       // the terminal background follows the active theme.

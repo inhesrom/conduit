@@ -64,6 +64,8 @@ pub fn run() -> Result<()> {
     })?;
 
     let url = format!("http://{addr}/");
+    // Same-origin prefix used to tell in-app navigations from external links.
+    let origin = format!("http://{addr}");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -72,7 +74,30 @@ pub fn run() -> Result<()> {
         .with_decorations(false)
         .build(&event_loop)?;
 
-    let builder = WebViewBuilder::new().with_url(&url);
+    let builder = WebViewBuilder::new()
+        .with_url(&url)
+        // WebKitGTK (Linux) and WebView2 (Windows) gate clipboard access off by
+        // default; the terminal's Ctrl+C-to-copy writes to the clipboard from
+        // JS, so it must be enabled. macOS is always enabled.
+        .with_clipboard(true)
+        // Clickable terminal links use window.open; route those to the OS
+        // browser instead of opening a dead in-webview window.
+        .with_new_window_req_handler(|target, _features| {
+            let _ = open::that(&target);
+            wry::NewWindowResponse::Deny
+        })
+        // Defense in depth: allow same-origin navigations (the app itself) but
+        // send any external top-level navigation to the OS browser rather than
+        // letting it replace the app. SPA routing uses the History API and does
+        // not trip this.
+        .with_navigation_handler(move |target| {
+            if target.starts_with(&origin) || target == "about:blank" {
+                true
+            } else {
+                let _ = open::that(&target);
+                false
+            }
+        });
 
     #[cfg(not(any(
         target_os = "linux",
