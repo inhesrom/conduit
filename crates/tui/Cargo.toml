@@ -8,8 +8,11 @@ name = "conduit"
 path = "src/main.rs"
 
 [features]
-# Compile in the native desktop window (`conduit desktop`). Off by default so
-# headless builds (servers running `conduit web serve`) don't link GTK/WebKit.
+# On by default so a plain `conduit` opens the native desktop window. Headless
+# builds (servers running `conduit web serve`) opt out with
+# `--no-default-features`, which drops the GTK/WebKit link and makes bare
+# `conduit` fall back to the terminal UI.
+default = ["desktop"]
 desktop = ["dep:conduit_desktop"]
 
 [dependencies]
