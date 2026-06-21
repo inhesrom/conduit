@@ -10,3 +10,4 @@ anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal"] }
 wry = "0.55.1"
 tao = "0.35.3"
+open = "5"
