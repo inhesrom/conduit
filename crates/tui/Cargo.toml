@@ -42,7 +42,9 @@ rpassword = "7"
 product-name = "Conduit"
 identifier = "space.citra.conduit"
 formats = ["app", "dmg", "deb", "appimage"]
-icons = ["icons/icon.png"]
+# Standard 1x sizes only — cargo-packager's macOS .icns builder rejects sizes
+# with no 1x IconType (e.g. 1024 = 512@2x, 64 = 32@2x) with "No matching IconType".
+icons = ["icons/16x16.png", "icons/32x32.png", "icons/128x128.png", "icons/256x256.png", "icons/512x512.png"]
 
 [package.metadata.packager.macos]
 # Merged over cargo-packager's generated Info.plist: sets CONDUIT_DESKTOP=1 so
