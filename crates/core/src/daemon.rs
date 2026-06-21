@@ -6,16 +6,20 @@
 //! to this socket and bridges browser WebSockets to it.
 
 use std::path::PathBuf;
+use std::process::{Command as OsCommand, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use protocol::Command;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::history::{snapshot_and_subscribe, spawn_recorder, CombinedHistory};
 use crate::ipc::{read_frame, write_frame};
-use crate::sessions::session_socket_path;
+use crate::sessions::{
+    load_registry, save_registry, session_socket_path, socket_alive, SessionEntry,
+};
 use crate::spawn_core;
 
 /// Run a session daemon for `name`: spawn the core event loop, bind the
@@ -114,4 +118,62 @@ pub async fn run_session_daemon(name: &str) -> Result<()> {
             }
         });
     }
+}
+
+/// Ensure a session daemon named `name` is running, spawning a detached daemon
+/// process if it isn't, and return its registry entry. Shared by the TUI's
+/// session commands and the desktop app's "new session" flow.
+pub async fn ensure_session_running(name: &str) -> Result<SessionEntry> {
+    let mut registry = load_registry()?;
+    if let Some(existing) = registry.sessions.iter().find(|s| s.name == name).cloned() {
+        if socket_alive(&existing.socket_path) {
+            return Ok(existing);
+        }
+        registry.sessions.retain(|s| s.name != name);
+    }
+
+    let pid = spawn_daemon_process(name)?;
+    let sock_path = session_socket_path(name)?;
+    let sock_str = sock_path.display().to_string();
+
+    wait_for_socket(&sock_str, Duration::from_secs(8)).await?;
+
+    let entry = SessionEntry {
+        name: name.to_string(),
+        socket_path: sock_str,
+        pid,
+    };
+    registry.sessions.retain(|s| s.name != name);
+    registry.sessions.push(entry.clone());
+    save_registry(&registry)?;
+    Ok(entry)
+}
+
+/// Spawn a detached `conduit --run-daemon --session-name <name>` process and
+/// return its pid. The child re-execs the current binary.
+fn spawn_daemon_process(name: &str) -> Result<u32> {
+    let exe = std::env::current_exe()?;
+    let child = OsCommand::new(exe)
+        .env("CONDUIT_SESSION_NAME", name)
+        .arg("--run-daemon")
+        .arg("--session-name")
+        .arg(name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to spawn daemon for session '{}'", name))?;
+    Ok(child.id())
+}
+
+/// Poll until the session's Unix socket accepts connections, or time out.
+async fn wait_for_socket(path: &str, timeout: Duration) -> Result<()> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if socket_alive(path) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+    Err(anyhow!("daemon did not become ready at {}", path))
 }

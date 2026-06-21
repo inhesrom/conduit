@@ -1525,6 +1525,15 @@
   font-family: var(--mono);
   color: var(--ink-dim);
 }
+.session-create {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.session-create .modal-input {
+  flex: 1;
+  min-width: 0;
+}
 
 @media (max-width: 720px) {
   .sidebar {
