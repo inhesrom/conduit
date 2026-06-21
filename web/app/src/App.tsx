@@ -65,7 +65,7 @@ function Topbar() {
   return (
     <header class="topbar">
       <span class="topbar-mark mono">
-        <ConduitMark size={20} class="topbar-logo" />
+        <ConduitMark size={28} class="topbar-logo" />
         conduit
       </span>
       <span class="topbar-sep">/</span>
