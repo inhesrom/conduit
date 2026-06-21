@@ -18,7 +18,7 @@
   align-items: center;
   gap: 7px;
   font-family: var(--font-display);
-  font-size: calc(16px * var(--ui-scale));
+  font-size: calc(22px * var(--ui-scale));
   color: var(--ink);
 }
 .topbar-logo {
