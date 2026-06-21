@@ -30,7 +30,7 @@ export function SessionPicker() {
                 when={desktop()}
                 fallback={
                   <>
-                    No running sessions. Start one with <code>conduit -s &lt;name&gt;</code>.
+                    No running sessions. Start one with <code>conduit tui attach &lt;name&gt;</code>.
                   </>
                 }
               >

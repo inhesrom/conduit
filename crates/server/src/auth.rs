@@ -256,7 +256,7 @@ mod tests {
         assert!(auth.login(ip(), "first").is_some());
 
         // Change the password on disk while the same Auth instance stays live —
-        // exactly the case a running `conduit web serve` hits when the user runs
+        // exactly the case a running `conduit web` hits when the user runs
         // `set-password`. The old password must stop working and the new one
         // must work, with no reload of the Auth instance.
         set_password(&auth_path, "second").unwrap();

@@ -31,7 +31,7 @@ web/
 
 ```sh
 # 1. Start a conduit session — its daemon serves ws://127.0.0.1:3001/ws
-conduit -s dev
+conduit tui attach dev -d
 
 # 2. Run the app
 cd web
