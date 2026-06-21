@@ -507,7 +507,6 @@ name = "conduit_desktop"
 version = "0.3.70"
 dependencies = [
  "anyhow",
- "conduit_core",
  "conduit_server",
  "tao",
  "tokio",
