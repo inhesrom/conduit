@@ -1,4 +1,5 @@
 import { createSignal, For, Show } from "solid-js";
+import type { SessionInfo } from "../state/sessions";
 import { createSession, desktop, refreshSessions, selectSession, sessions } from "../state/sessions";
 
 /** Full-screen gate shown after login when no session is attached yet. */
@@ -15,6 +16,18 @@ export function SessionPicker() {
     setBusy(false);
     if (err) setError(err);
     // On success createSession attaches; this picker unmounts.
+  };
+
+  // Attach to a session, resurrecting a stale daemon first if needed. Reviving
+  // can take a few seconds, so reuse the busy/error feedback above.
+  const pick = async (s: SessionInfo) => {
+    if (busy()) return;
+    setBusy(true);
+    setError(null);
+    const err = await selectSession(s.name);
+    setBusy(false);
+    if (err) setError(err);
+    // On success this picker unmounts once the session attaches.
   };
 
   return (
@@ -43,8 +56,16 @@ export function SessionPicker() {
             <For each={sessions()}>
               {(s) => (
                 <li>
-                  <button class="session-opt mono" onClick={() => selectSession(s)}>
-                    {s}
+                  <button
+                    class="session-opt mono"
+                    classList={{ stale: !s.running }}
+                    disabled={busy()}
+                    onClick={() => void pick(s)}
+                  >
+                    {s.name}
+                    <Show when={!s.running}>
+                      <span class="session-stale">stale</span>
+                    </Show>
                   </button>
                 </li>
               )}

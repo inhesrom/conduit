@@ -45,13 +45,16 @@ function SessionSwitcher() {
             {(s) => (
               <button
                 class="menu-item"
-                classList={{ active: s === currentSession() }}
+                classList={{ active: s.name === currentSession(), stale: !s.running }}
                 onClick={() => {
                   setOpen(false);
-                  selectSession(s);
+                  void selectSession(s.name);
                 }}
               >
-                {s}
+                {s.name}
+                <Show when={!s.running}>
+                  <span class="session-stale">stale</span>
+                </Show>
               </button>
             )}
           </For>

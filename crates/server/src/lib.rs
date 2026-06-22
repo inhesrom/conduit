@@ -224,15 +224,20 @@ async fn ws_handler(
 }
 
 async fn sessions(State(state): State<ServerState>) -> impl IntoResponse {
-    let names: Vec<String> = match &state.pinned_session {
-        Some(p) => vec![p.clone()],
-        None => conduit_core::sessions::list_running_sessions()
-            .into_iter()
-            .map(|s| s.name)
-            .collect(),
+    use conduit_core::sessions::SessionStatus;
+    let list: Vec<SessionStatus> = match &state.pinned_session {
+        // Pinned/embedded: one logical session bridged to an in-process core,
+        // which has no daemon socket — report it as always running.
+        Some(p) => vec![SessionStatus {
+            name: p.clone(),
+            running: true,
+        }],
+        // Full registry, including stale entries, so the picker can show and
+        // resurrect sessions whose daemon died (e.g. after a reboot).
+        None => conduit_core::sessions::list_all_sessions(),
     };
     Json(json!({
-        "sessions": names,
+        "sessions": list,
         "pinned": state.pinned_session.is_some(),
         "desktop": state.desktop,
     }))
@@ -243,19 +248,30 @@ struct CreateSessionReq {
     name: String,
 }
 
-/// Create (or restart) a named session daemon and return its name. Only the
-/// local desktop window may spawn daemons — reject it on the shared `conduit web`
-/// server, where spawning processes on the host would be a privilege.
+/// Create (or restart) a named session daemon and return its name. The local
+/// desktop window may spawn any session. The shared `conduit web` server may
+/// only *resurrect* a session already in the registry (e.g. one whose daemon
+/// died on reboot) — minting brand-new names there would be a privilege, since
+/// it spawns arbitrary processes on the host.
 async fn create_session(
     State(state): State<ServerState>,
     Json(body): Json<CreateSessionReq>,
 ) -> Response {
-    if !state.desktop {
-        return (StatusCode::FORBIDDEN, "session creation is desktop-only").into_response();
-    }
     let name = body.name.trim();
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, "session name is required").into_response();
+    }
+    if !state.desktop {
+        let known = conduit_core::sessions::load_registry()
+            .map(|r| r.sessions.iter().any(|s| s.name == name))
+            .unwrap_or(false);
+        if !known {
+            return (
+                StatusCode::FORBIDDEN,
+                "creating new sessions is desktop-only",
+            )
+                .into_response();
+        }
     }
     match conduit_core::daemon::ensure_session_running(name).await {
         Ok(entry) => Json(json!({ "ok": true, "name": entry.name })).into_response(),

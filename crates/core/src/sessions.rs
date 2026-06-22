@@ -100,3 +100,29 @@ pub fn list_running_sessions() -> Vec<SessionEntry> {
         })
         .unwrap_or_default()
 }
+
+/// A registered session paired with its current liveness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStatus {
+    pub name: String,
+    /// True when the daemon socket accepts connections; false for a "stale"
+    /// entry (e.g. the daemon died on reboot) that can be resurrected.
+    pub running: bool,
+}
+
+/// All registered sessions, running and stale, each tagged with liveness.
+/// Mirrors the TUI `list` command (full registry + per-entry `socket_alive`)
+/// so the web/desktop picker can surface — and resurrect — stale sessions.
+pub fn list_all_sessions() -> Vec<SessionStatus> {
+    load_registry()
+        .map(|r| {
+            r.sessions
+                .into_iter()
+                .map(|s| SessionStatus {
+                    running: socket_alive(&s.socket_path),
+                    name: s.name,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
