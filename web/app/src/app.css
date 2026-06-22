@@ -1516,6 +1516,29 @@
   background: var(--ink);
   color: var(--paper);
 }
+/* Stale = dead daemon socket (e.g. after reboot); still clickable to resurrect. */
+.session-opt,
+.menu-item {
+  display: flex;
+  align-items: center;
+}
+.session-opt.stale,
+.menu-item.stale {
+  color: var(--ink-dim);
+}
+.session-stale {
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: calc(11px * var(--ui-scale));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
+.session-opt:hover .session-stale,
+.menu-item:hover .session-stale,
+.menu-item.active .session-stale {
+  color: var(--paper);
+}
 .session-empty {
   margin: 0;
   font-size: calc(14.5px * var(--ui-scale));
