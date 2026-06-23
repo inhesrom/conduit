@@ -66,6 +66,13 @@
    * own option, so it stays independent. JS overrides it from saved settings. */
   --ui-scale: 0.85;
 
+  /* Corner radius — rounded by default (Settings → Display toggles it off).
+   * Soft blurred shadows pair with the rounding; the [data-corners="square"]
+   * opt-out below restores the original 0-radius hard offset shadows. */
+  --radius: 6px;
+  --shadow-card: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.3);
+
   /* A 2px checkerboard dither, inked, for 8-bit shading. */
   --dither: repeating-conic-gradient(var(--ink) 0% 25%, transparent 0% 50%) 0 0 / 2px 2px;
 
@@ -73,9 +80,17 @@
   --t-fast: 70ms steps(2, end);
 }
 
+/* Opt out (Settings → Display): the original 8-bit hard edges. Hard offset
+ * shadows (no blur) only read right against square corners, so they return too. */
+:root[data-corners="square"] {
+  --radius: 0px;
+  --shadow-card: 6px 6px 0 var(--line-bright);
+  --shadow-pop: 4px 4px 0 var(--line-bright);
+}
+
 * {
   box-sizing: border-box;
-  border-radius: 0 !important; /* 8-bit: no rounded corners, anywhere. */
+  border-radius: var(--radius) !important;
 }
 
 html,
