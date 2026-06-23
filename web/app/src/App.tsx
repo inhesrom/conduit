@@ -15,12 +15,59 @@ import { openSettings } from "./state/modals";
 import { paletteOpen, togglePalette } from "./state/palette";
 import { theme, cycleTheme } from "./state/theme";
 import { authState, checkSession } from "./state/session";
-import { currentSession, loaded, pinned, refreshSessions, selectSession, sessions } from "./state/sessions";
+import { confirmDialog } from "./state/dialogs";
+import {
+  createSession,
+  currentSession,
+  deleteSession,
+  desktop,
+  loaded,
+  pinned,
+  refreshSessions,
+  selectSession,
+  sessions,
+} from "./state/sessions";
 import { store } from "./state/store";
 import { cycleSidebar, sidebarMode } from "./state/ui";
 
 function SessionSwitcher() {
   const [open, setOpen] = createSignal(false);
+  const [name, setName] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+
+  // Create a new session and attach to it (createSession attaches on success).
+  // Desktop-only — the shared web build rejects names not in the registry.
+  const create = async () => {
+    if (busy() || !name().trim()) return;
+    setBusy(true);
+    setError(null);
+    const err = await createSession(name());
+    setBusy(false);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setName("");
+    setOpen(false);
+  };
+
+  // Destructive: confirm first, then stop the daemon and forget the session.
+  // Deleting the attached session detaches back to the picker (deleteSession).
+  const remove = async (target: string, e: MouseEvent) => {
+    e.stopPropagation();
+    const ok = await confirmDialog({
+      title: `Delete session "${target}"?`,
+      body: "This stops its daemon and removes the session from Conduit. Worktrees on disk are left intact.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    setOpen(false);
+    const err = await deleteSession(target);
+    if (err) setError(err);
+  };
+
   return (
     <div class="ws-actions">
       <button
@@ -43,21 +90,58 @@ function SessionSwitcher() {
         <div class="menu">
           <For each={sessions()}>
             {(s) => (
-              <button
-                class="menu-item"
-                classList={{ active: s.name === currentSession(), stale: !s.running }}
-                onClick={() => {
-                  setOpen(false);
-                  void selectSession(s.name);
-                }}
-              >
-                {s.name}
-                <Show when={!s.running}>
-                  <span class="session-stale">stale</span>
+              <div class="menu-row">
+                <button
+                  class="menu-item"
+                  classList={{ active: s.name === currentSession(), stale: !s.running }}
+                  onClick={() => {
+                    setOpen(false);
+                    void selectSession(s.name);
+                  }}
+                >
+                  {s.name}
+                  <Show when={!s.running}>
+                    <span class="session-stale">stale</span>
+                  </Show>
+                </button>
+                <Show when={desktop()}>
+                  <button
+                    class="menu-del"
+                    title="Delete session"
+                    aria-label={`Delete session ${s.name}`}
+                    onClick={(e) => void remove(s.name, e)}
+                  >
+                    ×
+                  </button>
                 </Show>
-              </button>
+              </div>
             )}
           </For>
+          <Show when={desktop()}>
+            <div class="menu-sep" />
+            <div class="session-create">
+              <input
+                class="modal-input mono"
+                placeholder="New session name…"
+                value={name()}
+                disabled={busy()}
+                onInput={(e) => setName(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void create();
+                }}
+              />
+              <button
+                class="btn primary"
+                disabled={busy() || !name().trim()}
+                onClick={() => void create()}
+              >
+                {busy() ? "…" : "New"}
+              </button>
+            </div>
+            <Show when={error()}>
+              <p class="session-empty">{error()}</p>
+            </Show>
+          </Show>
         </div>
       </Show>
     </div>
@@ -121,7 +205,6 @@ function AppShell() {
         </main>
       </div>
       <Toasts />
-      <Dialogs />
       <AppModals />
       <Show when={paletteOpen()}>
         <CommandPalette />
@@ -147,10 +230,14 @@ export function App() {
   onCleanup(() => window.removeEventListener("keydown", onKey));
 
   return (
-    <Show when={authState() !== "needed"} fallback={<LoginScreen />}>
-      <Show when={currentSession()} fallback={<Show when={loaded()}>{<SessionPicker />}</Show>}>
-        <AppShell />
+    <>
+      <Show when={authState() !== "needed"} fallback={<LoginScreen />}>
+        <Show when={currentSession()} fallback={<Show when={loaded()}>{<SessionPicker />}</Show>}>
+          <AppShell />
+        </Show>
       </Show>
-    </Show>
+      {/* Mounted at the root so promise-based confirms work on the picker too. */}
+      <Dialogs />
+    </>
   );
 }

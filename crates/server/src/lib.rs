@@ -18,14 +18,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::{
-    extract::{ConnectInfo, Query, Request, State, WebSocketUpgrade},
+    extract::{ConnectInfo, Path, Query, Request, State, WebSocketUpgrade},
     http::{
         header::{HOST, ORIGIN},
         HeaderMap, StatusCode, Uri,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -283,6 +283,28 @@ async fn create_session(
     }
 }
 
+/// Delete a session entirely: stop its daemon, drop it from the registry, and
+/// remove its persisted state. Desktop-only — the shared `conduit web` server
+/// must not let a browser destroy host sessions (mirrors `create_session`).
+/// The pinned/embedded session has no daemon and backs the live surface, so it
+/// is rejected too.
+async fn remove_session(State(state): State<ServerState>, Path(name): Path<String>) -> Response {
+    if !state.desktop {
+        return (StatusCode::FORBIDDEN, "deleting sessions is desktop-only").into_response();
+    }
+    if state.pinned_session.as_deref() == Some(name.as_str()) {
+        return (StatusCode::BAD_REQUEST, "cannot delete the active session").into_response();
+    }
+    match conduit_core::sessions::remove_session(&name) {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn healthz() -> impl IntoResponse {
     Json(json!({ "name": "conduit", "version": env!("CARGO_PKG_VERSION") }))
 }
@@ -394,6 +416,7 @@ fn build_router(state: ServerState) -> Router {
     let protected = Router::new()
         .route("/ws", get(ws_handler))
         .route("/api/sessions", get(sessions).post(create_session))
+        .route("/api/sessions/{name}", delete(remove_session))
         .route("/api/fs/list", get(fs::list_dir))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 

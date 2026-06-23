@@ -71,9 +71,7 @@ struct Backend {
 }
 
 use conduit_core::ipc::{read_frame, write_frame};
-use conduit_core::sessions::{
-    load_registry, sanitize_session_name, save_registry, socket_alive, SessionEntry,
-};
+use conduit_core::sessions::{load_registry, socket_alive};
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
@@ -732,15 +730,15 @@ async fn build_remote_backend(socket_path: &str) -> Result<Backend> {
 // ---------------------------------------------------------------------------
 
 fn delete_session(name: &str) -> Result<()> {
-    let mut registry = load_registry()?;
-    let Some(entry) = registry.sessions.iter().find(|s| s.name == name).cloned() else {
+    let registry = load_registry()?;
+    if !registry.sessions.iter().any(|s| s.name == name) {
         println!("session '{}' not found", name);
         return Ok(());
-    };
+    }
 
     print!(
         "Delete session '{}'? This will stop running terminals. [y/N]: ",
-        entry.name
+        name
     );
     std::io::stdout().flush()?;
     let mut input = String::new();
@@ -751,25 +749,12 @@ fn delete_session(name: &str) -> Result<()> {
         return Ok(());
     }
 
-    if is_expected_daemon_process(&entry) {
-        let _ = OsCommand::new("kill").arg(entry.pid.to_string()).status();
-    } else {
+    let outcome = conduit_core::sessions::remove_session(name)?;
+    if outcome.removed && !outcome.killed {
         println!(
-            "warning: pid {} does not look like session daemon '{}'; skipping kill and removing registry entry only",
-            entry.pid, entry.name
+            "note: recorded pid did not look like session daemon '{}'; removed registry entry only",
+            name
         );
-    }
-
-    // Clean up socket file
-    let _ = std::fs::remove_file(&entry.socket_path);
-
-    registry.sessions.retain(|s| s.name != name);
-    save_registry(&registry)?;
-    if let Some(path) = session_workspaces_persist_path(name) {
-        let _ = std::fs::remove_file(path);
-    }
-    if let Some(path) = session_repositories_persist_path(name) {
-        let _ = std::fs::remove_file(path);
     }
     println!("deleted session '{}'", name);
     Ok(())
@@ -792,47 +777,6 @@ fn list_sessions() -> Result<()> {
         println!("- {}  (pid {} {})", s.name, s.pid, state);
     }
     Ok(())
-}
-
-fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
-    let output = match OsCommand::new("ps")
-        .arg("-p")
-        .arg(entry.pid.to_string())
-        .arg("-o")
-        .arg("command=")
-        .output()
-    {
-        Ok(out) => out,
-        Err(_) => return false,
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let cmdline = String::from_utf8_lossy(&output.stdout);
-    // Matches the `run-daemon` subcommand (and any stale `--run-daemon` daemons).
-    cmdline.contains("run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
-}
-
-fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let safe = sanitize_session_name(name);
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("conduit")
-            .join(format!("workspaces.{safe}.json")),
-    )
-}
-
-fn session_repositories_persist_path(name: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let safe = sanitize_session_name(name);
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("conduit")
-            .join(format!("repositories.{safe}.json")),
-    )
 }
 
 async fn run_tui(mut backend: Backend) -> Result<()> {
