@@ -77,6 +77,27 @@ export async function createSession(name: string): Promise<string | null> {
   return selectSession(trimmed);
 }
 
+/** Delete a session entirely (stop its daemon, drop it from the registry, and
+ * remove its persisted workspaces/repositories), via `DELETE /api/sessions/:name`.
+ * Desktop-only — the shared web build rejects it. If we delete the session
+ * we're currently attached to, detach back to the picker. Returns an error
+ * message on failure, else null. */
+export async function deleteSession(name: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!res.ok) return (await res.text()) || `failed (${res.status})`;
+  } catch (e) {
+    return e instanceof Error ? e.message : "failed to delete session";
+  }
+  if (currentSession() === name) {
+    client.close();
+    resetStore();
+    setCurrentSession(null);
+  }
+  await refreshSessions();
+  return null;
+}
+
 /** Attach to a session, resurrecting its daemon first if needed — mirrors the
  * TUI, which calls `ensure_session_running` on every attach (a live daemon
  * returns immediately; a stale one is respawned). Returns an error message on

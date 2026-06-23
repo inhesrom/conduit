@@ -1,6 +1,14 @@
 import { createSignal, For, Show } from "solid-js";
+import { confirmDialog } from "../state/dialogs";
 import type { SessionInfo } from "../state/sessions";
-import { createSession, desktop, refreshSessions, selectSession, sessions } from "../state/sessions";
+import {
+  createSession,
+  deleteSession,
+  desktop,
+  refreshSessions,
+  selectSession,
+  sessions,
+} from "../state/sessions";
 
 /** Full-screen gate shown after login when no session is attached yet. */
 export function SessionPicker() {
@@ -28,6 +36,24 @@ export function SessionPicker() {
     setBusy(false);
     if (err) setError(err);
     // On success this picker unmounts once the session attaches.
+  };
+
+  // Destructive: confirm first, then stop the daemon and forget the session.
+  const remove = async (s: SessionInfo, e: MouseEvent) => {
+    e.stopPropagation();
+    if (busy()) return;
+    const ok = await confirmDialog({
+      title: `Delete session "${s.name}"?`,
+      body: "This stops its daemon and removes the session from Conduit. Worktrees on disk are left intact.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    const err = await deleteSession(s.name);
+    setBusy(false);
+    if (err) setError(err);
   };
 
   return (
@@ -67,6 +93,17 @@ export function SessionPicker() {
                       <span class="session-stale">stale</span>
                     </Show>
                   </button>
+                  <Show when={desktop()}>
+                    <button
+                      class="session-del"
+                      title="Delete session"
+                      aria-label={`Delete session ${s.name}`}
+                      disabled={busy()}
+                      onClick={(e) => void remove(s, e)}
+                    >
+                      ×
+                    </button>
+                  </Show>
                 </li>
               )}
             </For>

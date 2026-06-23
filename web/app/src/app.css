@@ -1138,6 +1138,43 @@
   background: var(--ink);
   color: var(--paper);
 }
+.menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--ink);
+  opacity: 0.25;
+}
+/* Each switcher row: the select button + a delete affordance side by side. */
+.menu-row {
+  display: flex;
+  align-items: stretch;
+}
+.menu-row .menu-item {
+  flex: 1;
+  min-width: 0;
+}
+.menu-del {
+  flex: 0 0 auto;
+  padding: 0 9px;
+  color: var(--ink-faint);
+  font-size: calc(16px * var(--ui-scale));
+  line-height: 1;
+}
+.menu-del:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+/* Inline "create session" lives in the narrow dropdown — stack input over button. */
+.menu .session-create {
+  flex-direction: column;
+  padding: 3px;
+}
+.menu .session-create .modal-input {
+  margin-bottom: 0;
+}
+.menu .session-empty {
+  padding: 2px 3px 4px;
+}
 
 /* ---- Forms (modals) -------------------------------------------------- */
 .field {
@@ -1501,8 +1538,31 @@
   flex-direction: column;
   gap: 6px;
 }
+.session-list li {
+  display: flex;
+  gap: 6px;
+}
+.session-del {
+  flex: 0 0 auto;
+  padding: 0 13px;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink-faint);
+  font-size: calc(18px * var(--ui-scale));
+  line-height: 1;
+  transition: var(--t-fast);
+}
+.session-del:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+.session-del:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .session-opt {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   padding: 9px 12px;
   border: 1px solid var(--ink);
