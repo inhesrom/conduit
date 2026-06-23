@@ -79,6 +79,17 @@ export function SettingsModal() {
           onInput={(e) => updateSettings({ uiScale: parseInt(e.currentTarget.value, 10) / 100 })}
         />
       </label>
+      <label class="toggle-row">
+        <input
+          type="checkbox"
+          checked={settings.roundedCorners}
+          onChange={(e) => updateSettings({ roundedCorners: e.currentTarget.checked })}
+        />
+        <span>
+          <span class="toggle-title">Rounded corners</span>
+          <span class="toggle-hint">Soften card, button and menu corners. Off restores the 8-bit hard edges.</span>
+        </span>
+      </label>
 
       <div class="settings-section">
         <span class="eyebrow">Agents</span>

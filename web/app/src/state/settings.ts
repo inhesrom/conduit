@@ -20,6 +20,8 @@ export interface Settings {
   termFontSize: number;
   /** Multiplier for all UI chrome font sizes, pushed to the --ui-scale CSS var. */
   uiScale: number;
+  /** Rounded corners (default). Off sets data-corners="square" for hard edges. */
+  roundedCorners: boolean;
 }
 
 // Mirrors the TUI defaults (crates/tui/src/app.rs).
@@ -33,6 +35,7 @@ const DEFAULTS: Settings = {
   attentionNotifications: true,
   termFontSize: 13,
   uiScale: 0.85,
+  roundedCorners: true,
 };
 
 const STORAGE_KEY = "conduit.settings";
@@ -57,6 +60,15 @@ function applyUiScale(scale: number): void {
 }
 applyUiScale(settings.uiScale);
 
+/** Rounded corners are the default (theme.css :root). Opting out sets
+ * data-corners="square", which restores --radius:0 and the hard offset shadows.
+ * Applied on load (no flash), then re-applied on change. */
+function applyRounded(on: boolean): void {
+  if (on) document.documentElement.removeAttribute("data-corners");
+  else document.documentElement.setAttribute("data-corners", "square");
+}
+applyRounded(settings.roundedCorners);
+
 export function persistSettings(): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
@@ -68,6 +80,7 @@ export function persistSettings(): void {
 export function updateSettings(patch: Partial<Settings>): void {
   setSettings(patch);
   if (patch.uiScale !== undefined) applyUiScale(patch.uiScale);
+  if (patch.roundedCorners !== undefined) applyRounded(patch.roundedCorners);
   persistSettings();
 }
 
