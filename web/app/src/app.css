@@ -201,6 +201,11 @@
   background: var(--ink);
   color: var(--paper);
 }
+.rail-badge.on {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
 .sidebar-empty {
   color: var(--ink-faint);
   font-size: calc(17px * var(--ui-scale));
@@ -433,7 +438,56 @@
   text-transform: uppercase;
 }
 
-/* ---- Workspace split (terminal over git) ----------------------------- */
+/* ---- Workspace main area (terminal ↔ diff) --------------------------- */
+.ws-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+}
+/* display is toggled inline (flex/none) so the terminal stays mounted. */
+.ws-main-term {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.ws-main-term > .term-region {
+  flex: 1;
+  min-height: 0;
+}
+.ws-diff {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+.ws-diff > .diff {
+  flex: 1;
+  min-width: 0;
+}
+.ws-diff-close {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-dim);
+  background: var(--paper);
+  border: 1px solid var(--line-bright);
+  font-size: calc(16px * var(--ui-scale));
+  line-height: 1;
+  transition: var(--t-fast);
+}
+.ws-diff-close:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ---- Workspace bottom split (terminal over git) ---------------------- */
 .ws-grid {
   flex: 1;
   min-height: 0;
@@ -663,7 +717,7 @@
   color: var(--ink-dim);
 }
 
-/* ---- Git region ------------------------------------------------------ */
+/* ---- Git region (bottom-split layout) -------------------------------- */
 .git-region {
   display: flex;
   min-height: 0;
@@ -680,11 +734,61 @@
   min-height: 0;
   border-right: 2px solid var(--ink);
 }
+.git-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+/* ---- Git sidebar (right) --------------------------------------------- */
+.git-sidebar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 2px solid var(--ink);
+  position: relative;
+}
+.git-sidebar.rail {
+  width: 56px;
+  align-items: center;
+  padding-top: 10px;
+  gap: 8px;
+}
+.git-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px;
+}
+.git-sidebar-head .eyebrow {
+  font-size: calc(15px * var(--ui-scale));
+}
+/* Drag the left edge to resize; double-click resets to the default width. */
+.git-sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 5;
+}
+.git-sidebar-resize:hover {
+  background: var(--fill-strong);
+}
 .git-tabs {
   display: flex;
   gap: 0;
   background: var(--panel);
   border-bottom: 2px solid var(--ink);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.git-tab {
+  white-space: nowrap;
+  flex: none;
 }
 .git-tab {
   display: flex;
@@ -720,11 +824,6 @@
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-}
-.git-right {
-  flex: 1;
-  min-width: 0;
-  display: flex;
 }
 
 .gpanel {

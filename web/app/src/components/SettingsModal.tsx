@@ -90,6 +90,25 @@ export function SettingsModal() {
           <span class="toggle-hint">Soften card, button and menu corners. Off restores the 8-bit hard edges.</span>
         </span>
       </label>
+      <label class="field">
+        <span class="field-label">Git panel layout</span>
+        <div class="seg">
+          <button
+            class="seg-btn"
+            classList={{ active: settings.gitLayout === "sidebar" }}
+            onClick={() => updateSettings({ gitLayout: "sidebar" })}
+          >
+            Sidebar
+          </button>
+          <button
+            class="seg-btn"
+            classList={{ active: settings.gitLayout === "bottom" }}
+            onClick={() => updateSettings({ gitLayout: "bottom" })}
+          >
+            Bottom
+          </button>
+        </div>
+      </label>
 
       <div class="settings-section">
         <span class="eyebrow">Agents</span>

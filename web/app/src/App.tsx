@@ -7,6 +7,7 @@ import { Dialogs } from "./components/Dialogs";
 import { LoginScreen } from "./components/LoginScreen";
 import { SessionPicker } from "./components/SessionPicker";
 import { Sidebar } from "./components/Sidebar";
+import { GitSidebar } from "./components/git/GitSidebar";
 import { Toasts } from "./components/Toasts";
 import { currentWorkspaceId, route } from "./router";
 import { BoardScreen } from "./screens/BoardScreen";
@@ -27,8 +28,9 @@ import {
   selectSession,
   sessions,
 } from "./state/sessions";
+import { settings } from "./state/settings";
 import { store } from "./state/store";
-import { cycleSidebar, sidebarMode } from "./state/ui";
+import { cycleGitSidebar, cycleSidebar, gitSidebarMode, sidebarMode } from "./state/ui";
 
 function SessionSwitcher() {
   const [open, setOpen] = createSignal(false);
@@ -203,6 +205,9 @@ function AppShell() {
             </Match>
           </Switch>
         </main>
+        <Show when={settings.gitLayout === "sidebar" && gitSidebarMode() !== "hidden" && currentWorkspaceId()} keyed>
+          {(id) => <GitSidebar wsId={id} />}
+        </Show>
       </div>
       <Toasts />
       <AppModals />
@@ -218,7 +223,10 @@ export function App() {
     if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
       e.preventDefault();
       togglePalette();
-    } else if (e.ctrlKey && !e.metaKey && (e.key === "b" || e.key === "B")) {
+    } else if (e.ctrlKey && !e.metaKey && e.shiftKey && (e.key === "b" || e.key === "B")) {
+      e.preventDefault();
+      cycleGitSidebar();
+    } else if (e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
       e.preventDefault();
       cycleSidebar();
     }
