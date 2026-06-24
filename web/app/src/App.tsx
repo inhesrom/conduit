@@ -17,6 +17,7 @@ import { paletteOpen, togglePalette } from "./state/palette";
 import { theme, cycleTheme } from "./state/theme";
 import { authState, checkSession } from "./state/session";
 import { currentSession, loaded, pinned, refreshSessions, selectSession, sessions } from "./state/sessions";
+import { settings } from "./state/settings";
 import { store } from "./state/store";
 import { cycleGitSidebar, cycleSidebar, gitSidebarMode, sidebarMode } from "./state/ui";
 
@@ -120,7 +121,7 @@ function AppShell() {
             </Match>
           </Switch>
         </main>
-        <Show when={gitSidebarMode() !== "hidden" && currentWorkspaceId()} keyed>
+        <Show when={settings.gitLayout === "sidebar" && gitSidebarMode() !== "hidden" && currentWorkspaceId()} keyed>
           {(id) => <GitSidebar wsId={id} />}
         </Show>
       </div>

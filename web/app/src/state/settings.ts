@@ -22,6 +22,9 @@ export interface Settings {
   uiScale: number;
   /** Rounded corners (default). Off sets data-corners="square" for hard edges. */
   roundedCorners: boolean;
+  /** Git UI placement: a collapsible right sidebar (default) or the original
+   * terminal-over-git bottom split. */
+  gitLayout: "sidebar" | "bottom";
 }
 
 // Mirrors the TUI defaults (crates/tui/src/app.rs).
@@ -36,6 +39,7 @@ const DEFAULTS: Settings = {
   termFontSize: 13,
   uiScale: 0.85,
   roundedCorners: true,
+  gitLayout: "sidebar",
 };
 
 const STORAGE_KEY = "conduit.settings";

@@ -487,6 +487,71 @@
   color: var(--paper);
 }
 
+/* ---- Workspace bottom split (terminal over git) ---------------------- */
+.ws-grid {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ws-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.ws-pane > .term-region,
+.ws-pane > .git-region {
+  flex: 1;
+  min-height: 0;
+}
+.ws-split-handle {
+  height: 18px;
+  flex: none;
+  cursor: row-resize;
+  background: var(--panel);
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  color: var(--ink-faint);
+  user-select: none;
+}
+.ws-split-handle.collapsed {
+  cursor: default;
+}
+.ws-split-handle:hover {
+  background: var(--fill-strong);
+}
+.ws-split-grip {
+  font-family: var(--mono);
+  font-size: calc(9px * var(--ui-scale));
+  line-height: 1;
+  letter-spacing: 1px;
+}
+.ws-split-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink);
+  background: var(--fill);
+  border: 1px solid var(--line-bright);
+  font-size: calc(13px * var(--ui-scale));
+  line-height: 1;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  padding: 3px 8px;
+}
+.ws-split-toggle:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
 /* Generic button. */
 .btn {
   padding: 5px 12px;
@@ -650,6 +715,29 @@
   font-family: var(--mono);
   font-size: calc(15px * var(--ui-scale));
   color: var(--ink-dim);
+}
+
+/* ---- Git region (bottom-split layout) -------------------------------- */
+.git-region {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--paper);
+}
+.git-left {
+  width: 40%;
+  min-width: 300px;
+  max-width: 480px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 2px solid var(--ink);
+}
+.git-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
 }
 
 /* ---- Git sidebar (right) --------------------------------------------- */

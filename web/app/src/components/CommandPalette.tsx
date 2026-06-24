@@ -5,6 +5,7 @@ import { deleteWorkspace, renameWorkspace } from "../state/manage";
 import { openAddRepository, openSettings } from "../state/modals";
 import { closePalette } from "../state/palette";
 import { repoName } from "../state/selectors";
+import { settings, updateSettings } from "../state/settings";
 import { store } from "../state/store";
 import { cycleGitSidebar, cycleSidebar } from "../state/ui";
 import { navigate, route } from "../router";
@@ -37,7 +38,14 @@ function buildActions(): Action[] {
       acts.push({ id: "pull", label: "Pull", run: () => git.pull(ws.id) });
       acts.push({ id: "fetch", label: "Fetch", run: () => git.fetch(ws.id) });
       acts.push({ id: "refresh", label: "Refresh git", run: () => git.refresh(ws.id) });
-      acts.push({ id: "toggle-git-sidebar", label: "Toggle git sidebar", run: cycleGitSidebar });
+      if (settings.gitLayout === "sidebar") {
+        acts.push({ id: "toggle-git-sidebar", label: "Toggle git sidebar", run: cycleGitSidebar });
+      }
+      acts.push({
+        id: "switch-git-layout",
+        label: `Switch git layout to ${settings.gitLayout === "sidebar" ? "bottom" : "sidebar"}`,
+        run: () => updateSettings({ gitLayout: settings.gitLayout === "sidebar" ? "bottom" : "sidebar" }),
+      });
       acts.push({
         id: "review",
         label: ws.ready_for_review ? "Unmark ready for review" : "Mark ready for review",
