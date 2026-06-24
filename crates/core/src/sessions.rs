@@ -3,6 +3,7 @@
 //! TUI's session commands and the web proxy that attaches to running sessions.
 
 use std::path::PathBuf;
+use std::process::Command as OsCommand;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -125,4 +126,84 @@ pub fn list_all_sessions() -> Vec<SessionStatus> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// True when `entry.pid` still looks like this session's daemon — its `ps`
+/// cmdline names the `run-daemon` subcommand with a matching `--session-name`.
+/// Guards against killing an unrelated process that recycled the pid.
+pub fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
+    let output = match OsCommand::new("ps")
+        .arg("-p")
+        .arg(entry.pid.to_string())
+        .arg("-o")
+        .arg("command=")
+        .output()
+    {
+        Ok(out) => out,
+        Err(_) => return false,
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let cmdline = String::from_utf8_lossy(&output.stdout);
+    cmdline.contains("run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
+}
+
+/// Per-session persisted state lives under `~/.config/conduit/` keyed by the
+/// sanitized session name (matching how the core writes them).
+fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let safe = sanitize_session_name(name);
+    Some(PathBuf::from(home).join(".config/conduit").join(format!("workspaces.{safe}.json")))
+}
+
+fn session_repositories_persist_path(name: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let safe = sanitize_session_name(name);
+    Some(PathBuf::from(home).join(".config/conduit").join(format!("repositories.{safe}.json")))
+}
+
+/// Outcome of [`remove_session`].
+pub struct RemoveOutcome {
+    /// A matching registry entry existed and was removed.
+    pub removed: bool,
+    /// We sent a kill signal to the session's daemon process.
+    pub killed: bool,
+}
+
+/// Remove a session entirely: stop its daemon (only when the recorded pid still
+/// looks like it), delete its socket file, drop it from the registry, and
+/// delete its per-session persisted workspaces/repositories. The caller owns
+/// any confirmation. Mirrors the TUI `remove` command; reused by the web/
+/// desktop server's `DELETE /api/sessions/{name}`.
+pub fn remove_session(name: &str) -> Result<RemoveOutcome> {
+    let mut registry = load_registry()?;
+    let Some(entry) = registry.sessions.iter().find(|s| s.name == name).cloned() else {
+        return Ok(RemoveOutcome {
+            removed: false,
+            killed: false,
+        });
+    };
+
+    let killed = is_expected_daemon_process(&entry);
+    if killed {
+        let _ = OsCommand::new("kill").arg(entry.pid.to_string()).status();
+    }
+
+    let _ = std::fs::remove_file(&entry.socket_path);
+
+    registry.sessions.retain(|s| s.name != name);
+    save_registry(&registry)?;
+
+    if let Some(path) = session_workspaces_persist_path(name) {
+        let _ = std::fs::remove_file(path);
+    }
+    if let Some(path) = session_repositories_persist_path(name) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    Ok(RemoveOutcome {
+        removed: true,
+        killed,
+    })
 }
