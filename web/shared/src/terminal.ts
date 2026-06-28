@@ -292,27 +292,34 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
 
       // If the terminal font isn't loaded yet, xterm measures the cell width
       // from a fallback font and glyphs then render in too-wide cells (the
-      // "C l a u d e" spacing seen in the WebKitGTK webview). Once fonts are
+      // "C l a u d e" spacing seen in the WebKitGTK webview). Once the font is
       // ready, bust xterm's cached char dimensions (toggle fontFamily), refit,
       // and repaint so the cell width matches the real glyph.
+      //
+      // We wait on document.fonts.load() for this specific family rather than
+      // document.fonts.ready: `ready` resolves when no font loads are *pending*,
+      // which on a cold cache happens before our woff2 has actually downloaded,
+      // so the re-measure fired too early and the broken spacing stuck.
       const fontSize = opts.fontSize ?? 15;
+      const fontSpec = `${fontSize}px "JetBrains Mono Variable"`;
       if (typeof document !== "undefined" && document.fonts) {
-        const ready = (() => {
+        const remeasure = () => {
+          if (disposed) return;
+          const family = term.options.fontFamily ?? "";
+          term.options.fontFamily = `${family} `;
+          term.options.fontFamily = family;
+          fitAddon.fit();
+          term.refresh(0, term.rows - 1);
+        };
+        const needsFontWait = (() => {
           try {
-            return !document.fonts.check(`${fontSize}px "JetBrains Mono Variable"`);
+            return !document.fonts.check(fontSpec);
           } catch {
             return true;
           }
         })();
-        if (ready) {
-          document.fonts.ready.then(() => {
-            if (disposed) return;
-            const family = term.options.fontFamily ?? "";
-            term.options.fontFamily = `${family} `;
-            term.options.fontFamily = family;
-            fitAddon.fit();
-            term.refresh(0, term.rows - 1);
-          });
+        if (needsFontWait) {
+          document.fonts.load(fontSpec).then(remeasure, remeasure);
         }
       }
 
