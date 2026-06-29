@@ -8,6 +8,16 @@ import { bytesToB64, textToB64 } from "./b64";
 import { termKey, type ConduitClient } from "./client";
 import type { TerminalKind } from "./protocol";
 
+/** Encode a prompt for injection into a terminal as if pasted-and-submitted.
+ * Multi-line text is wrapped in bracketed-paste escapes (matching the TUI's
+ * `crates/tui/src/main.rs` paste handling) so an agent TUI treats it as one
+ * atomic paste — and a shell won't execute each embedded line. The trailing CR
+ * submits. Single-line text needs no wrapping. */
+export function promptInput(text: string): string {
+  const body = text.includes("\n") ? `\x1b[200~${text}\x1b[201~` : text;
+  return `${body}\r`;
+}
+
 // The terminal is monochrome per theme: background, text, cursor, selection
 // AND the 16 ANSI colors are all derived from the active palette, so the whole
 // terminal tints with it (amber CRT, mono greyscale, paper black-on-white).

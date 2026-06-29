@@ -97,3 +97,35 @@ function stripPrefix(path: string): string {
   if (path === "/dev/null") return path;
   return path.replace(/^[ab]\//, "");
 }
+
+/** The new-file line span covered by a selection, as a bare label ("40" or
+ * "40–48"). Falls back to the old-file span for a pure-deletion selection,
+ * flagged via `removed`. Empty range when nothing numbered is selected. */
+export function diffLineRange(lines: DiffLine[]): { range: string; removed: boolean } {
+  const newNos = lines.map((l) => l.newNo).filter((n): n is number => n != null);
+  const removed = newNos.length === 0;
+  const pool = removed ? lines.map((l) => l.oldNo).filter((n): n is number => n != null) : newNos;
+  if (pool.length === 0) return { range: "", removed: false };
+  const lo = Math.min(...pool);
+  const hi = Math.max(...pool);
+  return { range: lo === hi ? `${lo}` : `${lo}–${hi}`, removed };
+}
+
+/** Compose a Diff Question: a `file <range>` header, the literal selected lines
+ * as a fenced block (each prefixed with its line number and +/-/space marker so
+ * the agent sees what changed), then the user's question. New-file line numbers
+ * locate the code in the live worktree; deleted lines keep their old numbers. */
+export function buildDiffQuestion(file: string, lines: DiffLine[], question: string): string {
+  const { range, removed } = diffLineRange(lines);
+  const label = !range
+    ? "selection"
+    : `${removed ? "removed " : ""}line${range.includes("–") ? "s" : ""} ${range}`;
+  const body = lines
+    .map((l) => {
+      const no = l.newNo ?? l.oldNo ?? "";
+      const mark = l.kind === "add" ? "+" : l.kind === "del" ? "-" : " ";
+      return `${String(no).padStart(4)} ${mark} ${l.text}`;
+    })
+    .join("\n");
+  return `Re: ${file} ${label}\n\n\`\`\`\n${body}\n\`\`\`\n\n${question.trim()}`;
+}

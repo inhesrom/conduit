@@ -40,6 +40,18 @@ _Avoid_: launch type, app version, mode.
 Connecting a **Surface** to a **Session**, creating the session (spawning its daemon) if it doesn't exist. `conduit <surface> attach <name>` is idempotent — it starts the daemon when absent and reattaches when present. Bare `conduit tui` is the exception: a Sessionless **Local** view on an in-process core. (See ADR 0003.)
 _Avoid_: open, connect, launch.
 
+**Diff Selection**:
+A contiguous range of lines selected within one file's diff in the diff viewer (click a line-number gutter; shift-click to extend). The unit a **Diff Question** is built from. Bounded to a single file.
+_Avoid_: highlight, region.
+
+**Diff Question**:
+A prompt composed from a **Diff Selection** — file path + new-file line range + the quoted lines + the user's question — injected into an agent as a bracketed paste. By default (Enter) it starts a **Secondary Agent**; Alt+Enter sends it to the existing agent terminal to continue that agent's context. (See ADR 0004.)
+_Avoid_: comment, review note, annotation.
+
+**Secondary Agent**:
+A fresh agent process launched in a **Shell** tab (the Workspace's configured agent command, no shared history), distinct from the singleton agent terminal. Does not participate in **AttentionLevel**/**AgentActive**/**ReadyForReview** signals. (See ADR 0004.)
+_Avoid_: second agent terminal, sub-agent.
+
 ## Relationships
 
 - A **Repository** has many **Workspaces** (reference by `repository_id`).
@@ -47,6 +59,7 @@ _Avoid_: open, connect, launch.
 - **Repositories** live in a global `repositories.json`; **Workspaces** live per-session with a `repository_id` foreign key.
 - A **Session** owns many **Workspaces** but does not own **Repositories**.
 - A **Surface** attaches to at most one **Session** at a time (the `web`/`desktop` picker switches between them); bare `conduit tui` runs Sessionless on an in-process core.
+- A **Diff Question** is built from a **Diff Selection** in one Workspace and delivered to that Workspace's agent terminal, or to a **Secondary Agent** in a new Shell tab.
 
 ## Example dialogue
 
@@ -63,3 +76,4 @@ _Avoid_: open, connect, launch.
 - "done"/"ready" was used loosely — resolved to **ReadyForReview**, an explicit state kept orthogonal to **AttentionLevel**. (See ADR 0002.)
 - "working"/"busy" is ambiguous — resolved to **AgentActive**, a transient output-within-settle-window signal rather than process liveness.
 - "launch type"/"app version" for tui/web/desktop — resolved to **Surface**, with the unified `conduit <surface> [attach <name>]` CLI grammar. The old top-level `-s`/`-a` session flags were removed. (See ADR 0003.)
+- "ask an agent" was ambiguous — Conduit has no in-app LLM; "agent" means the agent process in a PTY. A **Diff Question** injects a prompt into the existing agent terminal, or spawns a **Secondary Agent** (a Shell tab), never a direct API call. (See ADR 0004.)

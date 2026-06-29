@@ -1,5 +1,12 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js";
-import { createTerminal, termKey, textToB64, type TerminalHandle, type TerminalKind } from "@conduit/shared";
+import {
+  createTerminal,
+  promptInput,
+  termKey,
+  textToB64,
+  type TerminalHandle,
+  type TerminalKind,
+} from "@conduit/shared";
 import { client } from "../client";
 import { settings } from "../state/settings";
 import { fontById, fontCss } from "../state/fonts";
@@ -75,7 +82,7 @@ export function TerminalView(props: {
         id: props.wsId,
         kind: props.kind,
         tab_id: props.tabId,
-        data_b64: textToB64(`${p}\r`),
+        data_b64: textToB64(promptInput(p)),
       },
     });
     props.onPromptSent?.();

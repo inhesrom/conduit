@@ -7,6 +7,10 @@ import { createStore } from "solid-js/store";
 export interface ShellTab {
   id: string;
   title: string;
+  /** Custom launch argv. Absent = the default login shell. A secondary agent
+   * tab (spawned from a Diff Question) stores the workspace's agent command
+   * here so it relaunches as an agent on start/restore. */
+  cmd?: string[];
 }
 
 const [shells, setShells] = createStore<Record<string, ShellTab[]>>({});
@@ -49,10 +53,10 @@ function nextShellId(existing: ShellTab[]): { id: string; n: number } {
   return { id, n };
 }
 
-export function createShell(wsId: string): ShellTab {
+export function createShell(wsId: string, opts?: { title?: string; cmd?: string[] }): ShellTab {
   ensure(wsId);
   const { id, n } = nextShellId(shells[wsId]!);
-  const tab: ShellTab = { id, title: `shell ${n}` };
+  const tab: ShellTab = { id, title: opts?.title ?? `shell ${n}`, cmd: opts?.cmd };
   setShells(wsId, [...shells[wsId]!, tab]);
   persist(wsId);
   return tab;

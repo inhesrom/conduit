@@ -140,3 +140,37 @@ export function selectedFile(wsId: string): string | null {
 export function setSelectedFile(wsId: string, file: string | null): void {
   setSelectedFileByWs((m) => ({ ...m, [wsId]: file }));
 }
+
+/** Active terminal tab per workspace ("agent" or a shell id). Lifted out of
+ * TerminalRegion so the diff pane can switch to a tab after sending a Diff
+ * Question. Not persisted — defaults back to the agent tab on reload. */
+const [activeTabByWs, setActiveTabByWs] = createSignal<Record<string, string>>({});
+
+export function activeTab(wsId: string): string {
+  return activeTabByWs()[wsId] ?? "agent";
+}
+
+export function setActiveTab(wsId: string, tabId: string): void {
+  setActiveTabByWs((m) => ({ ...m, [wsId]: tabId }));
+}
+
+/** Tab ids launched in this session (so they auto-start on mount). Restored
+ * tabs aren't marked, so they wait for an explicit Start. Keyed `${wsId}/${id}`,
+ * session-only — not reactive, only read at TerminalView mount time. */
+const freshTabs = new Set<string>();
+
+export function markFreshTab(wsId: string, tabId: string): void {
+  freshTabs.add(`${wsId}/${tabId}`);
+}
+
+export function isFreshTab(wsId: string, tabId: string): boolean {
+  return freshTabs.has(`${wsId}/${tabId}`);
+}
+
+/** Reveal a workspace's terminal tab: switch to it and, in the sidebar layout,
+ * close the diff overlay (harmless in the bottom-split layout) so the terminal
+ * is visible and the agent's reply lands in view. */
+export function focusTerminalTab(wsId: string, tabId: string): void {
+  setActiveTab(wsId, tabId);
+  setSelectedFile(wsId, null);
+}

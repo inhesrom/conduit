@@ -1051,6 +1051,8 @@
   font-family: var(--font-diff);
   font-size: calc(14px * var(--ui-scale));
   line-height: 1.5;
+  /* Anchor the Ask pill/composer to selected rows via their offsetTop. */
+  position: relative;
 }
 .dl {
   display: flex;
@@ -1093,6 +1095,111 @@
 }
 .dl.meta .dl-text {
   color: var(--ink-faint);
+}
+
+/* ---- Diff Question: line selection + ask affordance ------------------ */
+/* Clickable line-number gutters select lines (the code text stays free for
+ * native copy). */
+.dl-gutter.pick {
+  cursor: pointer;
+}
+.dl-gutter.pick:hover {
+  color: var(--ink-dim);
+}
+/* Selected rows: reuse the inverse-video idiom as a left rail + brighter fill,
+ * placed after .add/.del so it overrides their tint. */
+.dl.selected {
+  background: var(--fill-strong);
+  box-shadow: inset 2px 0 0 0 var(--ink);
+}
+
+/* The "ASK" pill — inverse video, pixel face, anchored to the focus row. */
+.diff-ask-pill {
+  position: absolute;
+  right: 14px;
+  z-index: 5;
+  font-family: var(--font-display);
+  font-size: calc(10px * var(--ui-scale));
+  letter-spacing: 0.06em;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  padding: 1px 8px;
+  cursor: pointer;
+  animation: pop-in var(--t-fast);
+}
+
+/* The composer — a command bar in the dialog idiom, anchored below the row. */
+.diff-ask-wrap {
+  position: absolute;
+  right: 14px;
+  z-index: 6;
+  animation: pop-in var(--t-fast);
+}
+.diff-ask {
+  width: min(440px, 78vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+}
+.diff-ask-ref {
+  font-size: calc(11px * var(--ui-scale));
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diff-ask-range {
+  color: var(--ink-faint);
+}
+.diff-ask-input {
+  width: 100%;
+  resize: vertical;
+  padding: 6px 8px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  font-size: calc(13px * var(--ui-scale));
+  line-height: 1.4;
+}
+.diff-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.diff-ask-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  font-size: calc(12px * var(--ui-scale));
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+}
+.diff-ask-btn:hover {
+  color: var(--ink);
+  border-color: var(--line-bright);
+}
+.diff-ask-btn.primary {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.diff-ask-key {
+  font-size: 0.88em;
+  opacity: 0.7;
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* ---- Modal + dialogs ------------------------------------------------- */
