@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } 
 import { createTerminal, termKey, textToB64, type TerminalHandle, type TerminalKind } from "@conduit/shared";
 import { client } from "../client";
 import { settings } from "../state/settings";
+import { fontById, fontCss } from "../state/fonts";
 import { store } from "../state/store";
 
 type Phase = "idle" | "running" | "exited";
@@ -107,6 +108,8 @@ export function TerminalView(props: {
       kind: props.kind,
       tabId: props.tabId,
       fontSize: settings.termFontSize,
+      fontFamily: fontCss(settings.terminalFont),
+      fontPrimary: fontById(settings.terminalFont)?.primary ?? null,
       onData: () => maybeSendPrompt(),
     });
     handle.attach(host);
@@ -121,6 +124,27 @@ export function TerminalView(props: {
     if (!handle) return;
     handle.term.options.fontSize = size;
     handle.fit();
+  });
+
+  // Live-apply terminal font-family changes from Settings. Toggling fontFamily
+  // busts xterm's cached char dimensions so the cell width re-measures against
+  // the new glyph (same trick as terminal.ts's cold-cache remeasure), then fit.
+  createEffect(() => {
+    const family = fontCss(settings.terminalFont);
+    const primary = fontById(settings.terminalFont)?.primary;
+    if (!handle) return;
+    const applyFamily = () => {
+      handle!.term.options.fontFamily = `${family} `;
+      handle!.term.options.fontFamily = family;
+      handle!.fit();
+      handle!.term.refresh(0, handle!.term.rows - 1);
+    };
+    // Wait for the woff2 before measuring, else the cell width sticks wrong.
+    if (primary && document.fonts && !document.fonts.check(`16px "${primary}"`)) {
+      document.fonts.load(`16px "${primary}"`).then(applyFamily, applyFamily);
+    } else {
+      applyFamily();
+    }
   });
 
   // Refit when this tab becomes visible again (xterm can't measure while hidden).

@@ -108,6 +108,13 @@ export interface CreateTerminalOpts {
   /** Default: 10000 for Agent, 5000 for Shell. */
   scrollback?: number;
   fontSize?: number;
+  /** Full monospace family stack for xterm. Defaults to the JetBrains Mono
+   * stack. Must be monospace — xterm measures a fixed cell width. */
+  fontFamily?: string;
+  /** Exact registered family name of `fontFamily`'s primary face, used to wait
+   * on its woff2 (document.fonts.load) before re-measuring cell width. Null for
+   * a system font (always available, no wait needed). */
+  fontPrimary?: string | null;
   /** Called on each live output chunk (not history replay) — used to detect
    * when an agent is ready for an initial prompt. */
   onData?: (bytes: Uint8Array) => void;
@@ -140,11 +147,13 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     allowProposedApi: true,
     scrollback: opts.scrollback ?? (opts.kind === "Agent" ? 10_000 : 5_000),
     fontSize: opts.fontSize ?? 15,
-    // "JetBrains Mono Variable" is the family the bundled @fontsource-variable
-    // web font actually registers (matches the app chrome's --font-mono). Using
-    // the non-variable "JetBrains Mono" silently fell back to a system/monospace
-    // font, which mis-measured cell width in the WebKitGTK webview.
+    // Defaults to "JetBrains Mono Variable" — the family the bundled
+    // @fontsource-variable web font registers (matches the app chrome's
+    // --font-mono). The non-variable "JetBrains Mono" silently fell back to a
+    // system/monospace font, mis-measuring cell width in the WebKitGTK webview.
+    // Callers pass a different stack (Settings → Fonts) via opts.fontFamily.
     fontFamily:
+      opts.fontFamily ??
       '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
     theme: xtermTheme(),
   });
@@ -301,8 +310,11 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       // which on a cold cache happens before our woff2 has actually downloaded,
       // so the re-measure fired too early and the broken spacing stuck.
       const fontSize = opts.fontSize ?? 15;
-      const fontSpec = `${fontSize}px "JetBrains Mono Variable"`;
-      if (typeof document !== "undefined" && document.fonts) {
+      // Wait on the chosen font's primary face. opts.fontPrimary defaults to
+      // JetBrains Mono Variable; a system font (null) needs no wait.
+      const fontPrimary = opts.fontPrimary === undefined ? "JetBrains Mono Variable" : opts.fontPrimary;
+      const fontSpec = fontPrimary ? `${fontSize}px "${fontPrimary}"` : "";
+      if (fontSpec && typeof document !== "undefined" && document.fonts) {
         const remeasure = () => {
           if (disposed) return;
           const family = term.options.fontFamily ?? "";

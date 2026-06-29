@@ -1037,7 +1037,7 @@
 .diff-head {
   padding: 7px 13px;
   border-bottom: 1px solid var(--line);
-  font-family: var(--mono);
+  font-family: var(--font-diff);
   color: var(--ink-dim);
   font-size: calc(14px * var(--ui-scale));
   overflow: hidden;
@@ -1048,7 +1048,7 @@
   flex: 1;
   overflow: auto;
   padding: 4px 0;
-  font-family: var(--mono);
+  font-family: var(--font-diff);
   font-size: calc(14px * var(--ui-scale));
   line-height: 1.5;
 }

@@ -1,4 +1,5 @@
 import { createStore } from "solid-js/store";
+import { fontById, fontCss } from "./fonts";
 
 /** Client-side settings. Agent command resolution lives in the client (not the
  * daemon), exactly like the TUI: the daemon just runs whatever argv the client
@@ -25,6 +26,11 @@ export interface Settings {
   /** Git UI placement: a collapsible right sidebar (default) or the original
    * terminal-over-git bottom split. */
   gitLayout: "sidebar" | "bottom";
+  /** Font ids (see state/fonts.ts). uiFont/diffFont drive the --font-ui /
+   * --font-diff CSS vars; terminalFont is applied to xterm's fontFamily. */
+  uiFont: string;
+  terminalFont: string;
+  diffFont: string;
 }
 
 // Mirrors the TUI defaults (crates/tui/src/app.rs).
@@ -40,6 +46,9 @@ const DEFAULTS: Settings = {
   uiScale: 0.85,
   roundedCorners: true,
   gitLayout: "sidebar",
+  uiFont: "pixelify-sans",
+  terminalFont: "jetbrains-mono",
+  diffFont: "jetbrains-mono",
 };
 
 const STORAGE_KEY = "conduit.settings";
@@ -73,6 +82,25 @@ function applyRounded(on: boolean): void {
 }
 applyRounded(settings.roundedCorners);
 
+/** Warm a font's woff2 so it's downloaded before anything measures against it.
+ * No-op for system stacks (primary === null) and where the API is unavailable. */
+function warmFont(id: string): void {
+  const primary = fontById(id)?.primary;
+  if (primary) document.fonts?.load(`16px "${primary}"`).catch(() => {});
+}
+
+/** Push the chosen UI and diff fonts into the CSS vars app.css/theme.css read.
+ * The terminal font is applied separately via xterm's fontFamily (TerminalView).
+ * Applied on load (no flash), then re-applied whenever a font setting changes. */
+function applyFonts(): void {
+  const root = document.documentElement.style;
+  root.setProperty("--font-ui", fontCss(settings.uiFont));
+  root.setProperty("--font-diff", fontCss(settings.diffFont));
+  warmFont(settings.uiFont);
+  warmFont(settings.diffFont);
+}
+applyFonts();
+
 export function persistSettings(): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
@@ -85,6 +113,8 @@ export function updateSettings(patch: Partial<Settings>): void {
   setSettings(patch);
   if (patch.uiScale !== undefined) applyUiScale(patch.uiScale);
   if (patch.roundedCorners !== undefined) applyRounded(patch.roundedCorners);
+  if (patch.uiFont !== undefined || patch.diffFont !== undefined) applyFonts();
+  if (patch.terminalFont !== undefined) warmFont(patch.terminalFont);
   persistSettings();
 }
 
