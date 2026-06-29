@@ -2,6 +2,7 @@ import { createSignal, For } from "solid-js";
 import { promptDialog } from "../state/dialogs";
 import { closeAppModal } from "../state/modals";
 import { addAgent, removeAgent, settings, updateAgent, updateSettings } from "../state/settings";
+import { MONO_FONTS, SANS_FONTS } from "../state/fonts";
 import { Modal } from "./Modal";
 
 export function SettingsModal() {
@@ -108,6 +109,40 @@ export function SettingsModal() {
             Bottom
           </button>
         </div>
+      </label>
+
+      <div class="settings-section">
+        <span class="eyebrow">Fonts</span>
+      </div>
+      <label class="field">
+        <span class="field-label">Interface font</span>
+        <select
+          class="modal-input mono"
+          value={settings.uiFont}
+          onChange={(e) => updateSettings({ uiFont: e.currentTarget.value })}
+        >
+          <For each={SANS_FONTS}>{(f) => <option value={f.id}>{f.label}</option>}</For>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Terminal font</span>
+        <select
+          class="modal-input mono"
+          value={settings.terminalFont}
+          onChange={(e) => updateSettings({ terminalFont: e.currentTarget.value })}
+        >
+          <For each={MONO_FONTS}>{(f) => <option value={f.id}>{f.label}</option>}</For>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Git diff font</span>
+        <select
+          class="modal-input mono"
+          value={settings.diffFont}
+          onChange={(e) => updateSettings({ diffFont: e.currentTarget.value })}
+        >
+          <For each={MONO_FONTS}>{(f) => <option value={f.id}>{f.label}</option>}</For>
+        </select>
       </label>
 
       <div class="settings-section">

@@ -56,10 +56,16 @@
   --add: #4f9d63;
   --del: #cc5b54;
 
-  /* Pixel display faces for chrome; mono stays legible for terminal + diffs. */
+  /* Pixel display faces for chrome; mono stays legible for terminal + diffs.
+   * --font-ui and --font-diff are overridden from saved settings (Settings →
+   * Fonts) via JS setProperty; --font-display / --font-mono stay fixed. */
   --font-display: "Silkscreen", "Pixelify Sans Variable", monospace;
   --font-ui: "Pixelify Sans Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* `--mono` is the alias the app.css mono rules reference; keep it pointed at
+   * --font-mono. --font-diff styles only the diff view and is user-selectable. */
+  --mono: var(--font-mono);
+  --font-diff: var(--font-mono);
 
   /* User-adjustable chrome type scale (Settings → Display). Every chrome
    * font-size is multiplied by this; the terminal sizes itself via xterm's
