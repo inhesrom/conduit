@@ -32,6 +32,9 @@ export interface AppState {
   createProgress: { repoId: string; stage: string } | null;
   /** Initial agent prompts awaiting delivery, keyed by new workspace id. */
   pendingPrompt: Record<string, string>;
+  /** Prompts awaiting delivery to a shell tab — a Diff Question's secondary
+   * agent — keyed by `${wsId}/${tabId}`. Session-only, like pendingPrompt. */
+  pendingTabPrompt: Record<string, string>;
   /** Prompt staged at create time; attaches to the next WorkspaceCreated
    * (creations are serial from the UI). */
   pendingCreatePrompt: string | null;
@@ -52,6 +55,7 @@ export const [store, setStore] = createStore<AppState>({
   repoBranches: {},
   createProgress: null,
   pendingPrompt: {},
+  pendingTabPrompt: {},
   pendingCreatePrompt: null,
   reviewByWs: {},
   resurrection: {},
@@ -70,6 +74,7 @@ export function resetStore(): void {
     repoBranches: {},
     createProgress: null,
     pendingPrompt: {},
+    pendingTabPrompt: {},
     pendingCreatePrompt: null,
     reviewByWs: {},
     resurrection: {},

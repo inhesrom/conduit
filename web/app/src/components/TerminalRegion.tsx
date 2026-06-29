@@ -4,6 +4,7 @@ import { client } from "../client";
 import { agentCmdFor, agentVanillaCmdFor } from "../state/settings";
 import { setStore, store } from "../state/store";
 import { createShell, removeShell, renameShell, shellTabs } from "../state/tabs";
+import { activeTab, isFreshTab, markFreshTab, setActiveTab } from "../state/ui";
 import { TerminalView } from "./TerminalView";
 
 function TabButton(props: {
@@ -48,10 +49,11 @@ function TabButton(props: {
 
 export function TerminalRegion(props: { ws: WorkspaceSummary }) {
   const wsId = props.ws.id;
-  const [active, setActive] = createSignal<string>("agent");
-  const [opened, setOpened] = createSignal<Set<string>>(new Set(["agent"]));
-  // Shells created in this session auto-start; restored ones wait for Start.
-  const fresh = new Set<string>();
+  // Active tab is shared state (state/ui) so the diff pane can switch to a tab
+  // after sending a Diff Question; auto-start tracking lives there too.
+  const active = () => activeTab(wsId);
+  const setActive = (id: string) => setActiveTab(wsId, id);
+  const [opened, setOpened] = createSignal<Set<string>>(new Set(["agent", active()]));
 
   // The agent's liveness when the screen opened decides whether we launch it.
   const agentRunningAtOpen = props.ws.agent_running;
@@ -63,7 +65,7 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
 
   const addShell = () => {
     const tab = createShell(wsId);
-    fresh.add(tab.id);
+    markFreshTab(wsId, tab.id);
     setActive(tab.id);
   };
 
@@ -134,8 +136,10 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
                   kind="Shell"
                   tabId={shell.id}
                   active={() => active() === shell.id}
-                  startOnMount={fresh.has(shell.id)}
-                  cmd={() => []}
+                  startOnMount={isFreshTab(wsId, shell.id)}
+                  cmd={() => shell.cmd ?? []}
+                  initialPrompt={() => store.pendingTabPrompt[`${wsId}/${shell.id}`]}
+                  onPromptSent={() => setStore("pendingTabPrompt", `${wsId}/${shell.id}`, undefined!)}
                 />
               </div>
             </Show>
