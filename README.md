@@ -45,11 +45,20 @@ The installer places the `conduit` binary in `~/.local/bin`. Override with `COND
 #### Prerequisites
 
 - [Rust toolchain](https://rustup.rs/) (stable)
+- [bun](https://bun.sh/) (to build the embedded web UI)
+- **Linux desktop builds:** `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev`
+- **Windows desktop builds:** the [MSVC build tools](https://visualstudio.microsoft.com/visual-studio-build-tools/)
+  ("Desktop development with C++" — provides the linker + Windows SDK) and the
+  [WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+  (preinstalled on Windows 11; install the Evergreen bootstrapper on Windows 10).
+  Use the default `x86_64-pc-windows-msvc` target — `windows-rs`/`wry`/WebView2
+  are best supported there.
 
 #### Build
 
 ```sh
-cargo build --release
+cd web && bun install && bun run build   # build the web UI first
+cd .. && cargo build --release
 ```
 
 #### Run
@@ -57,7 +66,7 @@ cargo build --release
 ```sh
 cargo run
 # or
-./target/release/conduit
+./target/release/conduit          # conduit.exe on Windows
 ```
 
 ## Usage
@@ -162,7 +171,7 @@ A plain `conduit` (no arguments) opens the web UI in a native OS window (system
 webview via `wry`/`tao` — no Electron, no bundled browser). It runs the core and
 web server in-process on a private loopback port, so no separate session daemon
 is needed. `conduit desktop` does the same thing explicitly. The desktop UI is on
-by default, so it links GTK/WebKit on Linux:
+by default, so it links GTK/WebKit on Linux and the WebView2 runtime on Windows:
 
 ```sh
 cd web && bun install && bun run build   # build the web UI first
@@ -186,11 +195,14 @@ cargo build --release -p tui --no-default-features
 
 ### Config Paths
 
-Conduit stores configuration under `~/.config/conduit/` (respects `XDG_CONFIG_HOME`):
+Conduit stores configuration under `~/.config/conduit/` (respects
+`XDG_CONFIG_HOME`; on Windows, `%APPDATA%\conduit\`):
 
 - `sessions.json` — session registry
 - `workspaces.json` — default workspace persistence
 - `workspaces.<session-name>.json` — per-session workspace state
+- `sessions/<name>.sock` — per-session daemon socket (Unix). On Windows, named
+  pipes (`\\.\pipe\conduit-session-<name>`) are used instead — no socket files.
 
 ## License
 

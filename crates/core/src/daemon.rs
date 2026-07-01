@@ -5,7 +5,6 @@
 //! The daemon runs no web server — `conduit web` attaches to this socket and
 //! bridges browser WebSockets to it.
 
-use std::path::PathBuf;
 use std::process::{Command as OsCommand, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,30 +20,21 @@ use crate::sessions::{
     load_registry, save_registry, session_socket_path, socket_alive, SessionEntry,
 };
 use crate::spawn_core;
+use crate::transport;
 
 /// Run a session daemon for `name`: spawn the core event loop, bind the
 /// session's Unix socket, and bridge each client connection to the core
 /// (replaying history on connect). Runs until the listener errors.
 pub async fn run_session_daemon(name: &str) -> Result<()> {
-    let sock_path = session_socket_path(name)?;
-    if let Some(parent) = sock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Remove stale socket file if it exists
-    let _ = std::fs::remove_file(&sock_path);
+    // Platform endpoint: a Unix socket path or a Windows named pipe. The
+    // transport handles binding, cleanup, and (on Unix) the parent dir + stale
+    // socket removal that this used to do by hand.
+    let endpoint = session_socket_path(name)?.to_string_lossy().into_owned();
 
     let core = spawn_core();
-    let listener = tokio::net::UnixListener::bind(&sock_path)
-        .with_context(|| format!("failed to bind unix socket: {}", sock_path.display()))?;
-
-    // Clean up socket on exit
-    struct CleanupGuard(PathBuf);
-    impl Drop for CleanupGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _guard = CleanupGuard(sock_path.clone());
+    let mut listener = transport::bind(&endpoint)
+        .await
+        .with_context(|| format!("failed to bind session endpoint: {endpoint}"))?;
 
     // Shared history buffer for replaying events to reconnecting clients
     let history = Arc::new(Mutex::new(CombinedHistory::new()));
@@ -53,8 +43,8 @@ pub async fn run_session_daemon(name: &str) -> Result<()> {
     spawn_recorder(&core.evt_tx, history.clone());
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let (mut reader, mut writer) = stream.into_split();
+        let conn = listener.accept().await?;
+        let (mut reader, mut writer) = tokio::io::split(conn);
         let cmd_tx = core.cmd_tx.clone();
         let history = history.clone();
         let core_evt_tx = core.evt_tx.clone();
@@ -153,14 +143,28 @@ pub async fn ensure_session_running(name: &str) -> Result<SessionEntry> {
 /// return its pid. The child re-execs the current binary.
 fn spawn_daemon_process(name: &str) -> Result<u32> {
     let exe = std::env::current_exe()?;
-    let child = OsCommand::new(exe)
-        .env("CONDUIT_SESSION_NAME", name)
+    let mut cmd = OsCommand::new(exe);
+    cmd.env("CONDUIT_SESSION_NAME", name)
         .arg("run-daemon")
         .arg("--session-name")
         .arg(name)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    // Fully detach on Windows so launching a session from the desktop app does
+    // not flash a console window or tie the daemon's lifetime to the GUI process.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS gives the daemon no console at all (it already writes
+        // to null); it's mutually exclusive with CREATE_NO_WINDOW, so don't
+        // combine them. CREATE_NEW_PROCESS_GROUP keeps a parent console's Ctrl+C
+        // from reaching the daemon.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    let child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn daemon for session '{}'", name))?;
     Ok(child.id())

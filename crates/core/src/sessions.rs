@@ -3,10 +3,10 @@
 //! TUI's session commands and the web proxy that attaches to running sessions.
 
 use std::path::PathBuf;
-use std::process::Command as OsCommand;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -21,13 +21,7 @@ pub struct SessionRegistry {
 }
 
 fn config_base() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        Some(PathBuf::from(xdg))
-    } else {
-        std::env::var("HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join(".config"))
-    }
+    crate::paths::config_root()
 }
 
 pub fn session_socket_dir() -> Result<PathBuf> {
@@ -36,7 +30,18 @@ pub fn session_socket_dir() -> Result<PathBuf> {
 }
 
 pub fn session_socket_path(name: &str) -> Result<PathBuf> {
-    Ok(session_socket_dir()?.join(format!("{}.sock", sanitize_session_name(name))))
+    #[cfg(windows)]
+    {
+        // Named pipes, not files: a machine-global name in the pipe namespace.
+        Ok(PathBuf::from(format!(
+            r"\\.\pipe\conduit-session-{}",
+            sanitize_session_name(name)
+        )))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(session_socket_dir()?.join(format!("{}.sock", sanitize_session_name(name))))
+    }
 }
 
 pub fn session_registry_path() -> Option<PathBuf> {
@@ -62,7 +67,7 @@ pub fn sanitize_session_name(input: &str) -> String {
 }
 
 pub fn socket_alive(path: &str) -> bool {
-    std::os::unix::net::UnixStream::connect(path).is_ok()
+    crate::transport::is_alive(path)
 }
 
 pub fn load_registry() -> Result<SessionRegistry> {
@@ -132,35 +137,40 @@ pub fn list_all_sessions() -> Vec<SessionStatus> {
 /// cmdline names the `run-daemon` subcommand with a matching `--session-name`.
 /// Guards against killing an unrelated process that recycled the pid.
 pub fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
-    let output = match OsCommand::new("ps")
-        .arg("-p")
-        .arg(entry.pid.to_string())
-        .arg("-o")
-        .arg("command=")
-        .output()
-    {
-        Ok(out) => out,
-        Err(_) => return false,
-    };
-    if !output.status.success() {
+    let pid = Pid::from_u32(entry.pid);
+    let mut system = System::new();
+    let refresh = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always);
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, refresh);
+    let Some(proc) = system.process(pid) else {
         return false;
-    }
-    let cmdline = String::from_utf8_lossy(&output.stdout);
+    };
+    let cmdline = proc
+        .cmd()
+        .iter()
+        .map(|s| s.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
     cmdline.contains("run-daemon") && cmdline.contains(&format!("--session-name {}", entry.name))
 }
 
 /// Per-session persisted state lives under `~/.config/conduit/` keyed by the
 /// sanitized session name (matching how the core writes them).
 fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
     let safe = sanitize_session_name(name);
-    Some(PathBuf::from(home).join(".config/conduit").join(format!("workspaces.{safe}.json")))
+    Some(
+        crate::paths::config_root()?
+            .join("conduit")
+            .join(format!("workspaces.{safe}.json")),
+    )
 }
 
 fn session_repositories_persist_path(name: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
     let safe = sanitize_session_name(name);
-    Some(PathBuf::from(home).join(".config/conduit").join(format!("repositories.{safe}.json")))
+    Some(
+        crate::paths::config_root()?
+            .join("conduit")
+            .join(format!("repositories.{safe}.json")),
+    )
 }
 
 /// Outcome of [`remove_session`].
@@ -187,7 +197,16 @@ pub fn remove_session(name: &str) -> Result<RemoveOutcome> {
 
     let killed = is_expected_daemon_process(&entry);
     if killed {
-        let _ = OsCommand::new("kill").arg(entry.pid.to_string()).status();
+        let pid = Pid::from_u32(entry.pid);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing(),
+        );
+        if let Some(proc) = system.process(pid) {
+            let _ = proc.kill();
+        }
     }
 
     let _ = std::fs::remove_file(&entry.socket_path);

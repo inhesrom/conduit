@@ -103,13 +103,9 @@ pub struct WebConfig {
 }
 
 pub(crate) fn config_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg).join("conduit")
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config/conduit")
-    } else {
-        PathBuf::from(".")
-    }
+    conduit_core::paths::config_root()
+        .map(|base| base.join("conduit"))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Path of the web password file (used by `conduit web set-password`).

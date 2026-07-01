@@ -12,10 +12,20 @@ pub enum TlsSource {
 }
 
 fn hostname() -> Option<String> {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 pub async fn rustls_config(src: &TlsSource) -> anyhow::Result<RustlsConfig> {

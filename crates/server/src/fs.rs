@@ -29,9 +29,7 @@ struct Listing {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/"))
+    conduit_core::paths::home().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 pub async fn list_dir(Query(q): Query<ListQuery>) -> impl IntoResponse {

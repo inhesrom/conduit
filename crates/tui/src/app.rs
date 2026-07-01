@@ -3598,13 +3598,7 @@ fn conduit_config_path(file_name: &str) -> Option<PathBuf> {
 
 #[cfg(not(test))]
 fn conduit_config_root() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        Some(PathBuf::from(xdg))
-    } else if let Ok(home) = std::env::var("HOME") {
-        Some(PathBuf::from(home).join(".config"))
-    } else {
-        None
-    }
+    conduit_core::paths::config_root()
 }
 
 #[cfg(test)]

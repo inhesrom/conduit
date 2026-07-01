@@ -425,6 +425,15 @@ fn set_web_password() -> Result<()> {
 }
 
 fn self_update(force: bool) -> Result<()> {
+    // The download path relies on `uname`/`tar` and publishes only Unix/macOS
+    // release tarballs; there's no Windows artifact yet.
+    if cfg!(windows) {
+        return Err(anyhow!(
+            "self-update is not supported on Windows yet — download the latest \
+             release from https://github.com/inhesrom/conduit/releases"
+        ));
+    }
+
     let current_version = env!("CARGO_PKG_VERSION");
 
     // Fetch latest release info from GitHub
@@ -686,10 +695,10 @@ fn build_local_backend() -> (Backend, CoreHandle) {
 // embedders (e.g. the desktop app's in-process server) can reuse it.
 
 async fn build_remote_backend(socket_path: &str) -> Result<Backend> {
-    let stream = tokio::net::UnixStream::connect(socket_path)
+    let conn = conduit_core::transport::connect(socket_path)
         .await
         .with_context(|| format!("failed to connect to daemon socket: {socket_path}"))?;
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(conn);
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(1024);
     let (evt_tx, evt_rx) = mpsc::channel::<CoreEvent>(1024);
@@ -4909,19 +4918,33 @@ fn split_raw_agent_cmd(choice: &str) -> Vec<String> {
 }
 
 fn open_url(url: &str) {
-    #[cfg(target_os = "linux")]
-    let cmd = "xdg-open";
-    #[cfg(target_os = "macos")]
-    let cmd = "open";
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let cmd = "xdg-open";
+    // Windows has no single `open` binary; `rundll32 url.dll,FileProtocolHandler`
+    // launches the default browser without cmd.exe quoting pitfalls.
+    #[cfg(windows)]
+    {
+        let _ = OsCommand::new("rundll32")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "macos")]
+        let cmd = "open";
+        #[cfg(not(target_os = "macos"))]
+        let cmd = "xdg-open";
 
-    let _ = OsCommand::new(cmd)
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+        let _ = OsCommand::new(cmd)
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
 }
 
 /// Carves the persistent left sidebar (when visible) off the full terminal area,

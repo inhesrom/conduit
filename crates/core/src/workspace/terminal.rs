@@ -63,6 +63,10 @@ impl TerminalSession {
         self.child.lock().process_id()
     }
 
+    /// The PTY's foreground process-group leader, used to introspect what's
+    /// running in the agent terminal for attention detection. Unix-only: on
+    /// Windows ConPTY there is no process-group concept, so `portable-pty`
+    /// returns `None` and foreground introspection is simply inert there.
     pub fn foreground_pgid(&self) -> Option<libc::pid_t> {
         self.master.lock().process_group_leader()
     }

@@ -10,16 +10,26 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 
 use conduit_core::ipc::{read_frame, write_frame};
+use conduit_core::transport;
 
-use crate::{config_dir, ServerState};
+use crate::ServerState;
 
-/// Where the running web server exposes its control socket.
+/// Where the running web server exposes its control endpoint: a Unix socket
+/// file, or a Windows named pipe.
 pub fn control_socket_path() -> PathBuf {
-    config_dir().join("web.sock")
+    #[cfg(windows)]
+    {
+        // Named pipes are machine-global; a fixed name is fine for the
+        // single-user dev tool this is. Mirrors the Unix `web.sock`.
+        PathBuf::from(r"\\.\pipe\conduit-web-control")
+    }
+    #[cfg(not(windows))]
+    {
+        crate::config_dir().join("web.sock")
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,28 +71,21 @@ pub async fn serve_control(
     tls: bool,
     shutdown: broadcast::Sender<()>,
 ) -> Result<()> {
-    let path = control_socket_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Clear any stale socket from a previous (crashed) run before binding.
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    // The transport owns binding, permissions, and (on Unix) stale-socket
+    // cleanup; named pipes need none of that on Windows.
+    let endpoint = control_socket_path().to_string_lossy().into_owned();
+    let mut listener = transport::bind(&endpoint).await?;
 
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else {
-            continue;
+        let mut conn = match listener.accept().await {
+            Ok(c) => c,
+            Err(_) => continue,
         };
         let state = state.clone();
         let url = url.clone();
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            let req = match read_frame(&mut stream).await {
+            let req = match read_frame(&mut conn).await {
                 Ok(Some(bytes)) => match serde_json::from_slice::<ControlRequest>(&bytes) {
                     Ok(r) => r,
                     Err(_) => return,
@@ -97,7 +100,7 @@ pub async fn serve_control(
                 }
             };
             if let Ok(bytes) = serde_json::to_vec(&resp) {
-                let _ = write_frame(&mut stream, &bytes).await;
+                let _ = write_frame(&mut conn, &bytes).await;
             }
         });
     }
@@ -131,13 +134,13 @@ fn report(state: &ServerState, url: &str, tls: bool) -> StatusReport {
 // ---- client side (used by the `conduit web …` subcommands) -----------------
 
 async fn request(req: ControlRequest) -> Result<ControlResponse> {
-    let path = control_socket_path();
-    let mut stream = UnixStream::connect(&path)
+    let endpoint = control_socket_path().to_string_lossy().into_owned();
+    let mut conn = transport::connect(&endpoint)
         .await
         .map_err(|_| anyhow!("web server not running"))?;
     let bytes = serde_json::to_vec(&req)?;
-    write_frame(&mut stream, &bytes).await?;
-    let frame = read_frame(&mut stream)
+    write_frame(&mut conn, &bytes).await?;
+    let frame = read_frame(&mut conn)
         .await?
         .ok_or_else(|| anyhow!("web server closed the connection"))?;
     Ok(serde_json::from_slice(&frame)?)

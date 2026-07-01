@@ -9,14 +9,15 @@ use std::path::PathBuf;
 use axum::extract::ws::{Message, WebSocket};
 use conduit_core::history::snapshot_and_subscribe;
 use conduit_core::ipc::{read_frame, write_frame};
+use conduit_core::transport;
 use protocol::Command;
-use tokio::net::UnixStream;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::EmbeddedCore;
 
 pub async fn handle_proxy(mut socket: WebSocket, socket_path: PathBuf) {
-    let stream = match UnixStream::connect(&socket_path).await {
+    let endpoint = socket_path.to_string_lossy();
+    let conn = match transport::connect(&endpoint).await {
         Ok(s) => s,
         Err(e) => {
             let err =
@@ -26,7 +27,7 @@ pub async fn handle_proxy(mut socket: WebSocket, socket_path: PathBuf) {
             return;
         }
     };
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(conn);
 
     loop {
         tokio::select! {

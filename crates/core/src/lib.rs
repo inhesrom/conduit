@@ -4,8 +4,10 @@ pub mod events;
 mod foreground_commands;
 pub mod history;
 pub mod ipc;
+pub mod paths;
 pub mod sessions;
 pub mod state;
+pub mod transport;
 pub mod workspace;
 
 use std::collections::{HashMap, HashSet};
@@ -1998,10 +2000,21 @@ fn unix_ms_now() -> u64 {
 }
 
 fn default_terminal_cmd(kind: protocol::TerminalKind) -> Vec<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "zsh".to_string());
-    match kind {
-        protocol::TerminalKind::Agent => vec![shell.clone(), "-i".to_string()],
-        protocol::TerminalKind::Shell => vec![shell, "-i".to_string()],
+    #[cfg(windows)]
+    {
+        let _ = kind;
+        // `cmd.exe` (via %COMSPEC%) is interactive by default under a ConPTY, so
+        // it needs no `-i` flag the way a POSIX login shell does.
+        let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        vec![shell]
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "zsh".to_string());
+        match kind {
+            protocol::TerminalKind::Agent => vec![shell.clone(), "-i".to_string()],
+            protocol::TerminalKind::Shell => vec![shell, "-i".to_string()],
+        }
     }
 }
 
@@ -2031,8 +2044,7 @@ struct PersistedWorkspace {
 }
 
 fn persist_file() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let base = PathBuf::from(home).join(".config/conduit");
+    let base = config_dir()?.join("conduit");
     let file = if let Ok(session) = std::env::var("CONDUIT_SESSION_NAME") {
         let safe = sanitize_session_name(&session);
         format!("workspaces.{safe}.json")
@@ -2054,13 +2066,7 @@ fn foreground_commands_persist_file() -> Option<PathBuf> {
 }
 
 fn config_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        Some(PathBuf::from(xdg))
-    } else {
-        std::env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".config"))
-    }
+    paths::config_root()
 }
 
 fn sanitize_session_name(input: &str) -> String {
@@ -2278,13 +2284,7 @@ struct PersistedRepository {
 /// `conduit`. The parent dir for conduit's config files (the per-context
 /// repository registry, session registry, etc.).
 fn config_base() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.trim().is_empty() {
-            return Some(PathBuf::from(xdg).join("conduit"));
-        }
-    }
-    let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/conduit"))
+    Some(paths::config_root()?.join("conduit"))
 }
 
 /// Path to the per-context repository registry. Scoped by `CONDUIT_SESSION_NAME`
@@ -2843,24 +2843,28 @@ mod tests {
 
     // ── default_terminal_cmd tests ──────────────────────────────────────
 
+    #[cfg(not(windows))]
     #[test]
     fn default_terminal_cmd_agent_returns_two_elements() {
         let cmd = default_terminal_cmd(protocol::TerminalKind::Agent);
         assert_eq!(cmd.len(), 2);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn default_terminal_cmd_shell_returns_two_elements() {
         let cmd = default_terminal_cmd(protocol::TerminalKind::Shell);
         assert_eq!(cmd.len(), 2);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn default_terminal_cmd_agent_second_element_is_interactive_flag() {
         let cmd = default_terminal_cmd(protocol::TerminalKind::Agent);
         assert_eq!(cmd[1], "-i");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn default_terminal_cmd_shell_second_element_is_interactive_flag() {
         let cmd = default_terminal_cmd(protocol::TerminalKind::Shell);
