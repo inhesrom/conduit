@@ -40,6 +40,11 @@ use conduit_core::CoreHandle;
 use tokio::sync::Mutex as AsyncMutex;
 
 pub const DEFAULT_WEB_PORT: u16 = 3001;
+/// Fixed loopback port for the desktop window's in-process server. Kept stable
+/// across launches (unlike an ephemeral port) so the webview's origin — and thus
+/// its localStorage-backed settings — survives a restart. Distinct from
+/// `DEFAULT_WEB_PORT` so it never collides with a running `conduit web`.
+pub const DESKTOP_WEB_PORT: u16 = 3017;
 const SESSION_COOKIE: &str = "conduit_session";
 
 #[derive(Clone)]
@@ -496,7 +501,17 @@ pub async fn serve_desktop(
     };
     let app = build_router(state).into_make_service_with_connect_info::<SocketAddr>();
 
-    let listener = tokio::net::TcpListener::bind(bind).await?;
+    // Prefer the fixed desktop port (stable origin → persistent settings). If
+    // it's taken (e.g. a second desktop window), fall back to an ephemeral port
+    // so this window still runs — it just won't share the persisted settings.
+    let listener = match tokio::net::TcpListener::bind(bind).await {
+        Ok(l) => l,
+        Err(_) if bind.port() != 0 => {
+            eprintln!("[conduit] desktop port {} busy; using an ephemeral port", bind.port());
+            tokio::net::TcpListener::bind((bind.ip(), 0)).await?
+        }
+        Err(e) => return Err(e.into()),
+    };
     let local = listener.local_addr()?;
     let _ = ready.send(local);
     eprintln!("[conduit] desktop web server listening on http://{local}");

@@ -665,6 +665,17 @@
 .tab-close:hover {
   opacity: 1;
 }
+/* ▾ on the agent tab: opens the switch-agent menu (same as right-click). */
+.tab-caret {
+  color: inherit;
+  opacity: 0.6;
+  font-size: calc(13px * var(--ui-scale));
+  line-height: 1;
+  padding: 0 2px;
+}
+.tab-caret:hover {
+  opacity: 1;
+}
 .tab-new {
   color: var(--ink-dim);
   font-size: calc(16px * var(--ui-scale));

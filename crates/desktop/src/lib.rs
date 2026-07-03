@@ -8,8 +8,10 @@
 //! exactly as in a browser, and shows the session picker on startup.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
+use conduit_server::DESKTOP_WEB_PORT;
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
@@ -40,7 +42,10 @@ pub fn run(session: Option<String>) -> Result<()> {
             conduit_core::daemon::ensure_session_running(name).await?;
         }
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
-        let bind: SocketAddr = ([127, 0, 0, 1], 0).into();
+        // Fixed loopback port so the webview origin (and its localStorage-backed
+        // settings) is stable across launches. `serve_desktop` falls back to an
+        // ephemeral port if it's already in use.
+        let bind: SocketAddr = ([127, 0, 0, 1], DESKTOP_WEB_PORT).into();
         tokio::spawn(async move {
             if let Err(e) = conduit_server::serve_desktop(bind, session, ready_tx).await {
                 eprintln!("[conduit] desktop server exited: {e}");
@@ -83,7 +88,13 @@ pub fn run(session: Option<String>) -> Result<()> {
         .with_decorations(false)
         .build(&event_loop)?;
 
-    let builder = WebViewBuilder::new()
+    // Persist localStorage (settings, theme, fonts, tabs) to a stable on-disk
+    // data directory instead of an ephemeral per-launch store. Combined with the
+    // fixed port above, this keeps the web UI's settings across restarts.
+    // `web_context` must outlive the webview; the event loop below diverges, so
+    // it lives for the whole process.
+    let mut web_context = wry::WebContext::new(Some(desktop_data_dir()));
+    let builder = WebViewBuilder::new_with_web_context(&mut web_context)
         .with_url(&url)
         // WebKitGTK (Linux) and WebView2 (Windows) gate clipboard access off by
         // default; the terminal's Ctrl+C-to-copy writes to the clipboard from
@@ -145,4 +156,19 @@ pub fn run(session: Option<String>) -> Result<()> {
             *control_flow = ControlFlow::Exit;
         }
     });
+}
+
+/// Persistent data directory for the desktop webview (localStorage, cookies).
+/// Mirrors the server's `config_dir()` resolution: `~/.config/conduit` (honoring
+/// `XDG_CONFIG_HOME`) with a `desktop-webview` subdir kept separate from the
+/// TUI/web config files.
+fn desktop_data_dir() -> PathBuf {
+    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg).join("conduit")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".config/conduit")
+    } else {
+        PathBuf::from(".")
+    };
+    base.join("desktop-webview")
 }
