@@ -33,10 +33,16 @@ export function TerminalView(props: {
   /** Agent only: an initial prompt to type once the agent produces output. */
   initialPrompt?: () => string | undefined;
   onPromptSent?: () => void;
+  /** Expose imperative controls to the parent (e.g. the agent tab's
+   * right-click "switch agent type", which restarts with a new command). */
+  registerControls?: (controls: { restart: (cmd?: string[]) => void }) => void;
 }) {
   let host!: HTMLDivElement;
   let handle: TerminalHandle | null = null;
   let startedAt = 0;
+  // Set for a caller-initiated stop (e.g. switching agent type) so the
+  // fast-exit fallback doesn't treat the intentional kill as a crash.
+  let intentionalStop = false;
   const key = termKey(props.wsId, props.kind, props.tabId);
   const term = () => store.terminals[key];
   const resurrect = () =>
@@ -109,6 +115,16 @@ export function TerminalView(props: {
     if (props.initialPrompt?.()) setTimeout(maybeSendPrompt, 2500);
   };
 
+  // Stop the current process and relaunch (default: props.cmd(), which reflects
+  // the workspace's current agent). Marks the stop intentional so the crash
+  // fallback doesn't fight the relaunch.
+  const restart = (cmd?: string[]) => {
+    if (!handle) return;
+    intentionalStop = true;
+    client.send({ StopTerminal: { id: props.wsId, kind: props.kind, tab_id: props.tabId } });
+    start(cmd ?? props.cmd());
+  };
+
   onMount(() => {
     handle = createTerminal(client, {
       workspaceId: props.wsId,
@@ -120,6 +136,7 @@ export function TerminalView(props: {
       onData: () => maybeSendPrompt(),
     });
     handle.attach(host);
+    props.registerControls?.({ restart });
     if (props.startOnMount) start(props.cmd());
   });
   onCleanup(() => handle?.dispose());
@@ -169,6 +186,12 @@ export function TerminalView(props: {
           startedAt = performance.now();
         } else if (prev) {
           setStarting(false);
+          // A caller-initiated stop (agent switch) already relaunched; don't let
+          // the crash fallback double-start.
+          if (intentionalStop) {
+            intentionalStop = false;
+            return;
+          }
           const code = term()?.exitCode;
           if (props.fallbackCmd && code != null && code !== 0 && performance.now() - startedAt < 3000) {
             start(props.fallbackCmd());

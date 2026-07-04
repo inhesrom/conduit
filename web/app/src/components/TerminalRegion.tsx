@@ -1,7 +1,8 @@
 import { createEffect, createSignal, For, Show } from "solid-js";
+import { Portal } from "solid-js/web";
 import { termKey, type WorkspaceSummary } from "@conduit/shared";
 import { client } from "../client";
-import { agentCmdFor, agentVanillaCmdFor } from "../state/settings";
+import { agentCmdFor, agentVanillaCmdFor, settings } from "../state/settings";
 import { setStore, store } from "../state/store";
 import { createShell, removeShell, renameShell, shellTabs } from "../state/tabs";
 import { activeTab, isFreshTab, markFreshTab, setActiveTab } from "../state/ui";
@@ -16,10 +17,18 @@ function TabButton(props: {
   onActivate: () => void;
   onClose?: () => void;
   onRename?: (title: string) => void;
+  onContextMenu?: (e: MouseEvent) => void;
+  /** When set, shows a ▾ caret that opens the same menu as right-click. */
+  onMenu?: (e: MouseEvent) => void;
 }) {
   const running = () => store.terminals[termKey(props.wsId, props.kind, props.tabId)]?.running ?? false;
   return (
-    <div class="tab" classList={{ active: props.active }} onClick={props.onActivate}>
+    <div
+      class="tab"
+      classList={{ active: props.active }}
+      onClick={props.onActivate}
+      onContextMenu={props.onContextMenu}
+    >
       <span class="tab-dot" classList={{ running: running() }} />
       <span
         class="tab-title"
@@ -31,6 +40,18 @@ function TabButton(props: {
       >
         {props.title}
       </span>
+      <Show when={props.onMenu}>
+        <button
+          class="tab-caret"
+          title="Switch agent type"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onMenu!(e);
+          }}
+        >
+          ▾
+        </button>
+      </Show>
       <Show when={props.onClose}>
         <button
           class="tab-close"
@@ -57,6 +78,28 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
 
   // The agent's liveness when the screen opened decides whether we launch it.
   const agentRunningAtOpen = props.ws.agent_running;
+
+  // "Switch agent type" menu on the agent tab (right-click or ▾ caret).
+  // Rendered through a Portal at a fixed screen position: the tabbar's
+  // overflow-x:auto clips absolutely-positioned descendants on both axes, so an
+  // in-flow dropdown would be invisible. The agent tab is always mounted, so
+  // its restart control is available as soon as it registers.
+  const [agentMenu, setAgentMenu] = createSignal<{ x: number; y: number } | null>(null);
+  const openAgentMenu = (x: number, y: number) =>
+    setAgentMenu({ x: Math.max(0, Math.min(x, window.innerWidth - 200)), y });
+  let agentControls: { restart: (cmd?: string[]) => void } | null = null;
+  // `ws.agent` is null when the workspace defers to the client default.
+  const currentAgent = () => props.ws.agent ?? settings.defaultAgent;
+
+  const switchAgent = (name: string) => {
+    setAgentMenu(null);
+    // Optimistically reflect the new agent (so cmd()/fallbackCmd() resolve to
+    // it), persist it server-side, then relaunch the agent terminal.
+    setStore("workspaces", (w) => w.id === wsId, "agent", name);
+    client.send({ SetWorkspaceAgent: { id: wsId, agent: name } });
+    setActive("agent");
+    agentControls?.restart(agentCmdFor(name));
+  };
 
   createEffect(() => {
     const a = active();
@@ -90,7 +133,59 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
           title="agent"
           active={active() === "agent"}
           onActivate={() => setActive("agent")}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            openAgentMenu(e.clientX, e.clientY);
+          }}
+          onMenu={(e) => {
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            openAgentMenu(r.left, r.bottom + 4);
+          }}
         />
+        <Show when={agentMenu()}>
+          <Portal>
+            <div
+              class="menu-catcher"
+              onClick={() => setAgentMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setAgentMenu(null);
+              }}
+            />
+            <div
+              class="menu"
+              style={{
+                position: "fixed",
+                left: `${agentMenu()!.x}px`,
+                top: `${agentMenu()!.y}px`,
+                right: "auto",
+              }}
+            >
+              <For each={settings.agents}>
+                {(a) => (
+                  <button
+                    class="menu-item"
+                    classList={{ active: currentAgent() === a.name }}
+                    onClick={() => switchAgent(a.name)}
+                  >
+                    {a.name}
+                  </button>
+                )}
+              </For>
+              <div class="menu-sep" />
+              <button
+                class="menu-item"
+                onClick={() => {
+                  setAgentMenu(null);
+                  const cmd = prompt("Custom agent command", currentAgent());
+                  if (cmd && cmd.trim()) switchAgent(cmd.trim());
+                }}
+              >
+                Custom…
+              </button>
+            </div>
+          </Portal>
+        </Show>
         <For each={shellTabs(wsId)}>
           {(shell) => (
             <TabButton
@@ -122,6 +217,7 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
               cmd={() => agentCmdFor(props.ws.agent)}
               fallbackCmd={() => agentVanillaCmdFor(props.ws.agent)}
               externalRunning={() => props.ws.agent_running}
+              registerControls={(c) => (agentControls = c)}
               initialPrompt={() => store.pendingPrompt[wsId]}
               onPromptSent={() => setStore("pendingPrompt", wsId, undefined!)}
             />
