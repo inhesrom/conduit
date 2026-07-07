@@ -711,6 +711,10 @@
 .term-host .xterm {
   height: 100%;
 }
+.term-host .xterm,
+.term-host .xterm * {
+  border-radius: 0 !important;
+}
 .term-overlay {
   position: absolute;
   inset: 0;
