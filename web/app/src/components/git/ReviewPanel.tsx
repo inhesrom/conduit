@@ -1,5 +1,6 @@
 import { For, onMount, Show } from "solid-js";
 import type { ChangedFile, WorkspaceSummary } from "@conduit/shared";
+import { navigate } from "../../router";
 import { git } from "../../state/git-actions";
 import { store } from "../../state/store";
 
@@ -30,8 +31,17 @@ export function ReviewPanel(props: {
         <button class="btn xs" onClick={() => git.push(wsId)}>
           Push
         </button>
-        <button class="btn xs primary" onClick={() => git.openPullRequest(wsId)}>
+        <button
+          class="btn xs"
+          onClick={() => {
+            git.openPullRequest(wsId);
+            navigate({ name: "pr", id: wsId });
+          }}
+        >
           Open PR
+        </button>
+        <button class="btn xs primary" onClick={() => navigate({ name: "pr", id: wsId })}>
+          View PR
         </button>
       </div>
       <Show when={review()} fallback={<div class="gpanel-empty">Loading branch diff…</div>}>

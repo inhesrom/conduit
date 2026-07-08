@@ -17,8 +17,12 @@ pub struct SshTarget {
 pub enum Route {
     Home,
     /// Status summary of a single repository's workspaces, shown in the detail pane.
-    Repo { id: RepositoryId },
-    Workspace { id: WorkspaceId },
+    Repo {
+        id: RepositoryId,
+    },
+    Workspace {
+        id: WorkspaceId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +167,168 @@ pub struct GitState {
     pub remote_branches: Vec<RemoteBranchInfo>,
     #[serde(default)]
     pub tags: Vec<TagInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum PullRequestProvider {
+    GitHub,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestRef {
+    pub provider: PullRequestProvider,
+    pub host: String,
+    pub owner: String,
+    pub repo: String,
+    pub number: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum PullRequestCommentKind {
+    Issue,
+    Review,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestCommentTarget {
+    pub kind: PullRequestCommentKind,
+    /// GitHub comment ids can exceed JavaScript's safe integer range, so the
+    /// protocol carries them as opaque decimal strings.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum PullRequestDiffSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum PullRequestDiffLineKind {
+    Context,
+    Add,
+    Delete,
+    Hunk,
+    Meta,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestChecksSummary {
+    pub total: u32,
+    pub passed: u32,
+    pub failed: u32,
+    pub pending: u32,
+    pub skipped: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestFile {
+    pub path: String,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub changes: u32,
+    #[serde(default)]
+    pub patch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestComment {
+    pub target: PullRequestCommentTarget,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub html_url: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub side: Option<PullRequestDiffSide>,
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    #[serde(default)]
+    pub start_side: Option<PullRequestDiffSide>,
+    /// Present for replies to review-thread comments.
+    #[serde(default)]
+    pub in_reply_to_id: Option<String>,
+    #[serde(default)]
+    pub can_edit: bool,
+    #[serde(default)]
+    pub can_delete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestDiffLine {
+    pub path: String,
+    pub kind: PullRequestDiffLineKind,
+    pub text: String,
+    #[serde(default)]
+    pub old_line: Option<u32>,
+    #[serde(default)]
+    pub new_line: Option<u32>,
+    #[serde(default)]
+    pub side: Option<PullRequestDiffSide>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestDetails {
+    pub pr: PullRequestRef,
+    pub title: String,
+    pub body: String,
+    pub author: String,
+    pub state: String,
+    pub url: String,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub is_draft: bool,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub reviewers: Vec<String>,
+    #[serde(default)]
+    pub review_decision: Option<String>,
+    #[serde(default)]
+    pub mergeable: Option<String>,
+    #[serde(default)]
+    pub merge_state_status: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub changed_files: u32,
+    pub checks: PullRequestChecksSummary,
+    #[serde(default)]
+    pub files: Vec<PullRequestFile>,
+    #[serde(default)]
+    pub comments: Vec<PullRequestComment>,
+    #[serde(default)]
+    pub diff: Vec<PullRequestDiffLine>,
+}
+
+/// Describes a PR candidate before full details are loaded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullRequestSummary {
+    pub pr: PullRequestRef,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub base_ref: String,
+    pub head_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -378,6 +544,58 @@ pub enum Command {
     OpenPullRequest {
         id: WorkspaceId,
     },
+    // --- Pull Request Viewer ---
+    LoadPullRequest {
+        id: WorkspaceId,
+        /// When absent, detect the pull request associated with the current branch.
+        #[serde(default)]
+        pr: Option<PullRequestRef>,
+        /// Optional GitHub PR number, URL, or branch accepted by `gh pr view`.
+        #[serde(default)]
+        query: Option<String>,
+    },
+    UpdatePullRequest {
+        id: WorkspaceId,
+        pr: PullRequestRef,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+    },
+    CreatePullRequestComment {
+        id: WorkspaceId,
+        pr: PullRequestRef,
+        body: String,
+    },
+    CreatePullRequestInlineComment {
+        id: WorkspaceId,
+        pr: PullRequestRef,
+        path: String,
+        body: String,
+        line: u32,
+        side: PullRequestDiffSide,
+        #[serde(default)]
+        start_line: Option<u32>,
+        #[serde(default)]
+        start_side: Option<PullRequestDiffSide>,
+    },
+    ReplyPullRequestComment {
+        id: WorkspaceId,
+        pr: PullRequestRef,
+        comment_id: String,
+        body: String,
+    },
+    EditPullRequestComment {
+        id: WorkspaceId,
+        pr: PullRequestRef,
+        target: PullRequestCommentTarget,
+        body: String,
+    },
+    DeletePullRequestComment {
+        id: WorkspaceId,
+        pr: PullRequestRef,
+        target: PullRequestCommentTarget,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -485,6 +703,28 @@ pub enum Event {
         base: String,
         files: Vec<ChangedFile>,
     },
+    // --- Pull Request Viewer ---
+    PullRequestLoaded {
+        id: WorkspaceId,
+        details: PullRequestDetails,
+    },
+    PullRequestCandidatesLoaded {
+        id: WorkspaceId,
+        candidates: Vec<PullRequestSummary>,
+    },
+    PullRequestNotFound {
+        id: WorkspaceId,
+        message: String,
+    },
+    PullRequestSetupRequired {
+        id: WorkspaceId,
+        message: String,
+    },
+    PullRequestMutationResult {
+        id: WorkspaceId,
+        success: bool,
+        message: String,
+    },
 }
 
 /// Slugify a free-form workspace/task name into a git-branch- and
@@ -567,6 +807,14 @@ mod tests {
             user: None,
             port: None,
         });
+        round_trip(&PullRequestSummary {
+            pr: pr_ref(),
+            title: "Add feature".into(),
+            url: "https://github.com/owner/repo/pull/42".into(),
+            state: "OPEN".into(),
+            base_ref: "main".into(),
+            head_ref: "feature".into(),
+        });
     }
 
     #[test]
@@ -592,6 +840,133 @@ mod tests {
     fn terminal_kind_round_trip() {
         round_trip(&TerminalKind::Agent);
         round_trip(&TerminalKind::Shell);
+    }
+
+    fn pr_ref() -> PullRequestRef {
+        PullRequestRef {
+            provider: PullRequestProvider::GitHub,
+            host: "github.com".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            number: 42,
+        }
+    }
+
+    #[test]
+    fn pull_request_types_round_trip() {
+        round_trip(&PullRequestDetails {
+            pr: pr_ref(),
+            title: "Add feature".into(),
+            body: "Body".into(),
+            author: "octocat".into(),
+            state: "OPEN".into(),
+            url: "https://github.com/owner/repo/pull/42".into(),
+            base_ref: "main".into(),
+            head_ref: "feature".into(),
+            head_sha: "abc123".into(),
+            is_draft: false,
+            labels: vec!["enhancement".into()],
+            reviewers: vec!["reviewer".into()],
+            review_decision: Some("REVIEW_REQUIRED".into()),
+            mergeable: Some("MERGEABLE".into()),
+            merge_state_status: Some("CLEAN".into()),
+            additions: 10,
+            deletions: 2,
+            changed_files: 1,
+            checks: PullRequestChecksSummary {
+                total: 2,
+                passed: 1,
+                failed: 0,
+                pending: 1,
+                skipped: 0,
+            },
+            files: vec![PullRequestFile {
+                path: "src/lib.rs".into(),
+                status: "modified".into(),
+                additions: 10,
+                deletions: 2,
+                changes: 12,
+                patch: Some("@@ -1 +1 @@".into()),
+            }],
+            comments: vec![PullRequestComment {
+                target: PullRequestCommentTarget {
+                    kind: PullRequestCommentKind::Review,
+                    id: "12345678901234567890".into(),
+                },
+                author: "octocat".into(),
+                body: "Looks good".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                html_url: "https://github.com/owner/repo/pull/42#discussion_r1".into(),
+                path: Some("src/lib.rs".into()),
+                diff_hunk: Some("@@ -1 +1 @@".into()),
+                line: Some(5),
+                side: Some(PullRequestDiffSide::Right),
+                start_line: Some(4),
+                start_side: Some(PullRequestDiffSide::Right),
+                in_reply_to_id: None,
+                can_edit: true,
+                can_delete: true,
+            }],
+            diff: vec![PullRequestDiffLine {
+                path: "src/lib.rs".into(),
+                kind: PullRequestDiffLineKind::Add,
+                text: "new line".into(),
+                old_line: None,
+                new_line: Some(5),
+                side: Some(PullRequestDiffSide::Right),
+            }],
+        });
+    }
+
+    #[test]
+    fn pull_request_commands_and_events_round_trip() {
+        let id = Uuid::new_v4();
+        let pr = pr_ref();
+        round_trip(&Command::LoadPullRequest {
+            id,
+            pr: Some(pr.clone()),
+            query: None,
+        });
+        round_trip(&Command::CreatePullRequestInlineComment {
+            id,
+            pr: pr.clone(),
+            path: "src/lib.rs".into(),
+            body: "Please check this range".into(),
+            line: 20,
+            side: PullRequestDiffSide::Right,
+            start_line: Some(18),
+            start_side: Some(PullRequestDiffSide::Right),
+        });
+        round_trip(&Command::EditPullRequestComment {
+            id,
+            pr,
+            target: PullRequestCommentTarget {
+                kind: PullRequestCommentKind::Issue,
+                id: "12345678901234567890".into(),
+            },
+            body: "updated".into(),
+        });
+        round_trip(&Event::PullRequestNotFound {
+            id,
+            message: "No pull request found for this branch.".into(),
+        });
+        round_trip(&Event::PullRequestCandidatesLoaded {
+            id,
+            candidates: vec![PullRequestSummary {
+                pr: pr_ref(),
+                title: "Add feature".into(),
+                url: "https://github.com/owner/repo/pull/42".into(),
+                state: "OPEN".into(),
+                base_ref: "main".into(),
+                head_ref: "feature".into(),
+            }],
+        });
+        round_trip(&Event::PullRequestMutationResult {
+            id,
+            success: true,
+            message: "Comment posted".into(),
+        });
     }
 
     #[test]
