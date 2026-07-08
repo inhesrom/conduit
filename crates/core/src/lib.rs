@@ -170,6 +170,52 @@ async fn run_workspace_shell_command(
         .await;
 }
 
+fn send_pull_request_error(evt_tx: &broadcast::Sender<Event>, id: Uuid, err: PullRequestError) {
+    match err {
+        PullRequestError::SetupRequired(message) => {
+            let _ = evt_tx.send(Event::PullRequestSetupRequired { id, message });
+        }
+        PullRequestError::NotFound(message) => {
+            let _ = evt_tx.send(Event::PullRequestNotFound { id, message });
+        }
+        PullRequestError::Other(err) => {
+            let _ = evt_tx.send(Event::PullRequestMutationResult {
+                id,
+                success: false,
+                message: err.to_string(),
+            });
+        }
+    }
+}
+
+fn send_pull_request_load_result(
+    evt_tx: &broadcast::Sender<Event>,
+    id: Uuid,
+    result: PullRequestLoadResult,
+) {
+    match result {
+        PullRequestLoadResult::Loaded(details) => {
+            let _ = evt_tx.send(Event::PullRequestLoaded { id, details });
+        }
+        PullRequestLoadResult::Candidates(candidates) => {
+            let _ = evt_tx.send(Event::PullRequestCandidatesLoaded { id, candidates });
+        }
+    }
+}
+
+async fn reload_pull_request_after_mutation(
+    id: Uuid,
+    path: &PathBuf,
+    ssh: Option<&SshTarget>,
+    pr: &protocol::PullRequestRef,
+    evt_tx: &broadcast::Sender<Event>,
+) {
+    match pull_request::load_pull_request(path, ssh, Some(pr), None).await {
+        Ok(result) => send_pull_request_load_result(evt_tx, id, result),
+        Err(err) => send_pull_request_error(evt_tx, id, err),
+    }
+}
+
 /// Grace window after a local keystroke during which the agent terminal's
 /// echoed output is ignored for the spinner / review / prompt heuristics, so
 /// typing doesn't flash `agent_active` or trip false `NeedsInput`. Distinct from
@@ -214,6 +260,7 @@ use workspace::git::{
     stage_all, stage_file, unstage_all, unstage_file,
 };
 use workspace::process_info;
+use workspace::pull_request::{self, PullRequestError, PullRequestLoadResult};
 use workspace::ssh;
 use workspace::terminal::{start_terminal, TerminalOutput};
 
@@ -570,8 +617,21 @@ pub fn spawn_core() -> CoreHandle {
                                         id,
                                         action: "open_pr".to_string(),
                                         success: true,
-                                        message: url,
+                                        message: url.clone(),
                                     });
+                                    match pull_request::load_pull_request(
+                                        &path,
+                                        ssh.as_ref(),
+                                        None,
+                                        Some(&url),
+                                    )
+                                    .await
+                                    {
+                                        Ok(result) => {
+                                            send_pull_request_load_result(&evt, id, result);
+                                        }
+                                        Err(err) => send_pull_request_error(&evt, id, err),
+                                    }
                                 }
                                 Err(_) => {
                                     let message = match remote_origin_url(&path, ssh.as_ref()).await {
@@ -591,6 +651,254 @@ pub fn spawn_core() -> CoreHandle {
                                         message,
                                     });
                                 }
+                            }
+                        });
+                    }
+                }
+                Command::LoadPullRequest { id, pr, query } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::load_pull_request(
+                                &path,
+                                ssh.as_ref(),
+                                pr.as_ref(),
+                                query.as_deref(),
+                            )
+                            .await
+                            {
+                                Ok(result) => {
+                                    send_pull_request_load_result(&evt, id, result);
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
+                            }
+                        });
+                    } else {
+                        let _ = evt_tx_task.send(Event::PullRequestNotFound {
+                            id,
+                            message: "Cannot load pull request: unknown workspace".to_string(),
+                        });
+                    }
+                }
+                Command::UpdatePullRequest { id, pr, title, body } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::update_pull_request(
+                                &path,
+                                ssh.as_ref(),
+                                &pr,
+                                title.as_deref(),
+                                body.as_deref(),
+                            )
+                            .await
+                            {
+                                Ok(message) => {
+                                    let _ = evt.send(Event::PullRequestMutationResult {
+                                        id,
+                                        success: true,
+                                        message,
+                                    });
+                                    reload_pull_request_after_mutation(
+                                        id,
+                                        &path,
+                                        ssh.as_ref(),
+                                        &pr,
+                                        &evt,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
+                            }
+                        });
+                    }
+                }
+                Command::CreatePullRequestComment { id, pr, body } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::create_issue_comment(&path, ssh.as_ref(), &pr, &body)
+                                .await
+                            {
+                                Ok(message) => {
+                                    let _ = evt.send(Event::PullRequestMutationResult {
+                                        id,
+                                        success: true,
+                                        message,
+                                    });
+                                    reload_pull_request_after_mutation(
+                                        id,
+                                        &path,
+                                        ssh.as_ref(),
+                                        &pr,
+                                        &evt,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
+                            }
+                        });
+                    }
+                }
+                Command::CreatePullRequestInlineComment {
+                    id,
+                    pr,
+                    path: file_path,
+                    body,
+                    line,
+                    side,
+                    start_line,
+                    start_side,
+                } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::create_inline_comment(
+                                &path,
+                                ssh.as_ref(),
+                                &pr,
+                                &file_path,
+                                &body,
+                                line,
+                                side,
+                                start_line,
+                                start_side,
+                            )
+                            .await
+                            {
+                                Ok(message) => {
+                                    let _ = evt.send(Event::PullRequestMutationResult {
+                                        id,
+                                        success: true,
+                                        message,
+                                    });
+                                    reload_pull_request_after_mutation(
+                                        id,
+                                        &path,
+                                        ssh.as_ref(),
+                                        &pr,
+                                        &evt,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
+                            }
+                        });
+                    }
+                }
+                Command::ReplyPullRequestComment {
+                    id,
+                    pr,
+                    comment_id,
+                    body,
+                } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::reply_to_review_comment(
+                                &path,
+                                ssh.as_ref(),
+                                &pr,
+                                &comment_id,
+                                &body,
+                            )
+                            .await
+                            {
+                                Ok(message) => {
+                                    let _ = evt.send(Event::PullRequestMutationResult {
+                                        id,
+                                        success: true,
+                                        message,
+                                    });
+                                    reload_pull_request_after_mutation(
+                                        id,
+                                        &path,
+                                        ssh.as_ref(),
+                                        &pr,
+                                        &evt,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
+                            }
+                        });
+                    }
+                }
+                Command::EditPullRequestComment {
+                    id,
+                    pr,
+                    target,
+                    body,
+                } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::edit_comment(
+                                &path,
+                                ssh.as_ref(),
+                                &pr,
+                                &target,
+                                &body,
+                            )
+                            .await
+                            {
+                                Ok(message) => {
+                                    let _ = evt.send(Event::PullRequestMutationResult {
+                                        id,
+                                        success: true,
+                                        message,
+                                    });
+                                    reload_pull_request_after_mutation(
+                                        id,
+                                        &path,
+                                        ssh.as_ref(),
+                                        &pr,
+                                        &evt,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
+                            }
+                        });
+                    }
+                }
+                Command::DeletePullRequestComment { id, pr, target } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt = evt_tx_task.clone();
+                        tokio::spawn(async move {
+                            match pull_request::delete_comment(&path, ssh.as_ref(), &pr, &target)
+                                .await
+                            {
+                                Ok(message) => {
+                                    let _ = evt.send(Event::PullRequestMutationResult {
+                                        id,
+                                        success: true,
+                                        message,
+                                    });
+                                    reload_pull_request_after_mutation(
+                                        id,
+                                        &path,
+                                        ssh.as_ref(),
+                                        &pr,
+                                        &evt,
+                                    )
+                                    .await;
+                                }
+                                Err(err) => send_pull_request_error(&evt, id, err),
                             }
                         });
                     }

@@ -84,6 +84,72 @@ export function applyEvent(e: AppEvent): void {
       setStore("reviewByWs", e.id, { base: e.base, files: e.files });
       break;
 
+    case "PullRequestLoaded":
+      setStore("pullRequestsByWs", e.id, {
+        status: "loaded",
+        details: e.details,
+        candidates: undefined,
+        message: undefined,
+        failureCount: 0,
+        updatedAt: Date.now(),
+      });
+      break;
+
+    case "PullRequestCandidatesLoaded": {
+      const prev = store.pullRequestsByWs[e.id];
+      setStore("pullRequestsByWs", e.id, {
+        status: "candidates",
+        details: prev?.details,
+        candidates: e.candidates,
+        message: "Choose an open pull request for this repository.",
+        failureCount: 0,
+        updatedAt: Date.now(),
+      });
+      break;
+    }
+
+    case "PullRequestNotFound": {
+      const prev = store.pullRequestsByWs[e.id];
+      setStore("pullRequestsByWs", e.id, {
+        status: "none",
+        details: prev?.details,
+        candidates: undefined,
+        message: e.message,
+        failureCount: (prev?.failureCount ?? 0) + 1,
+        updatedAt: Date.now(),
+      });
+      break;
+    }
+
+    case "PullRequestSetupRequired": {
+      const prev = store.pullRequestsByWs[e.id];
+      setStore("pullRequestsByWs", e.id, {
+        status: "setup",
+        details: prev?.details,
+        candidates: undefined,
+        message: e.message,
+        failureCount: (prev?.failureCount ?? 0) + 1,
+        updatedAt: Date.now(),
+      });
+      break;
+    }
+
+    case "PullRequestMutationResult": {
+      if (e.message) pushToast(e.success ? "ok" : "error", e.message);
+      if (!e.success) {
+        const prev = store.pullRequestsByWs[e.id];
+        setStore("pullRequestsByWs", e.id, {
+          status: "error",
+          details: prev?.details,
+          candidates: prev?.candidates,
+          message: e.message,
+          failureCount: (prev?.failureCount ?? 0) + 1,
+          updatedAt: Date.now(),
+        });
+      }
+      break;
+    }
+
     case "ShellResurrectionChanged": {
       const k = `${e.id}/${e.tab_id}`;
       if (e.command) setStore("resurrection", k, e.command);

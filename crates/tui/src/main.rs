@@ -40,14 +40,22 @@ enum LaunchMode {
     /// Bare `conduit tui` — terminal UI on an in-process core, no session.
     Local,
     /// `conduit tui attach <name>` — attach the TUI to a session, creating it if missing.
-    Session { name: String },
-    RemoveSession { name: String },
+    Session {
+        name: String,
+    },
+    RemoveSession {
+        name: String,
+    },
     ListSessions,
-    RunDaemon { name: String },
+    RunDaemon {
+        name: String,
+    },
     Update,
     Reinstall,
     WebSetPassword,
-    WebServe { session: Option<String> },
+    WebServe {
+        session: Option<String>,
+    },
     WebShutdown,
     WebStatus,
     /// Open the web UI in a native desktop window (requires the `desktop` feature).
@@ -256,7 +264,12 @@ fn resolve(args: CliArgs) -> Result<Cli> {
                 None => (t.attach, t.detach),
             };
             match session {
-                Some(name) => return Ok(Cli { mode: LaunchMode::Session { name }, detach }),
+                Some(name) => {
+                    return Ok(Cli {
+                        mode: LaunchMode::Session { name },
+                        detach,
+                    })
+                }
                 None if detach => {
                     return Err(anyhow!(
                         "--detach needs a session: try `conduit tui attach <name> -d`"
@@ -269,7 +282,9 @@ fn resolve(args: CliArgs) -> Result<Cli> {
             Some(WebCmd::Status) => LaunchMode::WebStatus,
             Some(WebCmd::Shutdown) => LaunchMode::WebShutdown,
             Some(WebCmd::SetPassword) => LaunchMode::WebSetPassword,
-            Some(WebCmd::Attach { name }) => LaunchMode::WebServe { session: Some(name) },
+            Some(WebCmd::Attach { name }) => LaunchMode::WebServe {
+                session: Some(name),
+            },
             None => LaunchMode::WebServe { session: w.attach },
         },
         Some(Cmd::Desktop(s)) => {
@@ -297,7 +312,10 @@ fn resolve(args: CliArgs) -> Result<Cli> {
             }
         }
     };
-    Ok(Cli { mode, detach: false })
+    Ok(Cli {
+        mode,
+        detach: false,
+    })
 }
 
 fn main() -> Result<()> {
@@ -1029,9 +1047,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
             match app.route {
                 Route::Home => ui::screens::home::render(frame, detail_area, &app),
-                Route::Repo { .. } => {
-                    ui::screens::repo_summary::render(frame, detail_area, &app)
-                }
+                Route::Repo { .. } => ui::screens::repo_summary::render(frame, detail_area, &app),
                 Route::Workspace { .. } => ui::screens::workspace::render(frame, detail_area, &app),
             }
             // The Rail's workspace pop-out floats over the detail pane, so it is
@@ -1661,8 +1677,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         }
                                         KeyCode::Esc => app.cancel_agent_picker(),
                                         KeyCode::Enter => {
-                                            let selection =
-                                                app.agent_picker.as_ref().map(|p| (p.id, p.selected));
+                                            let selection = app
+                                                .agent_picker
+                                                .as_ref()
+                                                .map(|p| (p.id, p.selected));
                                             if let Some((target, selected)) = selection {
                                                 if let Some(profile) =
                                                     app.settings.agents.get(selected)
@@ -3279,6 +3297,14 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
             app.review_files.insert(id, paths);
             app.review_file_selected = 0;
         }
+        CoreEvent::PullRequestLoaded { .. }
+        | CoreEvent::PullRequestCandidatesLoaded { .. }
+        | CoreEvent::PullRequestNotFound { .. }
+        | CoreEvent::PullRequestSetupRequired { .. }
+        | CoreEvent::PullRequestMutationResult { .. } => {
+            // PR Viewer is a web/desktop route in v1; the TUI keeps its
+            // existing Open PR behavior.
+        }
     }
 }
 
@@ -3864,8 +3890,11 @@ async fn handle_mouse(
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                 // Start a text selection confined to the clicked element.
                 let rect = selection_confine_rect(area, app, mouse.column, mouse.row);
-                app.mouse_selection =
-                    Some(app::MouseSelection::at_confined(mouse.column, mouse.row, rect));
+                app.mouse_selection = Some(app::MouseSelection::at_confined(
+                    mouse.column,
+                    mouse.row,
+                    rect,
+                ));
             }
         }
     }
