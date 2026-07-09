@@ -56,9 +56,13 @@ function SessionSwitcher() {
   };
 
   // Destructive: confirm first, then stop the daemon and forget the session.
-  // Deleting the attached session detaches back to the picker (deleteSession).
+  // The currently attached session is refused in-app.
   const remove = async (target: string, e: MouseEvent) => {
     e.stopPropagation();
+    if (target === currentSession()) {
+      setError("cannot delete the attached session");
+      return;
+    }
     const ok = await confirmDialog({
       title: `Delete session "${target}"?`,
       body: "This stops its daemon and removes the session from Conduit. Worktrees on disk are left intact.",
@@ -110,8 +114,13 @@ function SessionSwitcher() {
                 <Show when={desktop()}>
                   <button
                     class="menu-del"
-                    title="Delete session"
+                    title={
+                      s.name === currentSession()
+                        ? "Cannot delete the attached session"
+                        : "Delete session"
+                    }
                     aria-label={`Delete session ${s.name}`}
+                    disabled={s.name === currentSession()}
                     onClick={(e) => void remove(s.name, e)}
                   >
                     ×
@@ -125,7 +134,7 @@ function SessionSwitcher() {
             <div class="session-create">
               <input
                 class="modal-input mono"
-                placeholder="New session name…"
+                placeholder="New session name"
                 value={name()}
                 disabled={busy()}
                 onInput={(e) => setName(e.currentTarget.value)}
@@ -266,7 +275,7 @@ export function App() {
           <AppShell />
         </Show>
       </Show>
-      {/* Mounted at the root so promise-based confirms work on the picker too. */}
+      {/* Mounted at the root so promise-based confirms work on the chooser too. */}
       <Dialogs />
     </>
   );

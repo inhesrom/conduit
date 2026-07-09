@@ -1,11 +1,11 @@
 //! Conduit desktop shell: a native OS window (system webview via `wry`/`tao`)
-//! pointed at an in-process Conduit web server.
+//! pointed at a trusted local Conduit web server.
 //!
 //! There is no Electron and no bundled browser — we run the same Axum server
-//! the `conduit` binary already serves, but in-process on an ephemeral loopback
+//! the `conduit` binary already serves, but in-process on a private loopback
 //! port with TLS/auth off, proxying to the user's running session daemons. The
 //! web UI is unchanged: it talks to the server same-origin over WebSocket/REST
-//! exactly as in a browser, and shows the session picker on startup.
+//! exactly as in a browser, and shows the session chooser on startup.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -23,23 +23,23 @@ use wry::WebViewBuilder;
 /// Launch the desktop app. Blocks (runs the GUI event loop) until the window is
 /// closed, then exits the process. Must be called on the main thread.
 ///
-/// `session` pins the window to one session (created if missing); `None` shows
-/// the session picker on startup.
+/// `session` pins the window to one registered session; `None` shows the
+/// session chooser on startup.
 pub fn run(session: Option<String>) -> Result<()> {
-    // The tokio runtime hosts the in-process core + embedded web server on
-    // worker threads; the GUI event loop owns the main thread (macOS requires
-    // the NSApplication loop to run there).
+    // The tokio runtime hosts the local web server on worker threads; the GUI
+    // event loop owns the main thread (macOS requires the NSApplication loop to
+    // run there).
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
-    // Start the core + embedded server and wait for the bound (ephemeral) port.
+    // Start the trusted local server and wait for the bound port.
     // The spawned server task keeps running on the runtime after this returns.
     let addr: SocketAddr = rt.block_on(async {
-        // `desktop attach <name>`: ensure the pinned session's daemon is running
-        // (created if missing) before the window connects to it.
+        // `desktop attach <name>`: ensure the pinned registered session's daemon
+        // is running before the window connects to it.
         if let Some(name) = &session {
-            conduit_core::daemon::ensure_session_running(name).await?;
+            conduit_core::daemon::attach_session(name).await?;
         }
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
         // Fixed loopback port so the webview origin (and its localStorage-backed

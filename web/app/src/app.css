@@ -1717,9 +1717,13 @@
   font-size: calc(16px * var(--ui-scale));
   line-height: 1;
 }
-.menu-del:hover {
+.menu-del:hover:not(:disabled) {
   background: var(--ink);
   color: var(--paper);
+}
+.menu-del:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 /* Inline "create session" lives in the narrow dropdown — stack input over button. */
 .menu .session-create {
