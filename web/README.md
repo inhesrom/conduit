@@ -1,9 +1,9 @@
 # Conduit Web UI
 
-TypeScript web frontend for conduit. A running daemon embeds a web server
+TypeScript web frontend for conduit. `conduit web` runs the standalone server
 (`crates/server`) that bridges browser WebSocket clients onto the same
-Command/Event protocol the TUI speaks — same core, same session, same
-history replay.
+Command/Event protocol the TUI speaks — same core, same session, same history
+replay.
 
 ## Stack
 
@@ -30,22 +30,22 @@ web/
 ## Running
 
 ```sh
-# 1. Start a conduit session — its daemon serves ws://127.0.0.1:3001/ws
-conduit tui attach dev -d
+# Terminal 1: start a session daemon and the web server
+conduit new dev
+conduit web
 
-# 2. Run the app
+# Terminal 2: run the app
 cd web
 bun install
 bun run dev
 ```
 
-From another machine on a trusted network (Tailscale), tunnel the daemon
-and dev-server ports over SSH, or wait for the embedded production build
-(`bun run build` → served by the daemon directly with password + TLS).
+From another machine on a trusted network (Tailscale), tunnel the web server
+and dev-server ports over SSH, or use the production build served by
+`conduit web` with password + TLS.
 
-Set `CONDUIT_WEB_PORT` for a non-default daemon port and
-`VITE_CONDUIT_WS_URL` to match. `CONDUIT_DISABLE_EMBEDDED_WEB=1` turns the
-embedded server off.
+Set `CONDUIT_WEB_PORT` for a non-default web server port and
+`VITE_CONDUIT_WS_URL` to match.
 
 ## Protocol types
 
@@ -63,6 +63,8 @@ bun run gen:protocol   # cargo test -p protocol --features ts with TS_RS_EXPORT_
   xterm.js. App state (workspaces, git, attention) flows through the store.
 - The server replays a full snapshot on every connect; snapshot events are
   full replacements, so reconnect needs no special handling in app code.
+- Browser web can attach to and revive registered sessions only. It cannot
+  create or delete sessions; the trusted desktop surface can.
 - The web client never sends `SetRoute` — that steers the TUI's screen. Web
   routing is client-side.
 - PTYs spawn at the browser terminal's real size: fit xterm first, then send

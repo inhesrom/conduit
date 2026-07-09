@@ -12,8 +12,8 @@ const [sessions, setSessions] = createSignal<SessionInfo[]>([]);
 const [currentSession, setCurrentSession] = createSignal<string | null>(null);
 const [pinned, setPinned] = createSignal(false);
 const [loaded, setLoaded] = createSignal(false);
-/** True when served by the native desktop window — it always shows the picker
- * on startup (no single-session auto-attach) and can create sessions. */
+/** True when served by the native desktop window — it always shows the chooser
+ * on startup (no single-session auto-attach) and can create/delete sessions. */
 const [desktop, setDesktop] = createSignal(false);
 export { currentSession, desktop, loaded, pinned, sessions };
 
@@ -37,16 +37,15 @@ export async function refreshSessions(): Promise<void> {
 }
 
 /** Called once auth is cleared: load sessions and auto-attach when there's
- * exactly one (or a pinned one). The desktop window always shows the picker so
- * the user explicitly picks (or creates) a session first. */
+ * a pinned server. Unpinned web and desktop surfaces always show the chooser so
+ * the user explicitly chooses a session first. */
 export async function initSessions(): Promise<void> {
   await refreshSessions();
   const list = sessions();
   if (pinned() && list[0]) void selectSession(list[0].name);
-  else if (!desktop() && list.length === 1) void selectSession(list[0]!.name);
 }
 
-/** Ensure a session daemon is running (resurrecting a stale one), via
+/** Ensure a registered session daemon is running (resurrecting a stale one), via
  * `POST /api/sessions`. Returns an error message on failure, else null. The
  * server only lets the shared web build hit names already in the registry. */
 async function ensureSession(name: string): Promise<string | null> {
@@ -56,12 +55,22 @@ async function ensureSession(name: string): Promise<string | null> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
     });
-    if (!res.ok) return (await res.text()) || `failed (${res.status})`;
-    const j = (await res.json()) as { ok: boolean; name?: string; error?: string };
+    const text = await res.text();
+    const j = parseSessionResponse(text);
+    if (!res.ok) return j?.error ?? (text || `failed (${res.status})`);
+    if (!j) return "failed to start session";
     if (!j.ok || !j.name) return j.error ?? "failed to start session";
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : "failed to start session";
+  }
+}
+
+function parseSessionResponse(text: string): { ok: boolean; name?: string; error?: string } | null {
+  try {
+    return JSON.parse(text) as { ok: boolean; name?: string; error?: string };
+  } catch {
+    return null;
   }
 }
 
@@ -71,6 +80,7 @@ async function ensureSession(name: string): Promise<string | null> {
 export async function createSession(name: string): Promise<string | null> {
   const trimmed = name.trim();
   if (!trimmed) return "session name is required";
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return "use only letters, digits, '-' and '_'";
   const err = await ensureSession(trimmed);
   if (err) return err;
   await refreshSessions();
@@ -78,36 +88,32 @@ export async function createSession(name: string): Promise<string | null> {
 }
 
 /** Delete a session entirely (stop its daemon, drop it from the registry, and
- * remove its persisted workspaces/repositories), via `DELETE /api/sessions/:name`.
- * Desktop-only — the shared web build rejects it. If we delete the session
- * we're currently attached to, detach back to the picker. Returns an error
- * message on failure, else null. */
+ * remove its persisted Conduit state), via `DELETE /api/sessions/:name`.
+ * Desktop-only — the shared web build rejects it. The attached session is
+ * refused in-app. Returns an error message on failure, else null. */
 export async function deleteSession(name: string): Promise<string | null> {
+  if (currentSession() === name) return "cannot delete the attached session";
   try {
     const res = await fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
     if (!res.ok) return (await res.text()) || `failed (${res.status})`;
   } catch (e) {
     return e instanceof Error ? e.message : "failed to delete session";
   }
-  if (currentSession() === name) {
-    client.close();
-    resetStore();
-    setCurrentSession(null);
-  }
   await refreshSessions();
   return null;
 }
 
-/** Attach to a session, resurrecting its daemon first if needed — mirrors the
- * TUI, which calls `ensure_session_running` on every attach (a live daemon
- * returns immediately; a stale one is respawned). Returns an error message on
- * failure, else null. A pinned session is managed by the server (an embedded
- * in-process core has no daemon to resurrect), so we attach without ensuring. */
+/** Attach to a session, resurrecting its daemon first if needed. Running
+ * sessions connect directly; stale sessions are revived through the server.
+ * Returns an error message on failure, else null. A pinned session is managed
+ * by the server, so we attach without ensuring. */
 export async function selectSession(name: string): Promise<string | null> {
   if (currentSession() === name) return null;
-  if (!pinned()) {
+  const known = sessions().find((s) => s.name === name);
+  if (!pinned() && !known?.running) {
     const err = await ensureSession(name);
     if (err) return err;
+    await refreshSessions();
   }
   resetStore();
   setCurrentSession(name);

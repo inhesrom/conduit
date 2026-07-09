@@ -13,7 +13,6 @@ use anyhow::{anyhow, Context, Result};
 use app::TuiApp;
 use base64::Engine as _;
 use clap::{Args, Parser, Subcommand};
-use conduit_core::{spawn_core, CoreHandle};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -28,23 +27,29 @@ use protocol::{CheckoutSource, Command, Event as CoreEvent, Route, TerminalKind,
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
 use serde::Deserialize;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum LaunchMode {
-    /// Bare `conduit tui` — terminal UI on an in-process core, no session.
-    Local,
-    /// `conduit tui attach <name>` — attach the TUI to a session, creating it if missing.
-    Session {
+    /// Bare `conduit tui` or headless bare `conduit` — open the TUI session chooser.
+    TuiChooser,
+    /// `conduit tui attach <name>` — attach the TUI to a registered session.
+    TuiSession {
         name: String,
     },
-    RemoveSession {
+    NewSession {
         name: String,
+    },
+    DeleteSession {
+        name: String,
+        yes: bool,
     },
     ListSessions,
     RunDaemon {
@@ -59,18 +64,17 @@ enum LaunchMode {
     WebShutdown,
     WebStatus,
     /// Open the web UI in a native desktop window (requires the `desktop` feature).
-    /// `session` pins the window to one session (created if missing); `None` shows
-    /// the session picker. The field is unused on headless builds (no desktop UI).
+    /// `session` pins the window to one registered session; `None` shows
+    /// the session chooser. The field is unused on headless builds (no desktop UI).
     Desktop {
         #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
         session: Option<String>,
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct Cli {
     mode: LaunchMode,
-    detach: bool,
 }
 
 struct Backend {
@@ -79,7 +83,7 @@ struct Backend {
 }
 
 use conduit_core::ipc::{read_frame, write_frame};
-use conduit_core::sessions::{load_registry, socket_alive};
+use conduit_core::sessions::{load_registry, validate_session_name};
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
@@ -88,25 +92,30 @@ struct GitHubRelease {
 
 const AFTER_HELP: &str = "\
 EXAMPLES:
-    conduit                       Open the default surface (desktop, or TUI on headless builds)
-    conduit tui                   Terminal UI on an in-process core (no session)
-    conduit tui attach work       Attach the TUI to session 'work' (created if missing)
-    conduit tui attach work -d    Start session 'work' in the background, don't open the UI
-    conduit web                   Serve the web UI for all running sessions (picker)
+    conduit                       Open the default surface chooser
+    conduit tui                   Open the TUI session chooser
+    conduit new work              Create or revive session 'work'
+    conduit attach work           Attach the default surface to session 'work'
+    conduit a work                Attach the default surface to session 'work'
+    conduit tui attach work       Attach the TUI to session 'work'
+    conduit tui a work            Attach the TUI to session 'work'
+    conduit delete work           Delete session 'work' after confirmation
+    conduit delete work --yes     Delete session 'work' without prompting
+    conduit d work                Delete session 'work' after confirmation
+    conduit list                  List registered sessions
+    conduit l                     List registered sessions
+    conduit web                   Serve the browser session chooser
     conduit web attach work       Serve the web UI pinned to session 'work'
     conduit desktop attach work   Open the desktop window pinned to session 'work'
-    conduit list                  List active sessions
-    conduit remove work           Remove session 'work'
 
-Each surface accepts the `-a <name>` shorthand for `attach <name>`.
 The web UI listens on https://127.0.0.1:3001 by default (override with
 CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).";
 
 /// Conduit — a terminal multi-repository agent manager.
 ///
 /// A *surface* (tui, web, desktop) is an interchangeable view onto a *session*
-/// (a named daemon). Attach a surface to a session — creating it if missing —
-/// with `conduit <surface> attach <name>` (or the `-a <name>` shorthand).
+/// (a named daemon). Create sessions with `conduit new <name>` and attach
+/// surfaces with `conduit <surface> attach <name>`.
 #[derive(Parser, Debug)]
 #[command(
     name = "conduit",
@@ -116,14 +125,6 @@ CONDUIT_WEB_PORT / CONDUIT_WEB_BIND; set CONDUIT_WEB_TLS=off for plain HTTP).";
     after_help = AFTER_HELP
 )]
 struct CliArgs {
-    /// List active sessions.
-    #[arg(short = 'l', long = "list")]
-    list: bool,
-
-    /// Remove a session (stops its daemon).
-    #[arg(short = 'r', long = "remove", value_name = "NAME")]
-    remove: Option<String>,
-
     /// Update to the latest release from GitHub.
     #[arg(short = 'u', long = "update")]
     update: bool,
@@ -138,19 +139,29 @@ struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Launch the terminal UI (bare: in-process core, no session).
+    /// Open the terminal session chooser.
     Tui(TuiArgs),
     /// Serve or manage the web UI.
     Web(WebArgs),
     /// Open the web UI in a native desktop window.
     Desktop(SurfaceArgs),
-    /// List active sessions.
-    List,
-    /// Remove a session (stops its daemon).
-    Remove {
+    /// Create a missing session or revive a stale registered session.
+    New {
         /// Session name.
         name: String,
     },
+    /// Attach the default surface to a registered session.
+    #[command(alias = "a")]
+    Attach {
+        /// Session name.
+        name: String,
+    },
+    /// Delete a session and its Conduit state.
+    #[command(alias = "d")]
+    Delete(DeleteArgs),
+    /// List registered sessions.
+    #[command(alias = "l")]
+    List,
     /// Update to the latest release from GitHub.
     Update,
     /// Reinstall the latest release (even if already up to date).
@@ -165,48 +176,34 @@ enum Cmd {
     },
 }
 
-/// `conduit tui [attach <name>] [-d]` — terminal UI surface.
+/// `conduit tui [attach <name>]` — terminal UI surface.
 #[derive(Args, Debug)]
 struct TuiArgs {
-    /// Attach to the named session, creating it if it doesn't exist.
-    #[arg(short = 'a', long = "attach", value_name = "NAME")]
-    attach: Option<String>,
-
-    /// Start the session daemon in the background without opening the UI
-    /// (only valid together with a session).
-    #[arg(short = 'd', long = "detach")]
-    detach: bool,
-
     #[command(subcommand)]
     sub: Option<TuiCmd>,
 }
 
 #[derive(Subcommand, Debug)]
 enum TuiCmd {
-    /// Attach the TUI to the named session, creating it if it doesn't exist.
+    /// Attach the TUI to a registered session.
+    #[command(alias = "a")]
     Attach {
         /// Session name.
         name: String,
-        /// Start the daemon in the background without opening the UI.
-        #[arg(short = 'd', long = "detach")]
-        detach: bool,
     },
 }
 
 /// `conduit web [attach <name> | status | shutdown | set-password]`.
 #[derive(Args, Debug)]
 struct WebArgs {
-    /// Serve the web UI pinned to the named session (created if missing).
-    #[arg(short = 'a', long = "attach", value_name = "NAME")]
-    attach: Option<String>,
-
     #[command(subcommand)]
     sub: Option<WebCmd>,
 }
 
 #[derive(Subcommand, Debug)]
 enum WebCmd {
-    /// Serve the web UI pinned to the named session (created if missing).
+    /// Serve the web UI pinned to a registered session.
+    #[command(alias = "a")]
     Attach {
         /// Session name.
         name: String,
@@ -219,29 +216,34 @@ enum WebCmd {
     SetPassword,
 }
 
-/// Shared surface arguments: `<surface> attach <name>` or `<surface> -a <name>`.
+/// Shared surface arguments: `<surface> attach <name>`.
 #[derive(Args, Debug)]
 struct SurfaceArgs {
-    /// Attach to the named session, creating it if it doesn't exist.
-    #[arg(short = 'a', long = "attach", value_name = "NAME")]
-    attach: Option<String>,
-
     #[command(subcommand)]
     sub: Option<AttachCmd>,
 }
 
 #[derive(Subcommand, Debug)]
 enum AttachCmd {
-    /// Attach to the named session, creating it if it doesn't exist.
+    /// Attach to a registered session.
+    #[command(alias = "a")]
     Attach {
         /// Session name.
         name: String,
     },
 }
 
-/// Bare `conduit` (no subcommand, no flags). Defaults to the desktop window;
-/// headless builds (`--no-default-features`) have no desktop UI and fall back to
-/// the terminal UI.
+#[derive(Args, Debug)]
+struct DeleteArgs {
+    /// Session name.
+    name: String,
+    /// Delete without prompting.
+    #[arg(long)]
+    yes: bool,
+}
+
+/// Bare `conduit` (no subcommand, no flags). Defaults to the desktop chooser;
+/// headless builds (`--no-default-features`) open the TUI chooser.
 fn default_mode() -> LaunchMode {
     #[cfg(feature = "desktop")]
     {
@@ -249,35 +251,32 @@ fn default_mode() -> LaunchMode {
     }
     #[cfg(not(feature = "desktop"))]
     {
-        LaunchMode::Local
+        LaunchMode::TuiChooser
     }
 }
 
-/// Collapse the parsed clap tree into a `LaunchMode` + detach flag. A subcommand,
-/// when present, wins over the top-level convenience flags (`-l`/`-r`/`-u`).
+fn default_attach_mode(name: String) -> LaunchMode {
+    #[cfg(feature = "desktop")]
+    {
+        LaunchMode::Desktop {
+            session: Some(name),
+        }
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        LaunchMode::TuiSession { name }
+    }
+}
+
+/// Collapse the parsed clap tree into a `LaunchMode`. A subcommand, when
+/// present, wins over the top-level convenience flag (`-u`).
 /// `Command::Version` is handled in `main` before this runs.
 fn resolve(args: CliArgs) -> Result<Cli> {
     let mode = match args.command {
-        Some(Cmd::Tui(t)) => {
-            let (session, detach) = match t.sub {
-                Some(TuiCmd::Attach { name, detach }) => (Some(name), detach),
-                None => (t.attach, t.detach),
-            };
-            match session {
-                Some(name) => {
-                    return Ok(Cli {
-                        mode: LaunchMode::Session { name },
-                        detach,
-                    })
-                }
-                None if detach => {
-                    return Err(anyhow!(
-                        "--detach needs a session: try `conduit tui attach <name> -d`"
-                    ));
-                }
-                None => LaunchMode::Local,
-            }
-        }
+        Some(Cmd::Tui(t)) => match t.sub {
+            Some(TuiCmd::Attach { name }) => LaunchMode::TuiSession { name },
+            None => LaunchMode::TuiChooser,
+        },
         Some(Cmd::Web(w)) => match w.sub {
             Some(WebCmd::Status) => LaunchMode::WebStatus,
             Some(WebCmd::Shutdown) => LaunchMode::WebShutdown,
@@ -285,37 +284,49 @@ fn resolve(args: CliArgs) -> Result<Cli> {
             Some(WebCmd::Attach { name }) => LaunchMode::WebServe {
                 session: Some(name),
             },
-            None => LaunchMode::WebServe { session: w.attach },
+            None => LaunchMode::WebServe { session: None },
         },
         Some(Cmd::Desktop(s)) => {
             let session = match s.sub {
                 Some(AttachCmd::Attach { name }) => Some(name),
-                None => s.attach,
+                None => None,
             };
             LaunchMode::Desktop { session }
         }
+        Some(Cmd::New { name }) => LaunchMode::NewSession { name },
+        Some(Cmd::Attach { name }) => default_attach_mode(name),
+        Some(Cmd::Delete(DeleteArgs { name, yes })) => LaunchMode::DeleteSession { name, yes },
         Some(Cmd::List) => LaunchMode::ListSessions,
-        Some(Cmd::Remove { name }) => LaunchMode::RemoveSession { name },
         Some(Cmd::Update) => LaunchMode::Update,
         Some(Cmd::Reinstall) => LaunchMode::Reinstall,
         Some(Cmd::Version) => unreachable!("version is handled in main()"),
         Some(Cmd::RunDaemon { session_name }) => LaunchMode::RunDaemon { name: session_name },
         None => {
-            if args.list {
-                LaunchMode::ListSessions
-            } else if let Some(name) = args.remove {
-                LaunchMode::RemoveSession { name }
-            } else if args.update {
+            if args.update {
                 LaunchMode::Update
             } else {
                 default_mode()
             }
         }
     };
-    Ok(Cli {
-        mode,
-        detach: false,
-    })
+    validate_launch_mode_names(&mode)?;
+    Ok(Cli { mode })
+}
+
+fn validate_launch_mode_names(mode: &LaunchMode) -> Result<()> {
+    match mode {
+        LaunchMode::TuiSession { name }
+        | LaunchMode::NewSession { name }
+        | LaunchMode::DeleteSession { name, .. }
+        | LaunchMode::RunDaemon { name } => validate_session_name(name),
+        LaunchMode::WebServe {
+            session: Some(name),
+        }
+        | LaunchMode::Desktop {
+            session: Some(name),
+        } => validate_session_name(name),
+        _ => Ok(()),
+    }
 }
 
 fn main() -> Result<()> {
@@ -330,7 +341,7 @@ fn main() -> Result<()> {
 
     // GUI launchers (the macOS `.app`, the Linux `.desktop`) set CONDUIT_DESKTOP=1
     // and run the bare binary — with no explicit mode, open the desktop window.
-    if matches!(cli.mode, LaunchMode::Local) && std::env::var_os("CONDUIT_DESKTOP").is_some() {
+    if matches!(cli.mode, LaunchMode::TuiChooser) && std::env::var_os("CONDUIT_DESKTOP").is_some() {
         cli.mode = LaunchMode::Desktop { session: None };
     }
 
@@ -354,10 +365,10 @@ async fn run_cli(cli: Cli) -> Result<()> {
         LaunchMode::Reinstall => self_update(true),
         LaunchMode::WebSetPassword => set_web_password(),
         LaunchMode::WebServe { session } => {
-            // `conduit web attach <name>` pins the web UI to one session; ensure
-            // that session's daemon is running (created if missing) before serving.
+            // `conduit web attach <name>` pins the web UI to one registered
+            // session; revive stale daemons, but do not create missing sessions.
             if let Some(name) = &session {
-                conduit_core::daemon::ensure_session_running(name).await?;
+                conduit_core::daemon::attach_session(name).await?;
             }
             let Some(cfg) = conduit_server::WebConfig::from_env(session) else {
                 return Err(anyhow!(
@@ -381,23 +392,15 @@ async fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         LaunchMode::RunDaemon { name } => conduit_core::daemon::run_session_daemon(&name).await,
-        LaunchMode::RemoveSession { name } => delete_session(&name),
+        LaunchMode::NewSession { name } => new_session(&name).await,
+        LaunchMode::DeleteSession { name, yes } => delete_session(&name, yes),
         LaunchMode::ListSessions => list_sessions(),
-        LaunchMode::Session { name } => {
-            // Create-if-missing: `ensure_session_running` spawns the daemon when
-            // absent and restarts a stale one, then we attach the TUI to it.
-            let entry = conduit_core::daemon::ensure_session_running(&name).await?;
-            if cli.detach {
-                println!("session '{}' running in background (detached)", entry.name);
-                return Ok(());
-            }
-            let backend = build_remote_backend(&entry.socket_path).await?;
+        LaunchMode::TuiSession { name } => {
+            let outcome = conduit_core::daemon::attach_session(&name).await?;
+            let backend = build_remote_backend(&outcome.entry().socket_path).await?;
             run_tui(backend).await
         }
-        LaunchMode::Local => {
-            let (backend, _core) = build_local_backend();
-            run_tui(backend).await
-        }
+        LaunchMode::TuiChooser => run_tui_session_chooser().await,
         LaunchMode::Desktop { .. } => Err(anyhow!(
             "this build of conduit has no desktop UI; rebuild with `--features desktop`"
         )),
@@ -673,29 +676,6 @@ impl Drop for TempDirGuard {
     }
 }
 
-fn build_local_backend() -> (Backend, CoreHandle) {
-    let core = spawn_core();
-    let cmd_tx = core.cmd_tx.clone();
-
-    let (evt_tx, evt_rx) = mpsc::channel::<CoreEvent>(1024);
-    let mut broadcast_rx = core.evt_tx.subscribe();
-    tokio::spawn(async move {
-        loop {
-            match broadcast_rx.recv().await {
-                Ok(evt) => {
-                    if evt_tx.send(evt).await.is_err() {
-                        break;
-                    }
-                }
-                Err(RecvError::Closed) => break,
-                Err(RecvError::Lagged(_)) => continue,
-            }
-        }
-    });
-
-    (Backend { cmd_tx, evt_rx }, core)
-}
-
 // ---------------------------------------------------------------------------
 // Unix-domain-socket session infrastructure
 // ---------------------------------------------------------------------------
@@ -747,24 +727,41 @@ async fn build_remote_backend(socket_path: &str) -> Result<Backend> {
 // Session management
 // ---------------------------------------------------------------------------
 
-fn delete_session(name: &str) -> Result<()> {
+async fn new_session(name: &str) -> Result<()> {
+    match conduit_core::daemon::new_session(name).await? {
+        conduit_core::daemon::NewSessionOutcome::Created(entry) => {
+            println!("created session '{}'", entry.name);
+        }
+        conduit_core::daemon::NewSessionOutcome::Revived(entry) => {
+            println!("revived session '{}'", entry.name);
+        }
+    }
+    Ok(())
+}
+
+fn delete_session(name: &str, yes: bool) -> Result<()> {
     let registry = load_registry()?;
     if !registry.sessions.iter().any(|s| s.name == name) {
-        println!("session '{}' not found", name);
-        return Ok(());
+        return Err(anyhow!(
+            "session '{}' not found; create it with `conduit new {}`",
+            name,
+            name
+        ));
     }
 
-    print!(
-        "Delete session '{}'? This will stop running terminals. [y/N]: ",
-        name
-    );
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let confirm = matches!(input.trim().to_lowercase().as_str(), "y" | "yes");
-    if !confirm {
-        println!("aborted");
-        return Ok(());
+    if !yes {
+        print!(
+            "Delete session '{}'? This stops its daemon and removes Conduit state. [y/N]: ",
+            name
+        );
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let confirm = matches!(input.trim().to_lowercase().as_str(), "y" | "yes");
+        if !confirm {
+            println!("aborted");
+            return Ok(());
+        }
     }
 
     let outcome = conduit_core::sessions::remove_session(name)?;
@@ -779,22 +776,320 @@ fn delete_session(name: &str) -> Result<()> {
 }
 
 fn list_sessions() -> Result<()> {
-    let registry = load_registry()?;
-    if registry.sessions.is_empty() {
+    let sessions = conduit_core::sessions::list_all_sessions();
+    if sessions.is_empty() {
         println!("no sessions");
         return Ok(());
     }
 
     println!("sessions:");
-    for s in registry.sessions {
-        let state = if socket_alive(&s.socket_path) {
-            "running"
-        } else {
-            "stale"
-        };
-        println!("- {}  (pid {} {})", s.name, s.pid, state);
+    for session in sessions {
+        let state = if session.running { "running" } else { "stale" };
+        println!("- {}  {}", session.name, state);
     }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum SessionChooserMode {
+    Browse,
+    New,
+    ConfirmDelete { name: String },
+}
+
+#[derive(Debug, Clone)]
+struct SessionChooserState {
+    sessions: Vec<conduit_core::sessions::SessionStatus>,
+    selected: usize,
+    mode: SessionChooserMode,
+    input: String,
+    message: Option<String>,
+}
+
+impl SessionChooserState {
+    fn new() -> Self {
+        let mut state = Self {
+            sessions: Vec::new(),
+            selected: 0,
+            mode: SessionChooserMode::Browse,
+            input: String::new(),
+            message: None,
+        };
+        state.refresh();
+        state
+    }
+
+    fn refresh(&mut self) {
+        self.sessions = conduit_core::sessions::list_all_sessions();
+        if self.sessions.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(self.sessions.len() - 1);
+        }
+    }
+
+    fn selected_name(&self) -> Option<&str> {
+        self.sessions.get(self.selected).map(|s| s.name.as_str())
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.sessions.len();
+        if len == 0 {
+            self.selected = 0;
+            return;
+        }
+        self.selected = (self.selected as isize + delta).rem_euclid(len as isize) as usize;
+    }
+}
+
+struct TuiChooserTerminalGuard;
+
+impl Drop for TuiChooserTerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = stdout.execute(DisableMouseCapture);
+        let _ = stdout.execute(crossterm::cursor::Show);
+        let _ = stdout.execute(LeaveAlternateScreen);
+    }
+}
+
+async fn run_tui_session_chooser() -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableMouseCapture)?;
+    let guard = TuiChooserTerminalGuard;
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    let mut state = SessionChooserState::new();
+
+    loop {
+        terminal.draw(|frame| render_tui_session_chooser(frame, &state))?;
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        let browse_before_key = matches!(state.mode, SessionChooserMode::Browse);
+        if browse_before_key && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+            return Ok(());
+        }
+        if let Some(entry) = handle_tui_session_chooser_key(&mut state, key).await? {
+            drop(terminal);
+            drop(guard);
+            let backend = build_remote_backend(&entry.socket_path).await?;
+            return run_tui(backend).await;
+        }
+    }
+}
+
+async fn handle_tui_session_chooser_key(
+    state: &mut SessionChooserState,
+    key: KeyEvent,
+) -> Result<Option<conduit_core::sessions::SessionEntry>> {
+    match &mut state.mode {
+        SessionChooserMode::Browse => match key.code {
+            KeyCode::Char('j') | KeyCode::Down => state.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => state.move_selection(-1),
+            KeyCode::Char('r') => {
+                state.refresh();
+                state.message = Some("refreshed sessions".to_string());
+            }
+            KeyCode::Char('n') => {
+                state.input.clear();
+                state.message = None;
+                state.mode = SessionChooserMode::New;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let Some(name) = state.selected_name() {
+                    state.mode = SessionChooserMode::ConfirmDelete {
+                        name: name.to_string(),
+                    };
+                    state.message = None;
+                }
+            }
+            KeyCode::Enter => {
+                let Some(name) = state.selected_name().map(str::to_string) else {
+                    state.message = Some("no sessions to attach".to_string());
+                    return Ok(None);
+                };
+                match conduit_core::daemon::attach_session(&name).await {
+                    Ok(outcome) => return Ok(Some(outcome.entry().clone())),
+                    Err(e) => {
+                        state.message = Some(e.to_string());
+                        state.refresh();
+                    }
+                }
+            }
+            _ => {}
+        },
+        SessionChooserMode::New => match key.code {
+            KeyCode::Esc => {
+                state.mode = SessionChooserMode::Browse;
+                state.message = None;
+            }
+            KeyCode::Backspace => {
+                state.input.pop();
+            }
+            KeyCode::Enter => {
+                let name = state.input.trim().to_string();
+                if name.is_empty() {
+                    state.message = Some("session name is required".to_string());
+                    return Ok(None);
+                }
+                match conduit_core::daemon::new_session(&name).await {
+                    Ok(outcome) => return Ok(Some(outcome.entry().clone())),
+                    Err(e) => {
+                        state.message = Some(e.to_string());
+                        state.refresh();
+                    }
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.input.push(c);
+            }
+            _ => {}
+        },
+        SessionChooserMode::ConfirmDelete { name } => match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let deleted = name.clone();
+                if std::env::var("CONDUIT_SESSION_NAME").as_deref() == Ok(deleted.as_str()) {
+                    state.mode = SessionChooserMode::Browse;
+                    state.message = Some("cannot delete the attached session".to_string());
+                    return Ok(None);
+                }
+                conduit_core::sessions::remove_session(&deleted)?;
+                state.refresh();
+                state.mode = SessionChooserMode::Browse;
+                state.message = Some(format!("deleted session '{}'", deleted));
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                state.mode = SessionChooserMode::Browse;
+                state.message = None;
+            }
+            _ => {}
+        },
+    }
+    Ok(None)
+}
+
+fn render_tui_session_chooser(frame: &mut ratatui::Frame, state: &SessionChooserState) {
+    let area = frame.area();
+    let block = Block::default()
+        .title(" Conduit Sessions ")
+        .borders(Borders::ALL);
+    frame.render_widget(block, area);
+    let inner = Rect::new(
+        area.x.saturating_add(2),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(3),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    let status = match state.mode {
+        SessionChooserMode::Browse => "Enter attach/revive  n new  d delete  r refresh  q quit",
+        SessionChooserMode::New => "Enter create and attach  Esc cancel",
+        SessionChooserMode::ConfirmDelete { .. } => "y delete  n/Esc cancel",
+    };
+    frame.render_widget(Paragraph::new(status), chunks[0]);
+
+    if state.sessions.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No sessions. Press n to create one."),
+            chunks[1],
+        );
+    } else {
+        let items = state
+            .sessions
+            .iter()
+            .map(|session| {
+                let state_label = if session.running { "running" } else { "stale" };
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{:<24}", session.name)),
+                    Span::raw(state_label),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let list = List::new(items)
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected));
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
+    }
+
+    let message = state.message.as_deref().unwrap_or("");
+    frame.render_widget(Paragraph::new(message), chunks[2]);
+
+    match &state.mode {
+        SessionChooserMode::New => render_chooser_input(frame, area, &state.input),
+        SessionChooserMode::ConfirmDelete { name } => render_chooser_delete(frame, area, name),
+        SessionChooserMode::Browse => {}
+    }
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width.saturating_sub(2));
+    let height = height.min(area.height.saturating_sub(2));
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+fn render_chooser_input(frame: &mut ratatui::Frame, area: Rect, input: &str) {
+    let modal = centered_rect(52, 7, area);
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(" New Session ")
+        .borders(Borders::ALL);
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(Paragraph::new("Name"), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(input.to_string()).block(Block::default().borders(Borders::ALL)),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new("Use letters, digits, '-' and '_'."),
+        chunks[2],
+    );
+}
+
+fn render_chooser_delete(frame: &mut ratatui::Frame, area: Rect, name: &str) {
+    let modal = centered_rect(60, 5, area);
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(" Delete Session ")
+        .borders(Borders::ALL);
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Delete session '{name}'? Conduit state is removed; repos and worktrees stay on disk."
+        )),
+        inner,
+    );
 }
 
 async fn run_tui(mut backend: Backend) -> Result<()> {
@@ -4149,6 +4444,204 @@ fn push_utf8_mouse_value(out: &mut Vec<u8>, value: u16) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn parse_cli(args: &[&str]) -> Cli {
+        resolve(CliArgs::try_parse_from(args).expect("parse")).expect("resolve")
+    }
+
+    fn parse_cli_err(args: &[&str]) -> String {
+        match CliArgs::try_parse_from(args) {
+            Ok(args) => resolve(args).expect_err("resolve should fail").to_string(),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn cli_resolves_top_level_session_commands() {
+        assert_eq!(
+            parse_cli(&["conduit", "new", "work"]),
+            Cli {
+                mode: LaunchMode::NewSession {
+                    name: "work".to_string(),
+                },
+            }
+        );
+        assert_eq!(parse_cli(&["conduit", "attach", "work"]).mode, {
+            #[cfg(feature = "desktop")]
+            {
+                LaunchMode::Desktop {
+                    session: Some("work".to_string()),
+                }
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                LaunchMode::TuiSession {
+                    name: "work".to_string(),
+                }
+            }
+        });
+        assert_eq!(parse_cli(&["conduit", "a", "work"]).mode, {
+            #[cfg(feature = "desktop")]
+            {
+                LaunchMode::Desktop {
+                    session: Some("work".to_string()),
+                }
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                LaunchMode::TuiSession {
+                    name: "work".to_string(),
+                }
+            }
+        });
+        assert_eq!(
+            parse_cli(&["conduit", "delete", "work"]).mode,
+            LaunchMode::DeleteSession {
+                name: "work".to_string(),
+                yes: false,
+            }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "delete", "work", "--yes"]).mode,
+            LaunchMode::DeleteSession {
+                name: "work".to_string(),
+                yes: true,
+            }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "d", "work"]).mode,
+            LaunchMode::DeleteSession {
+                name: "work".to_string(),
+                yes: false,
+            }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "list"]).mode,
+            LaunchMode::ListSessions
+        );
+        assert_eq!(parse_cli(&["conduit", "l"]).mode, LaunchMode::ListSessions);
+    }
+
+    #[test]
+    fn cli_resolves_surface_choosers_and_attach_aliases() {
+        assert_eq!(parse_cli(&["conduit", "tui"]).mode, LaunchMode::TuiChooser);
+        assert_eq!(
+            parse_cli(&["conduit", "tui", "attach", "work"]).mode,
+            LaunchMode::TuiSession {
+                name: "work".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "tui", "a", "work"]).mode,
+            LaunchMode::TuiSession {
+                name: "work".to_string(),
+            }
+        );
+
+        assert_eq!(
+            parse_cli(&["conduit", "web"]).mode,
+            LaunchMode::WebServe { session: None }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "web", "attach", "work"]).mode,
+            LaunchMode::WebServe {
+                session: Some("work".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "web", "a", "work"]).mode,
+            LaunchMode::WebServe {
+                session: Some("work".to_string()),
+            }
+        );
+
+        assert_eq!(
+            parse_cli(&["conduit", "desktop"]).mode,
+            LaunchMode::Desktop { session: None }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "desktop", "attach", "work"]).mode,
+            LaunchMode::Desktop {
+                session: Some("work".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_cli(&["conduit", "desktop", "a", "work"]).mode,
+            LaunchMode::Desktop {
+                session: Some("work".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn cli_rejects_invalid_session_names_and_old_public_grammar() {
+        assert!(parse_cli_err(&["conduit", "new", "bad/name"]).contains("invalid session name"));
+        assert!(parse_cli_err(&["conduit", "new", ""]).contains("invalid session name"));
+        assert!(parse_cli_err(&["conduit", "picker"]).contains("unrecognized subcommand"));
+        assert!(parse_cli_err(&["conduit", "create", "work"]).contains("unrecognized subcommand"));
+        assert!(parse_cli_err(&["conduit", "remove", "work"]).contains("unrecognized subcommand"));
+        assert!(parse_cli_err(&["conduit", "-l"]).contains("unexpected argument"));
+        assert!(parse_cli_err(&["conduit", "-r", "work"]).contains("unexpected argument"));
+        assert!(parse_cli_err(&["conduit", "tui", "-a", "work"]).contains("unexpected argument"));
+        assert!(parse_cli_err(&["conduit", "attach", "-a", "work"]).contains("unexpected argument"));
+    }
+
+    #[tokio::test]
+    async fn tui_chooser_refuses_to_delete_attached_session() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvVarGuard::set("CONDUIT_SESSION_NAME", "work");
+        let mut state = SessionChooserState {
+            sessions: Vec::new(),
+            selected: 0,
+            mode: SessionChooserMode::ConfirmDelete {
+                name: "work".to_string(),
+            },
+            input: String::new(),
+            message: None,
+        };
+
+        let out = handle_tui_session_chooser_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        )
+        .await
+        .unwrap();
+
+        assert!(out.is_none());
+        assert!(matches!(state.mode, SessionChooserMode::Browse));
+        assert_eq!(
+            state.message.as_deref(),
+            Some("cannot delete the attached session")
+        );
+    }
 
     #[test]
     fn detail_area_matches_sidebar_width_per_mode() {
