@@ -9,8 +9,9 @@ import { SessionPicker } from "./components/SessionPicker";
 import { Sidebar } from "./components/Sidebar";
 import { GitSidebar } from "./components/git/GitSidebar";
 import { Toasts } from "./components/Toasts";
-import { currentWorkspaceId, route } from "./router";
+import { route } from "./router";
 import { BoardScreen } from "./screens/BoardScreen";
+import { PullRequestScreen } from "./screens/PullRequestScreen";
 import { WorkspaceScreen } from "./screens/WorkspaceScreen";
 import { openSettings } from "./state/modals";
 import { paletteOpen, togglePalette } from "./state/palette";
@@ -160,7 +161,9 @@ function Topbar() {
       <span class="topbar-sep">/</span>
       <SessionSwitcher />
       <span class="topbar-sep">/</span>
-      <span class="topbar-context">{route().name === "board" ? "board" : "workspace"}</span>
+      <span class="topbar-context">
+        {route().name === "board" ? "board" : route().name === "pr" ? "pr viewer" : "workspace"}
+      </span>
       <span class="topbar-spacer" />
       <button class="topbar-btn" title="Command palette (⌘K)" onClick={togglePalette}>
         ⌘K
@@ -190,6 +193,15 @@ function Topbar() {
 }
 
 function AppShell() {
+  const prRouteId = () => {
+    const r = route();
+    return r.name === "pr" ? r.id : null;
+  };
+  const workspaceRouteId = () => {
+    const r = route();
+    return r.name === "workspace" ? r.id : null;
+  };
+
   return (
     <>
       <Topbar />
@@ -200,12 +212,22 @@ function AppShell() {
         <main class="main">
           <ConnectionBanner />
           <Switch fallback={<BoardScreen />}>
-            <Match when={currentWorkspaceId()} keyed>
+            <Match when={prRouteId()} keyed>
+              {(id) => <PullRequestScreen id={id} />}
+            </Match>
+            <Match when={workspaceRouteId()} keyed>
               {(id) => <WorkspaceScreen id={id} />}
             </Match>
           </Switch>
         </main>
-        <Show when={settings.gitLayout === "sidebar" && gitSidebarMode() !== "hidden" && currentWorkspaceId()} keyed>
+        <Show
+          when={
+            settings.gitLayout === "sidebar" &&
+            gitSidebarMode() !== "hidden" &&
+            workspaceRouteId()
+          }
+          keyed
+        >
           {(id) => <GitSidebar wsId={id} />}
         </Show>
       </div>
