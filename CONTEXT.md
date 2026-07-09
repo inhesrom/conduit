@@ -48,6 +48,22 @@ _Avoid_: highlight, region.
 A prompt composed from a **Diff Selection** — file path + new-file line range + the quoted lines + the user's question — injected into an agent as a bracketed paste. By default (Enter) it starts a **Secondary Agent**; Alt+Enter sends it to the existing agent terminal to continue that agent's context. (See ADR 0004.)
 _Avoid_: comment, review note, annotation.
 
+**Pull Request**:
+The hosted code-review object for a Workspace branch, currently GitHub-only in Conduit. Identified by provider, host, owner, repo, and number; detected from the branch on demand and not persisted onto the Workspace.
+_Avoid_: review tab, local diff.
+
+**PR Viewer**:
+A web/desktop Workspace sub-route (`#/w/<workspace-id>/pr`) for the hosted **Pull Request**: metadata, status/check summaries, conversation comments, inline review threads, and immediate commenting. It is not a new **Surface**; it is a route inside the web/desktop Surface. It is distinct from the Review tab, which remains the local branch-diff/preflight view.
+_Avoid_: surface, Review tab, diff question.
+
+**PR Comment**:
+A hosted comment on a **Pull Request**. Top-level conversation comments are issue comments; inline code comments are review comments. Conduit treats comment ids as opaque strings because provider ids can exceed JavaScript's safe integer range.
+_Avoid_: Diff Question, annotation.
+
+**Review Thread**:
+An inline PR code discussion anchored to GitHub PR diff coordinates for one file and side (`LEFT`/`RIGHT`), optionally spanning multiple lines. Replies belong to the hosted review thread; they are not agent prompts.
+_Avoid_: Diff Selection, Secondary Agent.
+
 **Secondary Agent**:
 A fresh agent process launched in a **Shell** tab (the Workspace's configured agent command, no shared history), distinct from the singleton agent terminal. Does not participate in **AttentionLevel**/**AgentActive**/**ReadyForReview** signals. (See ADR 0004.)
 _Avoid_: second agent terminal, sub-agent.
@@ -60,6 +76,7 @@ _Avoid_: second agent terminal, sub-agent.
 - A **Session** owns many **Workspaces** but does not own **Repositories**.
 - A **Surface** attaches to at most one **Session** at a time (the `web`/`desktop` picker switches between them); bare `conduit tui` runs Sessionless on an in-process core.
 - A **Diff Question** is built from a **Diff Selection** in one Workspace and delivered to that Workspace's agent terminal, or to a **Secondary Agent** in a new Shell tab.
+- A **PR Viewer** is a web/desktop route for one Workspace's hosted **Pull Request**. It uses hosted PR diff coordinates for **Review Threads** and does not change the Workspace's local Review tab.
 
 ## Example dialogue
 
@@ -77,3 +94,4 @@ _Avoid_: second agent terminal, sub-agent.
 - "working"/"busy" is ambiguous — resolved to **AgentActive**, a transient output-within-settle-window signal rather than process liveness.
 - "launch type"/"app version" for tui/web/desktop — resolved to **Surface**, with the unified `conduit <surface> [attach <name>]` CLI grammar. The old top-level `-s`/`-a` session flags were removed. (See ADR 0003.)
 - "ask an agent" was ambiguous — Conduit has no in-app LLM; "agent" means the agent process in a PTY. A **Diff Question** injects a prompt into the existing agent terminal, or spawns a **Secondary Agent** (a Shell tab), never a direct API call. (See ADR 0004.)
+- "review" was overloaded between local branch review and hosted code review — resolved by keeping the local Review tab for branch diff/preflight and naming the hosted route **PR Viewer**. **PR Comments** and **Review Threads** are hosted GitHub comments, never **Diff Questions**.

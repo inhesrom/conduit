@@ -3,6 +3,8 @@ import type {
   ChangedFile,
   ConnStatus,
   GitState,
+  PullRequestDetails,
+  PullRequestSummary,
   RepositorySummary,
   SavedCommand,
   WorkspaceSummary,
@@ -11,6 +13,24 @@ import type {
 export interface TerminalState {
   running: boolean;
   exitCode: number | null;
+}
+
+export type PullRequestLoadStatus =
+  | "idle"
+  | "loading"
+  | "loaded"
+  | "candidates"
+  | "none"
+  | "setup"
+  | "error";
+
+export interface PullRequestState {
+  status: PullRequestLoadStatus;
+  details?: PullRequestDetails;
+  candidates?: PullRequestSummary[];
+  message?: string;
+  failureCount: number;
+  updatedAt?: number;
 }
 
 export interface AppState {
@@ -40,6 +60,8 @@ export interface AppState {
   pendingCreatePrompt: string | null;
   /** Branch-vs-base file lists for review mode, per workspace. */
   reviewByWs: Record<string, { base: string; files: ChangedFile[] }>;
+  /** GitHub pull request viewer data, per workspace. */
+  pullRequestsByWs: Record<string, PullRequestState>;
   /** Pending shell-resurrection commands, keyed by `${wsId}/${tabId}`. */
   resurrection: Record<string, SavedCommand>;
 }
@@ -58,6 +80,7 @@ export const [store, setStore] = createStore<AppState>({
   pendingTabPrompt: {},
   pendingCreatePrompt: null,
   reviewByWs: {},
+  pullRequestsByWs: {},
   resurrection: {},
 });
 
@@ -77,6 +100,7 @@ export function resetStore(): void {
     pendingTabPrompt: {},
     pendingCreatePrompt: null,
     reviewByWs: {},
+    pullRequestsByWs: {},
     resurrection: {},
   });
 }
