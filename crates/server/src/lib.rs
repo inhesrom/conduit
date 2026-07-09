@@ -50,7 +50,7 @@ const SESSION_COOKIE: &str = "conduit_session";
 #[derive(Clone)]
 pub struct ServerState {
     pub auth: Arc<Auth>,
-    /// When set, every WS attaches to this one session and the picker is hidden.
+    /// When set, every WS attaches to this one session and the chooser is hidden.
     pub pinned_session: Option<String>,
     /// Live WebSocket clients, keyed by a monotonic id — surfaced by `web status`.
     pub clients: Arc<Mutex<HashMap<u64, ClientInfo>>>,
@@ -61,7 +61,7 @@ pub struct ServerState {
     /// proxying to a session daemon's Unix socket (used by the desktop app).
     pub embedded: Option<EmbeddedCore>,
     /// True when this server backs the native desktop window. Surfaced to the
-    /// web UI (so it always shows the session picker on startup) and gates the
+    /// web UI (so it always shows the session chooser on startup) and gates the
     /// local-only session-creation endpoint.
     pub desktop: bool,
 }
@@ -206,9 +206,16 @@ async fn ws_handler(
         return ws.on_upgrade(move |socket| async move {
             clients.lock().unwrap().insert(
                 id,
-                ClientInfo { addr, session: name, connected: Instant::now() },
+                ClientInfo {
+                    addr,
+                    session: name,
+                    connected: Instant::now(),
+                },
             );
-            let _guard = ClientGuard { clients: clients.clone(), id };
+            let _guard = ClientGuard {
+                clients: clients.clone(),
+                id,
+            };
             proxy::handle_embedded(socket, embedded).await;
         });
     }
@@ -220,10 +227,17 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| async move {
         clients.lock().unwrap().insert(
             id,
-            ClientInfo { addr, session: name, connected: Instant::now() },
+            ClientInfo {
+                addr,
+                session: name,
+                connected: Instant::now(),
+            },
         );
         // Deregisters on every exit path of the relay (close, error, daemon EOF).
-        let _guard = ClientGuard { clients: clients.clone(), id };
+        let _guard = ClientGuard {
+            clients: clients.clone(),
+            id,
+        };
         proxy::handle_proxy(socket, path).await;
     })
 }
@@ -237,7 +251,7 @@ async fn sessions(State(state): State<ServerState>) -> impl IntoResponse {
             name: p.clone(),
             running: true,
         }],
-        // Full registry, including stale entries, so the picker can show and
+        // Full registry, including stale entries, so the chooser can show and
         // resurrect sessions whose daemon died (e.g. after a reboot).
         None => conduit_core::sessions::list_all_sessions(),
     };
@@ -253,38 +267,42 @@ struct CreateSessionReq {
     name: String,
 }
 
-/// Create (or restart) a named session daemon and return its name. The local
-/// desktop window may spawn any session. The shared `conduit web` server may
-/// only *resurrect* a session already in the registry (e.g. one whose daemon
-/// died on reboot) — minting brand-new names there would be a privilege, since
-/// it spawns arbitrary processes on the host.
+/// Start a session daemon and return its name. The local desktop window may
+/// create missing sessions or revive stale ones. The shared `conduit web`
+/// server may only attach/revive a registered session; minting brand-new names
+/// there would spawn arbitrary processes on the host.
 async fn create_session(
     State(state): State<ServerState>,
     Json(body): Json<CreateSessionReq>,
 ) -> Response {
     let name = body.name.trim();
-    if name.is_empty() {
-        return (StatusCode::BAD_REQUEST, "session name is required").into_response();
+    if let Err(e) = conduit_core::sessions::validate_session_name(name) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
     }
     if !state.desktop {
-        let known = conduit_core::sessions::load_registry()
-            .map(|r| r.sessions.iter().any(|s| s.name == name))
-            .unwrap_or(false);
-        if !known {
-            return (
-                StatusCode::FORBIDDEN,
-                "creating new sessions is desktop-only",
-            )
-                .into_response();
+        match conduit_core::daemon::attach_session(name).await {
+            Ok(outcome) => {
+                return Json(json!({ "ok": true, "name": outcome.entry().name })).into_response()
+            }
+            Err(e) => {
+                let status = match conduit_core::sessions::registered_session(name) {
+                    Ok(conduit_core::sessions::RegisteredSession::Missing) => StatusCode::FORBIDDEN,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                };
+                return (status, Json(json!({ "ok": false, "error": e.to_string() })))
+                    .into_response();
+            }
         }
     }
-    match conduit_core::daemon::ensure_session_running(name).await {
-        Ok(entry) => Json(json!({ "ok": true, "name": entry.name })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "ok": false, "error": e.to_string() })),
-        )
-            .into_response(),
+    match conduit_core::daemon::new_session(name).await {
+        Ok(outcome) => Json(json!({ "ok": true, "name": outcome.entry().name })).into_response(),
+        Err(e) => {
+            let status = match conduit_core::sessions::registered_session(name) {
+                Ok(conduit_core::sessions::RegisteredSession::Running(_)) => StatusCode::CONFLICT,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(json!({ "ok": false, "error": e.to_string() }))).into_response()
+        }
     }
 }
 
@@ -477,7 +495,7 @@ pub async fn serve_embedded(
 
 /// Serve the web UI for the native desktop window — no TLS, no auth, no control
 /// socket — proxying WebSockets to the user's running session daemons. With
-/// `pinned_session = None` the UI shows the session picker on startup; with
+/// `pinned_session = None` the UI shows the session chooser on startup; with
 /// `Some(name)` it locks the window to that one session. Binds `bind` (pass port
 /// 0 for an ephemeral loopback port), reports the actual bound address through
 /// `ready`, then serves until Ctrl-C or the process exits.
@@ -507,7 +525,10 @@ pub async fn serve_desktop(
     let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
         Err(_) if bind.port() != 0 => {
-            eprintln!("[conduit] desktop port {} busy; using an ephemeral port", bind.port());
+            eprintln!(
+                "[conduit] desktop port {} busy; using an ephemeral port",
+                bind.port()
+            );
             tokio::net::TcpListener::bind((bind.ip(), 0)).await?
         }
         Err(e) => return Err(e.into()),
@@ -636,11 +657,17 @@ mod tests {
     fn origin_ok_http1_uses_host_header() {
         let uri: Uri = "/api/login".parse().unwrap();
         assert!(origin_ok(
-            &headers(&[("host", "127.0.0.1:3001"), ("origin", "https://127.0.0.1:3001")]),
+            &headers(&[
+                ("host", "127.0.0.1:3001"),
+                ("origin", "https://127.0.0.1:3001")
+            ]),
             &uri
         ));
         assert!(!origin_ok(
-            &headers(&[("host", "127.0.0.1:3001"), ("origin", "https://evil.example")]),
+            &headers(&[
+                ("host", "127.0.0.1:3001"),
+                ("origin", "https://evil.example")
+            ]),
             &uri
         ));
     }
@@ -650,8 +677,14 @@ mod tests {
     #[test]
     fn origin_ok_http2_uses_uri_authority() {
         let uri: Uri = "https://127.0.0.1:3001/api/login".parse().unwrap();
-        assert!(origin_ok(&headers(&[("origin", "https://127.0.0.1:3001")]), &uri));
-        assert!(!origin_ok(&headers(&[("origin", "https://evil.example")]), &uri));
+        assert!(origin_ok(
+            &headers(&[("origin", "https://127.0.0.1:3001")]),
+            &uri
+        ));
+        assert!(!origin_ok(
+            &headers(&[("origin", "https://evil.example")]),
+            &uri
+        ));
     }
 
     // Non-browser clients (curl) send no Origin; SameSite=Strict still guards.

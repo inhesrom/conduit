@@ -29,16 +29,24 @@ A transient Workspace UI state: the agent terminal produced content and has not 
 _Avoid_: working, busy, running.
 
 **Session**:
-Unchanged infrastructure concept — a named daemon process bound to a Unix socket. A process/isolation boundary, NOT a domain grouping. Repositories are global (above sessions); Workspaces are per-session.
+An explicit named daemon process bound to a Unix socket. A process/isolation boundary, NOT a domain grouping. The session registry may contain running sessions and stale sessions whose daemon died but whose Conduit state can be revived. Session names are non-empty ASCII slugs using letters, digits, `-`, and `_`.
 _Avoid_: workspace, project.
 
 **Surface**:
-An interchangeable view onto a **Session** — the terminal UI (`tui`), the browser UI (`web`), or the native window (`desktop`). Surfaces are orthogonal to Sessions: any surface can attach to any session. Opened with `conduit <surface>`; pinned to one session with `conduit <surface> attach <name>`. The CLI surface keyword is the first word after `conduit`.
+An interchangeable view onto a **Session** — the terminal UI (`tui`), the browser UI (`web`), or the native window (`desktop`). Surfaces are orthogonal to Sessions: any surface can attach to any registered session. Bare surfaces (`conduit`, `conduit tui`, `conduit desktop`, `conduit web`) open a session chooser; pinned surfaces use `conduit <surface> attach <name>`. The CLI surface keyword is the first word after `conduit`.
 _Avoid_: launch type, app version, mode.
 
 **Attach**:
-Connecting a **Surface** to a **Session**, creating the session (spawning its daemon) if it doesn't exist. `conduit <surface> attach <name>` is idempotent — it starts the daemon when absent and reattaches when present. Bare `conduit tui` is the exception: a Sessionless **Local** view on an in-process core. (See ADR 0003.)
+Connecting a **Surface** to a registered **Session**. `attach` revives stale registered sessions before connecting, but refuses missing names and suggests **New Session**. Top-level `conduit attach <name>` attaches the default surface; `conduit <surface> attach <name>` pins a specific surface. (See ADR 0003.)
 _Avoid_: open, connect, launch.
+
+**New Session**:
+Creating a missing **Session** or reviving a stale registered one with `conduit new <name>`. It starts the session daemon and preserves any per-session Conduit state. It refuses an already-running session and suggests **Attach**.
+_Avoid_: attach, implicit create.
+
+**Delete Session**:
+Removing a **Session** from Conduit with `conduit delete <name>` or trusted desktop/TUI chooser deletion. It stops the daemon only when the recorded pid still looks like that session daemon, removes the socket and registry entry, and deletes per-session Conduit state files. It never deletes git repos, worktrees, branches, or user files. In-app deletion of the currently attached session is refused.
+_Avoid_: remove repo, delete workspace, destroy worktree.
 
 **Diff Selection**:
 A contiguous range of lines selected within one file's diff in the diff viewer (click a line-number gutter; shift-click to extend). The unit a **Diff Question** is built from. Bounded to a single file.
@@ -72,9 +80,9 @@ _Avoid_: second agent terminal, sub-agent.
 
 - A **Repository** has many **Workspaces** (reference by `repository_id`).
 - A **Workspace** has exactly one **Worktree**, one branch, one agent terminal, and optional **AgentActive** and **ReadyForReview** states.
-- **Repositories** live in a global `repositories.json`; **Workspaces** live per-session with a `repository_id` foreign key.
-- A **Session** owns many **Workspaces** but does not own **Repositories**.
-- A **Surface** attaches to at most one **Session** at a time (the `web`/`desktop` picker switches between them); bare `conduit tui` runs Sessionless on an in-process core.
+- **Repositories** and **Workspaces** live per-session with `repository_id` foreign keys.
+- A **Session** owns many **Repositories** and **Workspaces** as Conduit state, but it does not own the underlying git repos, worktrees, or branches on disk.
+- A **Surface** attaches to at most one **Session** at a time (the `tui`/`web`/`desktop` chooser switches or attaches before entering the main UI).
 - A **Diff Question** is built from a **Diff Selection** in one Workspace and delivered to that Workspace's agent terminal, or to a **Secondary Agent** in a new Shell tab.
 - A **PR Viewer** is a web/desktop route for one Workspace's hosted **Pull Request**. It uses hosted PR diff coordinates for **Review Threads** and does not change the Workspace's local Review tab.
 
@@ -92,6 +100,6 @@ _Avoid_: second agent terminal, sub-agent.
 - "Workspace" previously meant *the repo directory itself*. It was renamed: today's repo-directory concept is now **Repository**, and **Workspace** means a per-task worktree. (See ADR 0001.)
 - "done"/"ready" was used loosely — resolved to **ReadyForReview**, an explicit state kept orthogonal to **AttentionLevel**. (See ADR 0002.)
 - "working"/"busy" is ambiguous — resolved to **AgentActive**, a transient output-within-settle-window signal rather than process liveness.
-- "launch type"/"app version" for tui/web/desktop — resolved to **Surface**, with the unified `conduit <surface> [attach <name>]` CLI grammar. The old top-level `-s`/`-a` session flags were removed. (See ADR 0003.)
+- "launch type"/"app version" for tui/web/desktop — resolved to **Surface**, with explicit **New Session**, **Attach**, and **Delete Session** verbs. Bare surfaces open choosers. The old implicit-create attach model and `-a`/`-r` shortcuts were removed. (See ADR 0003.)
 - "ask an agent" was ambiguous — Conduit has no in-app LLM; "agent" means the agent process in a PTY. A **Diff Question** injects a prompt into the existing agent terminal, or spawns a **Secondary Agent** (a Shell tab), never a direct API call. (See ADR 0004.)
 - "review" was overloaded between local branch review and hosted code review — resolved by keeping the local Review tab for branch diff/preflight and naming the hosted route **PR Viewer**. **PR Comments** and **Review Threads** are hosted GitHub comments, never **Diff Questions**.

@@ -69,11 +69,11 @@ export function SessionPicker() {
                 when={desktop()}
                 fallback={
                   <>
-                    No running sessions. Start one with <code>conduit tui attach &lt;name&gt;</code>.
+                    No registered sessions. Start one with <code>conduit new &lt;name&gt;</code>.
                   </>
                 }
               >
-                No running sessions yet — create one below.
+                No registered sessions yet — create one below.
               </Show>
             </p>
           }
@@ -114,7 +114,7 @@ export function SessionPicker() {
           <div class="session-create">
             <input
               class="modal-input mono"
-              placeholder="New session name…"
+              placeholder="New session name"
               value={name()}
               disabled={busy()}
               onInput={(e) => setName(e.currentTarget.value)}
@@ -127,7 +127,7 @@ export function SessionPicker() {
               disabled={busy() || !name().trim()}
               onClick={() => void create()}
             >
-              {busy() ? "Creating…" : "New session"}
+              {busy() ? "Creating..." : "New session"}
             </button>
           </div>
           <Show when={error()}>
