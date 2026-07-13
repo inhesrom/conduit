@@ -136,6 +136,10 @@ export interface TerminalHandle {
   attach(el: HTMLElement): void;
   fit(): void;
   focus(): void;
+  scrollToBottom(): void;
+  isAtBottom(): boolean;
+  /** Report transitions between the live bottom and an older viewport. */
+  onViewportAtBottomChange(listener: (atBottom: boolean) => void): () => void;
   dispose(): void;
   readonly term: Terminal;
   readonly cols: number;
@@ -188,6 +192,47 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
   let sentCols = 0;
   let sentRows = 0;
   let disposed = false;
+  let viewportElement: HTMLElement | null = null;
+  let viewportCheckQueued = false;
+
+  const isAtBottom = () => {
+    const buffer = term.buffer.active;
+    if (buffer.viewportY < buffer.baseY) return false;
+    // xterm rounds the DOM scroll position to buffer rows. Include its real
+    // viewport so a small trackpad/wheel movement still counts as reading
+    // history even before that rounding crosses a full terminal row.
+    if (viewportElement && viewportElement.clientHeight > 0) {
+      return viewportElement.scrollTop + viewportElement.clientHeight >= viewportElement.scrollHeight - 1;
+    }
+    return true;
+  };
+
+  const viewportListeners = new Set<(atBottom: boolean) => void>();
+  let lastAtBottom = isAtBottom();
+  const notifyViewport = () => {
+    const next = isAtBottom();
+    if (next === lastAtBottom) return;
+    lastAtBottom = next;
+    for (const listener of viewportListeners) listener(next);
+  };
+  // xterm's public onScroll catches buffer/programmatic movement; the native
+  // viewport listener below fills in user-driven DOM scrolling. onWriteParsed
+  // catches the bottom moving away while the user stays on an older row.
+  const viewportScrollDisposable = term.onScroll(notifyViewport);
+  const viewportWriteDisposable = term.onWriteParsed(notifyViewport);
+  const scheduleViewportCheck = () => {
+    if (viewportCheckQueued) return;
+    viewportCheckQueued = true;
+    queueMicrotask(() => {
+      viewportCheckQueued = false;
+      if (!disposed) notifyViewport();
+    });
+  };
+
+  const scrollToBottom = () => {
+    term.scrollToBottom();
+    notifyViewport();
+  };
 
   const sendResize = (cols: number, rows: number) => {
     if (cols === sentCols && rows === sentRows) return;
@@ -293,6 +338,12 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     },
     attach(el: HTMLElement) {
       term.open(el);
+      // xterm suppresses its public `onScroll` event for user-driven DOM
+      // scrolling to avoid feeding the viewport's own scroll handler back
+      // into itself. Track that native event too, after xterm has updated its
+      // buffer position, so the Latest affordance reflects every scroll.
+      viewportElement = term.element?.querySelector<HTMLElement>(".xterm-viewport") ?? null;
+      viewportElement?.addEventListener("scroll", scheduleViewportCheck, { passive: true });
 
       const unicode11 = new Unicode11Addon();
       term.loadAddon(unicode11);
@@ -348,13 +399,20 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       // History snapshot + sink registration in one synchronous block: no
       // TerminalOutput can interleave, so ordering is exact.
       const history = client.getTerminalHistory(key);
-      if (history.length > 0) term.write(history);
+      // xterm parses writes asynchronously. Wait for the replay itself to be
+      // parsed before revealing its newest rows; live writes registered below
+      // remain queued after the snapshot and are never forced to follow.
+      if (history.length > 0) term.write(history, scrollToBottom);
+      else scrollToBottom();
       detachSink = client.registerTerminalSink(key, {
         write: (bytes) => {
           term.write(bytes);
           opts.onData?.(bytes);
         },
-        reset: () => term.reset(),
+        reset: () => {
+          term.reset();
+          notifyViewport();
+        },
       });
 
       observer = new ResizeObserver(() => {
@@ -373,12 +431,25 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     focus() {
       term.focus();
     },
+    scrollToBottom,
+    isAtBottom,
+    onViewportAtBottomChange(listener) {
+      const current = isAtBottom();
+      lastAtBottom = current;
+      viewportListeners.add(listener);
+      listener(current);
+      return () => viewportListeners.delete(listener);
+    },
     dispose() {
       disposed = true;
       if (resizeTimer !== null) clearTimeout(resizeTimer);
       observer?.disconnect();
       themeObserver.disconnect();
       detachSink?.();
+      viewportElement?.removeEventListener("scroll", scheduleViewportCheck);
+      viewportScrollDisposable.dispose();
+      viewportWriteDisposable.dispose();
+      viewportListeners.clear();
       term.dispose();
     },
   };

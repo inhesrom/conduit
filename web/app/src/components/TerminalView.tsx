@@ -67,6 +67,8 @@ export function TerminalView(props: {
   // Optimistic until the server confirms — covers the gap between sending
   // StartTerminal and the TerminalStarted event.
   const [starting, setStarting] = createSignal(props.startOnMount);
+  const [atBottom, setAtBottom] = createSignal(true);
+  let stopViewportTracking: (() => void) | null = null;
 
   // Derived so it can't get stuck: the event stream is the source of truth,
   // with `starting` only filling the brief pre-confirmation gap.
@@ -136,10 +138,14 @@ export function TerminalView(props: {
       onData: () => maybeSendPrompt(),
     });
     handle.attach(host);
+    stopViewportTracking = handle.onViewportAtBottomChange(setAtBottom);
     props.registerControls?.({ restart });
     if (props.startOnMount) start(props.cmd());
   });
-  onCleanup(() => handle?.dispose());
+  onCleanup(() => {
+    stopViewportTracking?.();
+    handle?.dispose();
+  });
 
   // Live-apply terminal font-size changes from Settings. fit() re-derives
   // cols/rows for the new size and reports them to the PTY via ResizeTerminal.
@@ -171,10 +177,41 @@ export function TerminalView(props: {
     }
   });
 
-  // Refit when this tab becomes visible again (xterm can't measure while hidden).
-  createEffect(() => {
-    if (props.active()) queueMicrotask(() => handle?.fit());
-  });
+  // xterm can't measure while hidden. A transition into view (workspace
+  // entry, tab selection, or a diff closing) is also the one time we
+  // deliberately return to live output. Later writes never force that jump.
+  createEffect(
+    on(
+      () => props.active(),
+      (active, wasActive) => {
+        if (!active || wasActive) return;
+        queueMicrotask(() => {
+          handle?.fit();
+          handle?.scrollToBottom();
+        });
+      },
+    ),
+  );
+
+  // xterm suppresses some user-originated scroll notifications while it
+  // coordinates its DOM viewport. Event tracking updates this immediately in
+  // the usual case; this active-tab reconciliation is the correctness backstop
+  // so the Latest control can never stay stale after a scroll.
+  createEffect(
+    on(
+      () => props.active(),
+      (active) => {
+        if (!active) return;
+        let frame = 0;
+        const reconcileViewport = () => {
+          setAtBottom(handle?.isAtBottom() ?? true);
+          frame = requestAnimationFrame(reconcileViewport);
+        };
+        reconcileViewport();
+        onCleanup(() => cancelAnimationFrame(frame));
+      },
+    ),
+  );
 
   // Track liveness from the event stream; restart a crashed agent once.
   createEffect(
@@ -230,6 +267,20 @@ export function TerminalView(props: {
         </div>
       </Show>
       <div class="term-host" ref={host} />
+      <Show when={!atBottom()}>
+        <button
+          type="button"
+          class="term-latest"
+          aria-label="Scroll to latest terminal output"
+          title="Scroll to latest output"
+          onClick={() => {
+            handle?.scrollToBottom();
+            handle?.focus();
+          }}
+        >
+          ↓ Latest
+        </button>
+      </Show>
     </div>
   );
 }

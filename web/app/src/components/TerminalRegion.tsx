@@ -68,7 +68,7 @@ function TabButton(props: {
   );
 }
 
-export function TerminalRegion(props: { ws: WorkspaceSummary }) {
+export function TerminalRegion(props: { ws: WorkspaceSummary; visible: () => boolean }) {
   const wsId = props.ws.id;
   // Active tab is shared state (state/ui) so the diff pane can switch to a tab
   // after sending a Diff Question; auto-start tracking lives there too.
@@ -212,7 +212,7 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
               wsId={wsId}
               kind="Agent"
               tabId="agent"
-              active={() => active() === "agent"}
+              active={() => props.visible() && active() === "agent"}
               startOnMount={!agentRunningAtOpen}
               cmd={() => agentCmdFor(props.ws.agent)}
               fallbackCmd={() => agentVanillaCmdFor(props.ws.agent)}
@@ -231,7 +231,7 @@ export function TerminalRegion(props: { ws: WorkspaceSummary }) {
                   wsId={wsId}
                   kind="Shell"
                   tabId={shell.id}
-                  active={() => active() === shell.id}
+                  active={() => props.visible() && active() === shell.id}
                   startOnMount={isFreshTab(wsId, shell.id)}
                   cmd={() => shell.cmd ?? []}
                   initialPrompt={() => store.pendingTabPrompt[`${wsId}/${shell.id}`]}

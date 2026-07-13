@@ -1051,6 +1051,26 @@
 .term-host .xterm * {
   border-radius: 0 !important;
 }
+.term-latest {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  padding: 5px 9px;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--mono);
+  font-size: calc(13px * var(--ui-scale));
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: var(--t-fast);
+}
+.term-latest:hover {
+  color: var(--ink);
+  background: var(--paper);
+}
 .term-overlay {
   position: absolute;
   inset: 0;
