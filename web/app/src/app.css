@@ -1042,7 +1042,9 @@
 .term-host {
   flex: 1;
   min-height: 0;
-  padding: 6px 2px 6px 10px;
+  /* xterm's fit addon measures this element's whole box. Keep the visual
+     inset outside it so the fitted rows cannot extend into padding. */
+  margin: 6px 2px 6px 10px;
 }
 .term-host .xterm {
   height: 100%;
@@ -1585,10 +1587,17 @@
 }
 .modal-card {
   max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
   background: var(--paper);
   border: 2px solid var(--ink);
   padding: 18px;
   box-shadow: var(--shadow-card);
+}
+@supports (height: 100dvh) {
+  .modal-card {
+    max-height: calc(100dvh - 48px);
+  }
 }
 .modal-title {
   font-family: var(--font-display);
