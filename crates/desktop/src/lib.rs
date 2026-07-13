@@ -18,7 +18,24 @@ use tao::{
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
+use url::Url;
 use wry::WebViewBuilder;
+
+/// Return whether a webview IPC message is an absolute HTTP(S) URL with an
+/// authority. The caller deliberately launches the original string so URL
+/// spelling is preserved across the IPC boundary.
+fn is_external_http_url(uri: &str) -> bool {
+    let has_authority_prefix = uri
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || uri
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+
+    has_authority_prefix
+        && Url::parse(uri)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.has_host())
+}
 
 /// Launch the desktop app. Blocks (runs the GUI event loop) until the window is
 /// closed, then exits the process. Must be called on the main thread.
@@ -100,11 +117,14 @@ pub fn run(session: Option<String>) -> Result<()> {
         // default; the terminal's Ctrl+C-to-copy writes to the clipboard from
         // JS, so it must be enabled. macOS is always enabled.
         .with_clipboard(true)
-        // Clickable terminal links use window.open; route those to the OS
-        // browser instead of opening a dead in-webview window.
-        .with_new_window_req_handler(|target, _features| {
-            let _ = open::that(&target);
-            wry::NewWindowResponse::Deny
+        // Terminal links are handed here directly through Wry's IPC bridge.
+        // Treat the bridge as untrusted: only absolute HTTP(S) URLs with an
+        // authority are eligible for the OS browser.
+        .with_ipc_handler(|request| {
+            let uri = request.body();
+            if is_external_http_url(uri) {
+                let _ = open::that(uri);
+            }
         })
         // Defense in depth: allow same-origin navigations (the app itself) but
         // send any external top-level navigation to the OS browser rather than
@@ -171,4 +191,32 @@ fn desktop_data_dir() -> PathBuf {
         PathBuf::from(".")
     };
     base.join("desktop-webview")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_external_http_url;
+
+    #[test]
+    fn accepts_absolute_http_urls_with_an_authority() {
+        assert!(is_external_http_url(
+            "http://example.com/path?query=value#fragment"
+        ));
+        assert!(is_external_http_url("https://example.com:8443/path"));
+        assert!(is_external_http_url("HTTP://example.com"));
+    }
+
+    #[test]
+    fn rejects_non_web_or_non_absolute_urls() {
+        for uri in [
+            "relative/path",
+            "/relative/path",
+            "http:/missing-authority",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,hello",
+        ] {
+            assert!(!is_external_http_url(uri), "{uri} should be rejected");
+        }
+    }
 }

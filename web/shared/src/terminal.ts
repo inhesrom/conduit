@@ -85,6 +85,27 @@ function minimumContrastRatio(): number {
 
 const RESIZE_DEBOUNCE_MS = 150;
 
+declare global {
+  interface Window {
+    /** Optional Wry bridge, injected only in the desktop webview. */
+    ipc?: {
+      postMessage(message: string): void;
+    };
+  }
+}
+
+/**
+ * Open a terminal link outside Conduit. Wry exposes `window.ipc` only in the
+ * desktop webview; regular browser clients retain normal new-tab behavior.
+ */
+function openExternalLink(uri: string): void {
+  if (window.ipc) {
+    window.ipc.postMessage(uri);
+    return;
+  }
+  window.open(uri, "_blank", "noopener,noreferrer");
+}
+
 /**
  * Write text to the system clipboard. Prefers the async Clipboard API, but
  * falls back to a hidden <textarea> + execCommand("copy") because that path
@@ -358,12 +379,9 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       term.loadAddon(unicode11);
       term.unicode.activeVersion = "11";
 
-      // Make URLs clickable. The handler passes the real uri to window.open so
-      // that in the desktop webview wry's new-window handler receives it (and
-      // routes to the OS browser); in a plain browser it opens a new tab.
-      term.loadAddon(
-        new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener,noreferrer")),
-      );
+      // In desktop, hand the exact URL to the native host; browser clients
+      // continue to open it in a new tab.
+      term.loadAddon(new WebLinksAddon((_event, uri) => openExternalLink(uri)));
 
       // DOM renderer (no WebGL addon): repaints reliably on theme changes, so
       // the terminal background follows the active theme.
