@@ -76,6 +76,13 @@ function xtermTheme(): ITheme {
   };
 }
 
+// Paper can make true-color cells retained in terminal history unreadable after
+// a live switch to its white background. Amber and Mono preserve terminal
+// programs' emitted colors instead of applying xterm's contrast correction.
+function minimumContrastRatio(): number {
+  return document.documentElement.dataset.theme === "paper" ? 4.5 : 1;
+}
+
 const RESIZE_DEBOUNCE_MS = 150;
 
 /**
@@ -169,6 +176,7 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
     fontFamily:
       opts.fontFamily ??
       '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    minimumContrastRatio: minimumContrastRatio(),
     theme: xtermTheme(),
   });
   const fitAddon = new FitAddon();
@@ -178,6 +186,7 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
   // repaints on theme assignment; refresh for good measure).
   const themeObserver = new MutationObserver(() => {
     term.options.theme = xtermTheme();
+    term.options.minimumContrastRatio = minimumContrastRatio();
     term.refresh(0, term.rows - 1);
   });
   themeObserver.observe(document.documentElement, {
