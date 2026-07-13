@@ -199,6 +199,12 @@ export function createTerminal(client: ConduitClient, opts: CreateTerminalOpts):
       '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
     minimumContrastRatio: minimumContrastRatio(),
     theme: xtermTheme(),
+    // OSC 8 hyperlinks (emitted by terminal programs) bypass WebLinksAddon.
+    // Give them the same desktop IPC/browser-tab handoff as plain URLs rather
+    // than xterm's default confirmation dialog.
+    linkHandler: {
+      activate: (_event, uri) => openExternalLink(uri),
+    },
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
