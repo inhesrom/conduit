@@ -114,7 +114,7 @@ export function WorkspaceScreen(props: { id: string }) {
                   "flex-shrink": "1",
                 }}
               >
-                <TerminalRegion ws={ws()!} />
+                <TerminalRegion ws={ws()!} visible={() => true} />
               </div>
               <div
                 class="ws-split-handle"
@@ -146,7 +146,7 @@ export function WorkspaceScreen(props: { id: string }) {
             {/* Terminal stays mounted (preserving xterm/PTY state) and is hidden
                 when a diff is showing rather than unmounted. */}
             <div class="ws-main-term" style={{ display: fileSel() ? "none" : "flex" }}>
-              <TerminalRegion ws={ws()!} />
+              <TerminalRegion ws={ws()!} visible={() => !fileSel()} />
             </div>
             <Show when={fileSel()}>
               <div class="ws-diff">
