@@ -903,42 +903,138 @@ pub fn spawn_core() -> CoreHandle {
                         });
                     }
                 }
-                Command::AddWorkspace { name, path, ssh } => {
+                Command::AddWorkspace {
+                    name,
+                    path,
+                    ssh,
+                    repository_id,
+                    base_branch,
+                    agent,
+                    adopted,
+                } => {
                     let id = Uuid::new_v4();
-                    let repo_path = std::path::PathBuf::from(&path);
+                    let ws_path = std::path::PathBuf::from(&path);
+                    // A folder under an SSH-backed repo lives on that same host.
+                    // Clients only ever see a display string for the target, so
+                    // they can't send it back — inherit it here.
+                    let ssh = ssh.or_else(|| {
+                        repository_id
+                            .and_then(|rid| state.repositories.get(&rid))
+                            .and_then(|r| r.ssh.clone())
+                    });
+
+                    // Attaching the same folder twice would give it two agent
+                    // terminals fighting over one working tree. A local folder
+                    // that isn't a git checkout has no branch, no diff and
+                    // nothing to review — reject both before anything lands in
+                    // state. Over SSH the probe is a network round trip that can
+                    // fail for reasons unrelated to the folder (auth, host down),
+                    // so we trust the caller there rather than refuse the add.
+                    let rejection = if state
+                        .workspaces
+                        .values()
+                        .any(|w| same_path(&w.path, &ws_path))
+                    {
+                        Some(format!("{path} is already open as a workspace"))
+                    } else if ssh.is_none() && repo_root(&ws_path, None).await.is_err() {
+                        Some(format!("{path} is not a git repository"))
+                    } else {
+                        None
+                    };
+
+                    if let Some(message) = rejection {
+                        let _ = evt_tx_task.send(Event::Error { message });
+                    } else {
+                    let initial_git = refresh_git(&ws_path, ssh.as_ref()).await.unwrap_or_default();
+                    let repo = repository_id.and_then(|rid| state.repositories.get(&rid));
+                    // Fall back to the repo's default branch so branch diff and
+                    // review have something to compare against.
+                    let base_branch =
+                        base_branch.or_else(|| repo.and_then(|r| r.default_branch.clone()));
+                    // An empty name means "call it whatever it already is".
+                    let name = if name.trim().is_empty() {
+                        initial_git
+                            .branch
+                            .clone()
+                            .or_else(|| {
+                                ws_path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_else(|| "workspace".to_string())
+                    } else {
+                        name
+                    };
+                    let slug = ws_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("workspace")
+                        .to_string();
+                    let repo_check = repo.map(|r| (r.id, r.path.clone()));
 
                     let ws = Workspace {
                         id,
                         name,
-                        path: repo_path.clone(),
+                        path: ws_path.clone(),
                         ssh: ssh.clone(),
-                        git: GitState::default(),
+                        git: initial_git.clone(),
                         attention: AttentionLevel::None,
                         terminals: Default::default(),
                         last_activity: Instant::now(),
-                        repository_id: None,
-                        branch: None,
-                        base_branch: None,
-                        agent: None,
+                        repository_id,
+                        branch: initial_git.branch.clone(),
+                        base_branch,
+                        agent,
                         ready_for_review: false,
                         review_manual: false,
                         agent_active: false,
                         agent_idle: false,
                         agent_input_suppress_until: None,
+                        adopted,
                     };
                     state.ordered_ids.push(id);
                     state.workspaces.insert(id, ws);
                     let _ = evt_tx_task.send(Event::WorkspaceGitUpdated {
                         id,
-                        git: GitState::default(),
+                        git: initial_git,
                     });
-                    let git_tx = git_result_tx.clone();
-                    tokio::spawn(async move {
-                        let _ = git_tx.send(GitRefreshResult {
+                    if let Some((repo_id, repo_path)) = repo_check {
+                        // Lets the client close its modal, flush any initial
+                        // prompt, and navigate — same handshake as CreateWorkspace.
+                        let _ = evt_tx_task.send(Event::WorkspaceCreated {
                             id,
-                            result: refresh_git(&repo_path, ssh.as_ref()).await,
-                        }).await;
-                    });
+                            repo_id,
+                            slug,
+                        });
+                        let _ = evt_tx_task.send(Event::RepositoryList {
+                            items: repository_summaries(&state),
+                        });
+                        // Warn, don't block: a fork or a remote named something
+                        // other than `origin` is legitimate, but an unrelated
+                        // folder filed under this repo produces nonsense diffs.
+                        let evt_warn = evt_tx_task.clone();
+                        let warn_ssh = ssh.clone();
+                        let warn_path = ws_path.clone();
+                        tokio::spawn(async move {
+                            let (Ok(theirs), Ok(ours)) = tokio::join!(
+                                remote_origin_url(&warn_path, warn_ssh.as_ref()),
+                                remote_origin_url(&repo_path, warn_ssh.as_ref()),
+                            ) else {
+                                return;
+                            };
+                            if theirs.trim() != ours.trim() {
+                                let _ = evt_warn.send(Event::Error {
+                                    message: format!(
+                                        "{} has origin {} — it may not belong to this repository",
+                                        warn_path.display(),
+                                        theirs.trim()
+                                    ),
+                                });
+                            }
+                        });
+                    }
+                    }
                 }
                 Command::RemoveWorkspace { id } => {
                     let removed = state.workspaces.remove(&id);
@@ -956,8 +1052,10 @@ pub fn spawn_core() -> CoreHandle {
                     state.ordered_ids.retain(|wid| *wid != id);
                     if let Some(ws) = removed {
                         // Tear down the git worktree for worktree-backed Workspaces.
+                        // Adopted folders pre-date Conduit and may hold work in
+                        // flight, so they are unregistered and left on disk.
                         if let Some(repo_id) = ws.repository_id {
-                            if let Some(repo) = state.repositories.get(&repo_id) {
+                            if let Some(repo) = state.repositories.get(&repo_id).filter(|_| !ws.adopted) {
                                 let repo_path = repo.path.clone();
                                 let wt_path = ws.path.clone();
                                 let ssh = ws.ssh.clone();
@@ -2015,6 +2113,7 @@ pub fn spawn_core() -> CoreHandle {
                                 agent_active: false,
                                 agent_idle: false,
                                 agent_input_suppress_until: None,
+                                adopted: false,
                             };
                             state.ordered_ids.push(id);
                             state.workspaces.insert(id, ws);
@@ -2293,6 +2392,7 @@ fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
                 ready_for_review: ws.ready_for_review,
                 agent_active: ws.agent_active,
                 agent: ws.agent.clone(),
+                adopted: ws.adopted,
             }
         })
         .collect::<Vec<_>>()
@@ -2336,6 +2436,8 @@ struct PersistedWorkspace {
     base_branch: Option<String>,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default)]
+    adopted: bool,
 }
 
 fn persist_file() -> Option<PathBuf> {
@@ -2405,6 +2507,7 @@ fn save_workspaces(state: &AppState) {
             branch: ws.branch.clone(),
             base_branch: ws.base_branch.clone(),
             agent: ws.agent.clone(),
+            adopted: ws.adopted,
         })
         .collect::<Vec<_>>();
     if let Ok(json) = serde_json::to_string_pretty(&items) {
@@ -2455,6 +2558,7 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
             agent_active: false,
             agent_idle: false,
             agent_input_suppress_until: None,
+            adopted: item.adopted,
         };
         state.ordered_ids.push(id);
         state.workspaces.insert(id, ws);
@@ -2553,6 +2657,9 @@ async fn pickup_worktrees_for_repo(
             agent_active: false,
             agent_idle: false,
             agent_input_suppress_until: None,
+            // Genuine worktrees of this repo — `git worktree remove` remains
+            // the right teardown, so these are not "adopted".
+            adopted: false,
         };
         state.ordered_ids.push(id);
         state.workspaces.insert(id, ws);
@@ -2829,6 +2936,7 @@ mod tests {
             agent_active: false,
             agent_idle: false,
             agent_input_suppress_until: None,
+            adopted: false,
         }
     }
 

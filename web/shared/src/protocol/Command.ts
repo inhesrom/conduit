@@ -8,7 +8,24 @@ import type { Route } from "./Route";
 import type { SshTarget } from "./SshTarget";
 import type { TerminalKind } from "./TerminalKind";
 
-export type Command = { "SetRoute": Route } | { "AddWorkspace": { name: string, path: string, ssh: SshTarget | null, } } | { "RemoveWorkspace": { id: string, } } | { "RenameWorkspace": { id: string, name: string, } } | { "SetWorkspaceAgent": { id: string, agent: string | null, } } | { "MoveWorkspace": { id: string, delta: number, } } | { "SetAttention": { id: string, level: AttentionLevel, } } | { "ClearAttention": { id: string, } } | { "RefreshGit": { id: string, } } | { "RunWorkspaceCommand": { id: string, command: string, } } | { "LoadDiff": { id: string, file: string, } } | { "LoadCommitDiff": { id: string, hash: string, } } | { "LoadCommitFiles": { id: string, hash: string, } } | { "LoadCommitFileDiff": { id: string, hash: string, file: string, } } | { "GitStageFile": { id: string, file: string, } } | { "GitUnstageFile": { id: string, file: string, } } | { "GitStageAll": { id: string, } } | { "GitUnstageAll": { id: string, } } | { "GitCommit": { id: string, message: string, } } | { "GitCheckoutBranch": { id: string, branch: string, } } | { "GitCheckoutRemoteBranch": { id: string, remote_branch: string, local_name: string, } } | { "GitCreateBranch": { id: string, branch: string, } } | { "GitDeleteLocalBranch": { id: string, branch: string, } } | { "GitDeleteRemoteBranch": { id: string, remote: string, branch: string, } } | { "GitPush": { id: string, } } | { "GitPull": { id: string, } } | { "GitFetch": { id: string, } } | { "GitDiscardFile": { id: string, file: string, } } | { "GitDiscardAll": { id: string, } } | { "GitStash": { id: string, message: string | null, } } | { "GitStashPullPop": { id: string, } } | { "GitStashAll": { id: string, } } | { "StartTerminal": { id: string, kind: TerminalKind, tab_id: string | null, cmd: Array<string>, 
+export type Command = { "SetRoute": Route } | { "AddWorkspace": { name: string, path: string, ssh: SshTarget | null, 
+/**
+ * Repository to file this Workspace under. `None` leaves it ungrouped
+ * (the shape every pre-adoption caller used).
+ */
+repository_id: string | null, 
+/**
+ * Diff base for review. `None` falls back to the repo's default branch.
+ */
+base_branch: string | null, 
+/**
+ * Agent to launch here; same semantics as [`Command::CreateWorkspace`].
+ */
+agent: string | null, 
+/**
+ * Marks the folder as pre-existing so removal never deletes it.
+ */
+adopted: boolean, } } | { "RemoveWorkspace": { id: string, } } | { "RenameWorkspace": { id: string, name: string, } } | { "SetWorkspaceAgent": { id: string, agent: string | null, } } | { "MoveWorkspace": { id: string, delta: number, } } | { "SetAttention": { id: string, level: AttentionLevel, } } | { "ClearAttention": { id: string, } } | { "RefreshGit": { id: string, } } | { "RunWorkspaceCommand": { id: string, command: string, } } | { "LoadDiff": { id: string, file: string, } } | { "LoadCommitDiff": { id: string, hash: string, } } | { "LoadCommitFiles": { id: string, hash: string, } } | { "LoadCommitFileDiff": { id: string, hash: string, file: string, } } | { "GitStageFile": { id: string, file: string, } } | { "GitUnstageFile": { id: string, file: string, } } | { "GitStageAll": { id: string, } } | { "GitUnstageAll": { id: string, } } | { "GitCommit": { id: string, message: string, } } | { "GitCheckoutBranch": { id: string, branch: string, } } | { "GitCheckoutRemoteBranch": { id: string, remote_branch: string, local_name: string, } } | { "GitCreateBranch": { id: string, branch: string, } } | { "GitDeleteLocalBranch": { id: string, branch: string, } } | { "GitDeleteRemoteBranch": { id: string, remote: string, branch: string, } } | { "GitPush": { id: string, } } | { "GitPull": { id: string, } } | { "GitFetch": { id: string, } } | { "GitDiscardFile": { id: string, file: string, } } | { "GitDiscardAll": { id: string, } } | { "GitStash": { id: string, message: string | null, } } | { "GitStashPullPop": { id: string, } } | { "GitStashAll": { id: string, } } | { "StartTerminal": { id: string, kind: TerminalKind, tab_id: string | null, cmd: Array<string>, 
 /**
  * Initial terminal width in columns. `0` (or absent, for older
  * clients) means "use the default" so the child process is born at the
@@ -27,11 +44,11 @@ agent: string | null,
  * When set, check out this existing branch instead of creating a new
  * branch off `base_branch` (which is ignored).
  */
-existing: CheckoutSource | null, } } | { "ListRepoBranches": { repo_id: string, } } | { "SetReadyForReview": { id: string, ready: boolean, } } | { "LoadBranchDiff": { id: string, } } | { "LoadBranchFileDiff": { id: string, file: string, } } | { "OpenPullRequest": { id: string, } } | { "LoadPullRequest": { id: string,
+existing: CheckoutSource | null, } } | { "ListRepoBranches": { repo_id: string, } } | { "SetReadyForReview": { id: string, ready: boolean, } } | { "LoadBranchDiff": { id: string, } } | { "LoadBranchFileDiff": { id: string, file: string, } } | { "OpenPullRequest": { id: string, } } | { "LoadPullRequest": { id: string, 
 /**
  * When absent, detect the pull request associated with the current branch.
  */
-pr: PullRequestRef | null,
+pr: PullRequestRef | null, 
 /**
  * Optional GitHub PR number, URL, or branch accepted by `gh pr view`.
  */

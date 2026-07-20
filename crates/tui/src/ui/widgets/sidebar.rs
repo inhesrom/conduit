@@ -549,6 +549,7 @@ mod tests {
             base_branch: Some("main".to_string()),
             ready_for_review: false,
             agent: None,
+            adopted: false,
         }
     }
 

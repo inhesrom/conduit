@@ -154,6 +154,13 @@ export function agentCmdFor(choice?: string | null): string[] {
   return [...tokens(p.command), ...(settings.yoloMode ? p.yoloFlags : [])];
 }
 
+/** Flags that make this agent pick up its previous session in the same folder
+ * (`claude` → `-c`). Empty for agents that have no such flag, or for a raw
+ * custom command we know nothing about. */
+export function continueFlagsFor(choice?: string | null): string[] {
+  return profileFor(choice)?.continueFlags ?? [];
+}
+
 /** Vanilla launch (no yolo flags) used for the fast-exit fallback restart. */
 export function agentVanillaCmdFor(choice?: string | null): string[] {
   const name = choice && choice.trim() ? choice.trim() : settings.defaultAgent;

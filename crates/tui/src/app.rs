@@ -3689,6 +3689,7 @@ mod tests {
             base_branch: None,
             ready_for_review: false,
             agent: None,
+            adopted: false,
         }
     }
 

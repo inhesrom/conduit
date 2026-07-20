@@ -24,6 +24,9 @@ export function TerminalView(props: {
   active: () => boolean;
   startOnMount: boolean;
   cmd: () => string[];
+  /** Overrides `cmd` for the initial launch only — a later restart is a
+   * deliberate fresh start and goes back to `cmd`. */
+  mountCmd?: () => string[];
   /** Agent only: vanilla relaunch if it dies seconds after starting. */
   fallbackCmd?: () => string[];
   /** Authoritative liveness from the workspace summary (agent_running). A
@@ -140,7 +143,7 @@ export function TerminalView(props: {
     handle.attach(host);
     stopViewportTracking = handle.onViewportAtBottomChange(setAtBottom);
     props.registerControls?.({ restart });
-    if (props.startOnMount) start(props.cmd());
+    if (props.startOnMount) start((props.mountCmd ?? props.cmd)());
   });
   onCleanup(() => {
     stopViewportTracking?.();

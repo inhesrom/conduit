@@ -73,6 +73,12 @@ pub struct Workspace {
     pub agent_active: bool,
     /// Whether the agent terminal has settled (gone quiet past the window).
     pub agent_idle: bool,
+    /// True when this Workspace was attached to a folder that already existed
+    /// rather than created as a worktree by Conduit. Removal unregisters only —
+    /// the directory is never deleted. Auto-pickup (`pickup_worktrees_for_repo`)
+    /// leaves this `false`: those are genuine worktrees of the repo, so tearing
+    /// them down with `git worktree remove` stays correct.
+    pub adopted: bool,
     /// Transient grace window: while `now < until`, terminal output is treated as
     /// local typing echo and ignored for the spinner / review / prompt heuristics.
     /// Not persisted (always `None` on load) — see `USER_TYPING_GRACE_MS`.

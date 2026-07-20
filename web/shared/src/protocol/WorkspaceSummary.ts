@@ -6,4 +6,10 @@ export type WorkspaceSummary = { id: string, name: string, path: string, branch:
  * Agent chosen for this Workspace at creation: a configured profile name or
  * a raw custom command. `None` = use the client's default agent.
  */
-agent: string | null, };
+agent: string | null, 
+/**
+ * True when this Workspace points at a pre-existing folder the user
+ * attached rather than a worktree Conduit created. Removing it never
+ * touches the directory.
+ */
+adopted: boolean, };
