@@ -287,6 +287,7 @@ mod tests {
             base_branch: Some("main".into()),
             ready_for_review: true,
             agent: None,
+            adopted: false,
         }
     }
 
@@ -303,10 +304,7 @@ mod tests {
         let mut app = TuiApp::default();
         let repo_id = Uuid::new_v4();
         app.set_repositories(vec![make_repo(repo_id, "conduit")]);
-        app.set_workspaces(vec![
-            make_ws("alpha", repo_id),
-            make_ws("beta", repo_id),
-        ]);
+        app.set_workspaces(vec![make_ws("alpha", repo_id), make_ws("beta", repo_id)]);
         app.open_repo_summary(repo_id);
         smoke_render(&app, 120, 40);
     }

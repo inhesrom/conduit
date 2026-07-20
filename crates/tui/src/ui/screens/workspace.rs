@@ -1330,9 +1330,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             let current = app.workspace_agent(picker.id);
             let row_count = app.settings.agents.len() as u16 + 1;
             let modal_w = 50u16.min(area.width.saturating_sub(4));
-            let modal_h = (row_count + 5)
-                .min(20)
-                .min(area.height.saturating_sub(2));
+            let modal_h = (row_count + 5).min(20).min(area.height.saturating_sub(2));
             let modal_rect = Rect::new(
                 area.x + (area.width.saturating_sub(modal_w)) / 2,
                 area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1894,6 +1892,7 @@ mod tests {
             base_branch: None,
             ready_for_review: false,
             agent: None,
+            adopted: false,
         }
     }
 

@@ -2,7 +2,7 @@ import { createEffect, createSignal, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { termKey, type WorkspaceSummary } from "@conduit/shared";
 import { client } from "../client";
-import { agentCmdFor, agentVanillaCmdFor, settings } from "../state/settings";
+import { agentCmdFor, agentVanillaCmdFor, continueFlagsFor, settings } from "../state/settings";
 import { setStore, store } from "../state/store";
 import { createShell, removeShell, renameShell, shellTabs } from "../state/tabs";
 import { activeTab, isFreshTab, markFreshTab, setActiveTab } from "../state/ui";
@@ -78,6 +78,12 @@ export function TerminalRegion(props: { ws: WorkspaceSummary; visible: () => boo
 
   // The agent's liveness when the screen opened decides whether we launch it.
   const agentRunningAtOpen = props.ws.agent_running;
+
+  // An adopted folder may already have an agent session in it. Consume the
+  // one-shot flag here, at open, so it applies to this first launch and never
+  // leaks into a later manual restart.
+  const resumeFlags = store.pendingResume[wsId] ? continueFlagsFor(props.ws.agent) : [];
+  if (store.pendingResume[wsId]) setStore("pendingResume", wsId, undefined!);
 
   // "Switch agent type" menu on the agent tab (right-click or ▾ caret).
   // Rendered through a Portal at a fixed screen position: the tabbar's
@@ -215,6 +221,7 @@ export function TerminalRegion(props: { ws: WorkspaceSummary; visible: () => boo
               active={() => props.visible() && active() === "agent"}
               startOnMount={!agentRunningAtOpen}
               cmd={() => agentCmdFor(props.ws.agent)}
+              mountCmd={() => [...agentCmdFor(props.ws.agent), ...resumeFlags]}
               fallbackCmd={() => agentVanillaCmdFor(props.ws.agent)}
               externalRunning={() => props.ws.agent_running}
               registerControls={(c) => (agentControls = c)}

@@ -58,6 +58,13 @@ export interface AppState {
   /** Prompt staged at create time; attaches to the next WorkspaceCreated
    * (creations are serial from the UI). */
   pendingCreatePrompt: string | null;
+  /** Workspaces whose *first* agent launch should resume the session that was
+   * already running in that folder — set when adopting an existing folder.
+   * Consumed once, then cleared, so later restarts start clean. */
+  pendingResume: Record<string, boolean>;
+  /** Resume intent staged at adopt time; attaches to the next WorkspaceCreated,
+   * mirroring pendingCreatePrompt. */
+  pendingCreateResume: boolean;
   /** Branch-vs-base file lists for review mode, per workspace. */
   reviewByWs: Record<string, { base: string; files: ChangedFile[] }>;
   /** GitHub pull request viewer data, per workspace. */
@@ -79,6 +86,8 @@ export const [store, setStore] = createStore<AppState>({
   pendingPrompt: {},
   pendingTabPrompt: {},
   pendingCreatePrompt: null,
+  pendingResume: {},
+  pendingCreateResume: false,
   reviewByWs: {},
   pullRequestsByWs: {},
   resurrection: {},
@@ -99,6 +108,8 @@ export function resetStore(): void {
     pendingPrompt: {},
     pendingTabPrompt: {},
     pendingCreatePrompt: null,
+    pendingResume: {},
+    pendingCreateResume: false,
     reviewByWs: {},
     pullRequestsByWs: {},
     resurrection: {},

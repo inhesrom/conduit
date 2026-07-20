@@ -78,6 +78,11 @@ pub struct WorkspaceSummary {
     /// a raw custom command. `None` = use the client's default agent.
     #[serde(default)]
     pub agent: Option<String>,
+    /// True when this Workspace points at a pre-existing folder the user
+    /// attached rather than a worktree Conduit created. Removing it never
+    /// touches the directory.
+    #[serde(default)]
+    pub adopted: bool,
 }
 
 /// Summary of a base Repository sent to clients for the sidebar tree.
@@ -335,11 +340,28 @@ pub struct PullRequestSummary {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Command {
     SetRoute(Route),
+    /// Attaches an existing folder on disk as a Workspace instead of creating a
+    /// worktree for it. The folder may be any git checkout — a sibling clone, a
+    /// hand-made worktree, or the registered Repository's own directory that is
+    /// already in flight on a branch.
     AddWorkspace {
         name: String,
         path: String,
         #[serde(default)]
         ssh: Option<SshTarget>,
+        /// Repository to file this Workspace under. `None` leaves it ungrouped
+        /// (the shape every pre-adoption caller used).
+        #[serde(default)]
+        repository_id: Option<RepositoryId>,
+        /// Diff base for review. `None` falls back to the repo's default branch.
+        #[serde(default)]
+        base_branch: Option<String>,
+        /// Agent to launch here; same semantics as [`Command::CreateWorkspace`].
+        #[serde(default)]
+        agent: Option<String>,
+        /// Marks the folder as pre-existing so removal never deletes it.
+        #[serde(default)]
+        adopted: bool,
     },
     RemoveWorkspace {
         id: WorkspaceId,
@@ -989,6 +1011,7 @@ mod tests {
             base_branch: Some("main".into()),
             ready_for_review: true,
             agent: Some("claude".into()),
+            adopted: true,
         });
     }
 
@@ -1054,6 +1077,36 @@ mod tests {
         let cmd: Command = serde_json::from_value(json).unwrap();
         match cmd {
             Command::CreateWorkspace { existing, .. } => assert!(existing.is_none()),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_workspace_defaults_adoption_fields() {
+        // Old clients send AddWorkspace with only name/path.
+        let json = serde_json::json!({
+            "AddWorkspace": {
+                "name": "ws",
+                "path": "/p"
+            }
+        });
+        let cmd: Command = serde_json::from_value(json).unwrap();
+        match cmd {
+            Command::AddWorkspace {
+                repository_id,
+                base_branch,
+                agent,
+                adopted,
+                ..
+            } => {
+                assert!(repository_id.is_none());
+                assert!(base_branch.is_none());
+                assert!(agent.is_none());
+                assert!(
+                    !adopted,
+                    "legacy AddWorkspace must not be treated as adopted"
+                );
+            }
             other => panic!("unexpected command: {other:?}"),
         }
     }
@@ -1170,6 +1223,10 @@ mod tests {
                 name: "ws".into(),
                 path: "/p".into(),
                 ssh: None,
+                repository_id: None,
+                base_branch: None,
+                agent: None,
+                adopted: false,
             },
             Command::AddWorkspace {
                 name: "ws".into(),
@@ -1179,6 +1236,10 @@ mod tests {
                     user: Some("u".into()),
                     port: Some(22),
                 }),
+                repository_id: Some(id),
+                base_branch: Some("main".into()),
+                agent: Some("claude".into()),
+                adopted: true,
             },
             Command::RemoveWorkspace { id },
             Command::RenameWorkspace {

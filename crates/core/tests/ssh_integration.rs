@@ -336,6 +336,10 @@ async fn add_workspace_over_ssh_is_not_blocked_by_noninteractive_auth_failure() 
             name: "remote-repo".into(),
             path: repo.path().display().to_string(),
             ssh: Some(fake_target()),
+            repository_id: None,
+            base_branch: None,
+            agent: None,
+            adopted: false,
         })
         .await
         .unwrap();

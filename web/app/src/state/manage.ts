@@ -10,9 +10,11 @@ export async function renameWorkspace(ws: WorkspaceSummary): Promise<void> {
 
 export async function deleteWorkspace(ws: WorkspaceSummary): Promise<void> {
   const ok = await confirmDialog({
-    title: "Delete workspace?",
-    body: `${ws.name} — its worktree is removed from disk.`,
-    confirmLabel: "Delete",
+    title: ws.adopted ? "Remove workspace?" : "Delete workspace?",
+    body: ws.adopted
+      ? `${ws.name} — unregisters only; files on disk are untouched.`
+      : `${ws.name} — its worktree is removed from disk.`,
+    confirmLabel: ws.adopted ? "Remove" : "Delete",
     danger: true,
   });
   if (!ok) return;
