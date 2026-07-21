@@ -26,8 +26,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     render_modals(frame, area, app);
 }
 
-/// The detail pane shown while the Sidebar is focused (no workspace open):
-/// a short keymap and details of the sidebar-selected item.
+/// The detail pane shown while the sidebar is focused: selected-item context
+/// and one unobtrusive route into the complete shortcut catalog.
 fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let key = Style::default()
         .fg(Color::Cyan)
@@ -35,30 +35,12 @@ fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let desc = Style::default().fg(Color::DarkGray);
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "  Select a workspace in the sidebar, Enter to open.",
-            Style::default().fg(Color::Gray),
-        )),
-        Line::from(""),
         Line::from(vec![
-            Span::styled("  n", key),
-            Span::styled(" new workspace    ", desc),
-            Span::styled("N", key),
-            Span::styled(" add repository    ", desc),
-            Span::styled("ctrl+b", key),
-            Span::styled(" toggle sidebar", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter", key),
-            Span::styled(" open    ", desc),
-            Span::styled("R", key),
-            Span::styled(" review    ", desc),
-            Span::styled("Space", key),
-            Span::styled(" mark ready    ", desc),
-            Span::styled("D", key),
-            Span::styled(" delete    ", desc),
-            Span::styled("f", key),
-            Span::styled(" filter ready", desc),
+            Span::styled("  ?", key),
+            Span::styled(
+                " opens shortcuts for this selection; Tab in help shows everything.",
+                desc,
+            ),
         ]),
         Line::from(""),
     ];
@@ -95,6 +77,23 @@ fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     format!("  branch: {}", ws.branch.as_deref().unwrap_or("?")),
                     desc,
                 )));
+                lines.push(Line::from(Span::styled(
+                    format!("  path: {}", ws.path),
+                    desc,
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {} changed file{}    agent {}",
+                        ws.dirty_files,
+                        if ws.dirty_files == 1 { "" } else { "s" },
+                        if ws.agent_running {
+                            "running"
+                        } else {
+                            "stopped"
+                        }
+                    ),
+                    desc,
+                )));
                 if ws.ready_for_review {
                     lines.push(Line::from(Span::styled(
                         "  ◆ ready for review",
@@ -103,7 +102,32 @@ fn render_welcome_body(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 }
             }
         }
-        None => {}
+        None => {
+            let shortcuts = crate::shortcuts::resolved_shortcuts(
+                app,
+                crate::shortcuts::ShortcutContext::HomeSidebar,
+            );
+            let add_repo = shortcuts
+                .iter()
+                .find(|shortcut| shortcut.id == crate::shortcuts::ShortcutId::AddRepository)
+                .map(|shortcut| shortcut.keys.as_str())
+                .unwrap_or("N");
+            let add_ssh = shortcuts
+                .iter()
+                .find(|shortcut| shortcut.id == crate::shortcuts::ShortcutId::AddSshRepository)
+                .map(|shortcut| shortcut.keys.as_str())
+                .unwrap_or("A");
+            lines.push(Line::from(Span::styled(
+                "  No repositories yet. Add one to create your first workspace.",
+                Style::default().fg(Color::Gray),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {add_repo}"), key),
+                Span::styled(" add local repository    ", desc),
+                Span::styled(add_ssh.to_string(), key),
+                Span::styled(" add SSH repository", desc),
+            ]));
+        }
     }
 
     let block = Block::default()
@@ -259,38 +283,12 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             frame.render_stateful_widget(list, sections[1], &mut list_state);
         }
 
-        // Hint bar section
-        let key_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let desc_style = Style::default().fg(Color::DarkGray);
-        let hints = if browser.editing_path {
-            Line::from(vec![
-                Span::styled("Tab", key_style),
-                Span::styled(" complete  ", desc_style),
-                Span::styled("Enter", key_style),
-                Span::styled(" browse  ", desc_style),
-                Span::styled("Esc", key_style),
-                Span::styled(" cancel", desc_style),
-            ])
+        let hint_context = if browser.editing_path {
+            crate::shortcuts::ShortcutContext::DirectoryPathText
         } else {
-            Line::from(vec![
-                Span::styled("j/k", key_style),
-                Span::styled(" nav  ", desc_style),
-                Span::styled("Enter", key_style),
-                Span::styled(" add repo  ", desc_style),
-                Span::styled("Bksp", key_style),
-                Span::styled(" up  ", desc_style),
-                Span::styled(".", key_style),
-                Span::styled(" hidden  ", desc_style),
-                Span::styled("/", key_style),
-                Span::styled(" edit path  ", desc_style),
-                Span::styled("Tab", key_style),
-                Span::styled(" open child  ", desc_style),
-                Span::styled("Space", key_style),
-                Span::styled(" select child", desc_style),
-            ])
+            crate::shortcuts::ShortcutContext::DirectoryBrowser
         };
+        let hints = footer::build_modal_hints(app, hint_context, sections[2].width);
         frame.render_widget(Paragraph::new(vec![Line::from(""), hints]), sections[2]);
     }
 
@@ -335,20 +333,11 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         list_state.select(Some(picker.selected));
         frame.render_stateful_widget(list, sections[0], &mut list_state);
 
-        let key_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let desc_style = Style::default().fg(Color::DarkGray);
-        let hints = Line::from(vec![
-            Span::styled("j/k", key_style),
-            Span::styled(" nav  ", desc_style),
-            Span::styled("Enter", key_style),
-            Span::styled(" select  ", desc_style),
-            Span::styled("n", key_style),
-            Span::styled(" new  ", desc_style),
-            Span::styled("Esc", key_style),
-            Span::styled(" cancel", desc_style),
-        ]);
+        let hints = footer::build_modal_hints(
+            app,
+            crate::shortcuts::ShortcutContext::SshHistory,
+            sections[1].width,
+        );
         frame.render_widget(Paragraph::new(vec![Line::from(""), hints]), sections[1]);
     }
 
@@ -403,18 +392,11 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             frame.render_widget(widget, sections[i]);
         }
 
-        let key_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let desc_style = Style::default().fg(Color::DarkGray);
-        let hints = Line::from(vec![
-            Span::styled("Tab", key_style),
-            Span::styled(" next field  ", desc_style),
-            Span::styled("Enter", key_style),
-            Span::styled(" add  ", desc_style),
-            Span::styled("Esc", key_style),
-            Span::styled(" cancel", desc_style),
-        ]);
+        let hints = footer::build_modal_hints(
+            app,
+            crate::shortcuts::ShortcutContext::SshText,
+            sections[3].width,
+        );
         frame.render_widget(Paragraph::new(vec![hints]), sections[3]);
     }
 
@@ -423,12 +405,21 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
     if app.is_renaming_workspace() {
         if let Some(name) = &app.rename_workspace_input {
-            let modal = centered_rect(area, 56, 5);
+            let modal = centered_rect(area, 56, 7);
             frame.render_widget(Clear, modal);
             frame.render_widget(
-                Paragraph::new(format!("{name}_")).block(
+                Paragraph::new(vec![
+                    Line::from(format!("{name}_")),
+                    Line::from(""),
+                    footer::build_modal_hints(
+                        app,
+                        crate::shortcuts::ShortcutContext::RenameWorkspaceText,
+                        modal.width.saturating_sub(2),
+                    ),
+                ])
+                .block(
                     Block::default()
-                        .title("Rename Workspace (Enter to confirm, Esc to cancel)")
+                        .title(" Rename Workspace ")
                         .borders(Borders::ALL)
                         .border_style(
                             Style::default()
@@ -446,9 +437,6 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         let modal = centered_rect(area, 56, 19);
         frame.render_widget(Clear, modal);
 
-        let key_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
         let desc_style = Style::default().fg(Color::DarkGray);
         let cursor_style = Style::default()
             .fg(Color::Cyan)
@@ -631,12 +619,11 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             while lines.len() < 11 {
                 lines.push(Line::from(""));
             }
-            lines.push(Line::from(vec![
-                Span::styled("y", key_style),
-                Span::styled(" yes  ", desc_style),
-                Span::styled("any other key", key_style),
-                Span::styled(" no", desc_style),
-            ]));
+            lines.push(footer::build_modal_hints(
+                app,
+                crate::shortcuts::ShortcutContext::SettingsConfirmDeleteAgent,
+                modal.width.saturating_sub(2),
+            ));
             (" Delete Agent ", lines)
         } else if let Some((step, profile, buf)) = &app.new_agent_wizard {
             let done_style = Style::default().fg(Color::Green);
@@ -675,50 +662,19 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 lines.push(Line::from(""));
             }
 
-            let step_label = match step {
-                0 => "name",
-                1 => "command",
-                _ => "YOLO flags (optional)",
-            };
-            lines.push(Line::from(vec![
-                Span::styled("Enter", key_style),
-                Span::styled(format!(" next ({})  ", step_label), desc_style),
-                Span::styled("Esc", key_style),
-                Span::styled(" cancel", desc_style),
-            ]));
+            lines.push(footer::build_modal_hints(
+                app,
+                crate::shortcuts::ShortcutContext::NewAgentText,
+                modal.width.saturating_sub(2),
+            ));
 
             (" New Agent ", lines)
         } else {
-            let hint = if app.is_editing_keybind() {
-                Line::from(vec![
-                    Span::styled("Any key", key_style),
-                    Span::styled(" capture  ", desc_style),
-                    Span::styled("Esc", key_style),
-                    Span::styled(" cancel", desc_style),
-                ])
-            } else if app.is_editing_setting() {
-                Line::from(vec![
-                    Span::styled("Enter", key_style),
-                    Span::styled(" confirm  ", desc_style),
-                    Span::styled("Esc", key_style),
-                    Span::styled(" cancel", desc_style),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::styled("j/k", key_style),
-                    Span::styled(" navigate  ", desc_style),
-                    Span::styled("Enter", key_style),
-                    Span::styled(" edit/toggle  ", desc_style),
-                    Span::styled("h/l", key_style),
-                    Span::styled(" adjust  ", desc_style),
-                    Span::styled("n", key_style),
-                    Span::styled(" new  ", desc_style),
-                    Span::styled("d", key_style),
-                    Span::styled(" delete  ", desc_style),
-                    Span::styled("Esc", key_style),
-                    Span::styled(" close", desc_style),
-                ])
-            };
+            let hint = footer::build_modal_hints(
+                app,
+                crate::shortcuts::underlying_context(app),
+                modal.width.saturating_sub(2),
+            );
             (
                 " Settings ",
                 vec![
@@ -768,7 +724,12 @@ fn render_toggle(enabled: bool) -> Span<'static> {
 }
 
 /// Returns a centered rectangle within `area` at `width_pct` width and fixed `height`.
-fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCreateState) {
+fn render_quick_create(
+    frame: &mut Frame,
+    area: Rect,
+    app: &TuiApp,
+    qc: &crate::app::QuickCreateState,
+) {
     use crate::app::{QuickCreateField, QuickCreateMode};
     let new_branch_mode = qc.mode == QuickCreateMode::NewBranch;
     let suggestions: Vec<&crate::app::BranchChoice> = if qc.expanded && !new_branch_mode {
@@ -794,9 +755,6 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
 
-    let key = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
     let desc = Style::default().fg(Color::DarkGray);
     let label = Style::default().fg(Color::Gray);
     let focused = Style::default()
@@ -934,40 +892,11 @@ fn render_quick_create(frame: &mut Frame, area: Rect, qc: &crate::app::QuickCrea
         ));
     }
     lines.push(Line::from(""));
-    let (tab_key, more) = if qc.expanded {
-        ("Tab/⇧Tab", " field")
-    } else {
-        ("Tab", " more options")
-    };
-    // On the agent selector, Enter expands to an editable command rather than
-    // creating; everywhere else it creates.
-    let agent_selecting = matches!(qc.field, QuickCreateField::Agent) && !qc.agent_command_edit;
-    let enter_hint = if agent_selecting {
-        " edit command  "
-    } else {
-        " create  "
-    };
-    let mut footer = vec![
-        Span::styled("Enter", key),
-        Span::styled(enter_hint, desc),
-        Span::styled(tab_key, key),
-        Span::styled(more, desc),
-    ];
-    if agent_selecting {
-        footer.push(Span::styled("  ←/→", key));
-        footer.push(Span::styled(" agent", desc));
-    }
-    if matches!(qc.field, QuickCreateField::Mode) {
-        footer.push(Span::styled("  ←/→", key));
-        footer.push(Span::styled(" mode", desc));
-    }
-    if matches!(qc.field, QuickCreateField::Branch) {
-        footer.push(Span::styled("  ↑/↓", key));
-        footer.push(Span::styled(" select", desc));
-    }
-    footer.push(Span::styled("  Esc", key));
-    footer.push(Span::styled(" cancel", desc));
-    lines.push(Line::from(footer));
+    lines.push(footer::build_modal_hints(
+        app,
+        crate::shortcuts::ShortcutContext::QuickCreateText,
+        inner.width,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -998,7 +927,7 @@ pub fn add_modal_rect(area: Rect) -> Rect {
 
 /// Returns the rectangle used by the delete-confirmation modal.
 pub fn delete_modal_rect(area: Rect) -> Rect {
-    centered_rect(area, 56, 7)
+    centered_rect(area, 56, 9)
 }
 
 /// Renders the quick-create ("New Workspace") modal when active. Drawn
@@ -1006,7 +935,7 @@ pub fn delete_modal_rect(area: Rect) -> Rect {
 /// workspace is already open.
 pub fn render_quick_create_modal(frame: &mut Frame, area: Rect, app: &TuiApp) {
     if let Some(qc) = &app.quick_create {
-        render_quick_create(frame, area, qc);
+        render_quick_create(frame, area, app, qc);
     }
 }
 
@@ -1037,9 +966,21 @@ pub fn render_delete_modal(frame: &mut Frame, area: Rect, app: &TuiApp) {
         return;
     };
     let modal = delete_modal_rect(area);
+    let mut lines = body
+        .lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect::<Vec<_>>();
+    while lines.len() < modal.height.saturating_sub(4) as usize {
+        lines.push(Line::from(""));
+    }
+    lines.push(footer::build_modal_hints(
+        app,
+        crate::shortcuts::ShortcutContext::DeleteConfirm,
+        modal.width.saturating_sub(2),
+    ));
     frame.render_widget(Clear, modal);
     frame.render_widget(
-        Paragraph::new(body).alignment(Alignment::Left).block(
+        Paragraph::new(lines).alignment(Alignment::Left).block(
             Block::default()
                 .title("Confirm Delete")
                 .borders(Borders::ALL),

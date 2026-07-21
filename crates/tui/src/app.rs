@@ -966,6 +966,8 @@ pub struct TuiApp {
     pub debug_fps: u16,
     pub debug_fps_frame_count: u64,
     pub debug_fps_last_reset: Option<Instant>,
+    /// Open shortcut help, including the captured context it describes.
+    pub help: Option<crate::shortcuts::HelpState>,
 }
 
 impl Default for TuiApp {
@@ -1060,6 +1062,7 @@ impl Default for TuiApp {
             debug_fps: 0,
             debug_fps_frame_count: 0,
             debug_fps_last_reset: None,
+            help: None,
         }
     }
 }
@@ -3566,7 +3569,7 @@ fn settings_persist_path() -> Option<PathBuf> {
     conduit_config_path("settings.json")
 }
 
-fn load_settings() -> Settings {
+pub(crate) fn load_settings() -> Settings {
     let Some(path) = settings_persist_path() else {
         return Settings::default();
     };
@@ -4792,11 +4795,15 @@ mod tests {
         assert_eq!(app.settings.scroll_to_bottom_key, captured);
         assert!(!app.is_editing_keybind());
 
-        // And pressing the same key afterwards matches the new binding live.
-        assert!(keymap::matches_keybinding(
-            pressed,
-            &app.settings.scroll_to_bottom_key
-        ));
+        // And pressing the same key afterwards resolves through the live catalog.
+        assert_eq!(
+            crate::shortcuts::match_shortcut(
+                &app,
+                crate::shortcuts::ShortcutContext::Diff,
+                pressed,
+            ),
+            Some(crate::shortcuts::ShortcutId::ScrollTerminalToBottom)
+        );
     }
 
     #[test]
@@ -4819,10 +4826,14 @@ mod tests {
 
         assert_eq!(app.settings.terminal_fullscreen_key, captured);
         assert!(!app.is_editing_keybind());
-        assert!(keymap::matches_keybinding(
-            pressed,
-            &app.settings.terminal_fullscreen_key
-        ));
+        assert_eq!(
+            crate::shortcuts::match_shortcut(
+                &app,
+                crate::shortcuts::ShortcutContext::Diff,
+                pressed,
+            ),
+            Some(crate::shortcuts::ShortcutId::ToggleFullscreen)
+        );
     }
 
     #[test]
@@ -4845,10 +4856,14 @@ mod tests {
 
         assert_eq!(app.settings.passthrough_key, captured);
         assert!(!app.is_editing_keybind());
-        assert!(keymap::matches_keybinding(
-            pressed,
-            &app.settings.passthrough_key
-        ));
+        assert_eq!(
+            crate::shortcuts::match_shortcut(
+                &app,
+                crate::shortcuts::ShortcutContext::TerminalPassthrough,
+                pressed,
+            ),
+            Some(crate::shortcuts::ShortcutId::ToggleTerminalCommandMode)
+        );
     }
 
     #[test]
