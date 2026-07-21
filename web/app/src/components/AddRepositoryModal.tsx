@@ -1,31 +1,9 @@
 import { createResource, createSignal, For, Show } from "solid-js";
+import { basename, fetchListing } from "../lib/fs";
 import { registerRepository } from "../state/manage";
 import { closeAppModal } from "../state/modals";
 import { pushToast } from "../state/toasts";
 import { Modal } from "./Modal";
-
-interface FsEntry {
-  name: string;
-  path: string;
-  is_repo: boolean;
-}
-interface Listing {
-  path: string;
-  parent: string | null;
-  entries: FsEntry[];
-}
-
-async function fetchListing(path: string | undefined): Promise<Listing> {
-  const url = "/api/fs/list" + (path ? `?path=${encodeURIComponent(path)}` : "");
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Couldn't read that folder.`);
-  return res.json();
-}
-
-function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? path;
-}
 
 export function AddRepositoryModal() {
   const [tab, setTab] = createSignal<"local" | "ssh">("local");

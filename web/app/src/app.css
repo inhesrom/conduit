@@ -1884,6 +1884,11 @@
 .browser-row:hover {
   background: var(--fill);
 }
+/* The folder chosen in the "add existing folder" picker. */
+.browser-row.selected {
+  background: var(--fill);
+  box-shadow: inset 2px 0 0 var(--ink);
+}
 .browser-name {
   flex: 1;
   min-width: 0;

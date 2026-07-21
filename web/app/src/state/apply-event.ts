@@ -163,6 +163,10 @@ export function applyEvent(e: AppEvent): void {
         setStore("pendingPrompt", e.id, store.pendingCreatePrompt);
         setStore("pendingCreatePrompt", null);
       }
+      if (store.pendingCreateResume) {
+        setStore("pendingResume", e.id, true);
+        setStore("pendingCreateResume", false);
+      }
       closeAppModal();
       navigate({ name: "workspace", id: e.id });
       break;
