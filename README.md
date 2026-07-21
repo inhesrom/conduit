@@ -94,39 +94,29 @@ refuses already-running sessions and suggests `conduit attach <name>`.
 
 ## Key Bindings
 
-### Global
+The bordered footer shows the most useful controls for the current screen,
+focused pane, selection, or modal. It adapts to the available width and keeps
+whole key/action hints together.
 
-| Key | Action |
-|---|---|
-| `q` | Quit |
-| `Tab` / `Shift+Tab` | Cycle focus between sections |
-| `Esc` | Exit focused section / go back |
+Press `?` on an application-controlled screen to open shortcut help. **Current**
+shows actions available in the captured context; press `Tab` for **All**, the
+complete catalog grouped by surface and mode. Use arrows or `j`/`k` to scroll,
+Page Up/Down for larger jumps, and `Esc` or `?` to close help. Help is
+intentionally unavailable while typing into an application text field or while
+normal input is being sent directly to a terminal.
 
-### Home Screen
+The focused terminal normally receives keys literally. Use the configured
+**Command mode key** (default `Ctrl+G`) to let Conduit handle pane navigation,
+fullscreen, workspace commands, and other workspace shortcuts; use it again to
+return to terminal input. Configured previous/next-workspace keys remain active
+in normal terminal mode and are advertised in its footer.
 
-| Key | Action |
-|---|---|
-| `h` `j` `k` `l` / Arrow keys | Navigate workspaces |
-| `Enter` | Open selected workspace |
-| `n` | New workspace |
-| `D` | Delete workspace |
-| `!` | Toggle attention level |
-| `g` | Refresh git status |
-
-### Workspace Screen
-
-| Key | Action |
-|---|---|
-| `1` `2` / `h` `l` | Switch terminal tabs |
-| `n` | New shell tab |
-| `x` | Close active tab |
-| `r` | Rename tab |
-| `a` / `A` | Start / stop agent terminal |
-| `s` / `S` | Start / stop shell terminal |
-| `g` | Refresh git |
-| `j` `k` / Arrow keys | Navigate file list |
-| `Enter` | Show diff for selected file |
-| Mouse wheel | Scroll terminal output |
+`Ctrl+B` cycles the sidebar through expanded, repository rail, and hidden modes
+from Conduit-controlled screens. In terminal-tab focus, `a` and `s` are aliases
+for starting the active terminal; `A` and `S` are aliases for stopping it.
+Previous/next workspace, command mode, scroll-to-bottom, and fullscreen bindings
+can all be changed in Settings, and the footer and help show their effective
+values.
 
 ## Configuration
 

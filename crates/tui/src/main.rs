@@ -1,6 +1,7 @@
 mod app;
 mod keymap;
 mod resurrect;
+mod shortcuts;
 mod terminal_core;
 mod ui;
 
@@ -804,6 +805,8 @@ struct SessionChooserState {
     mode: SessionChooserMode,
     input: String,
     message: Option<String>,
+    settings: app::Settings,
+    help: Option<shortcuts::HelpState>,
 }
 
 impl SessionChooserState {
@@ -814,6 +817,8 @@ impl SessionChooserState {
             mode: SessionChooserMode::Browse,
             input: String::new(),
             message: None,
+            settings: app::load_settings(),
+            help: None,
         };
         state.refresh();
         state
@@ -839,6 +844,16 @@ impl SessionChooserState {
             return;
         }
         self.selected = (self.selected as isize + delta).rem_euclid(len as isize) as usize;
+    }
+
+    fn shortcut_context(&self) -> shortcuts::ShortcutContext {
+        match self.mode {
+            SessionChooserMode::Browse => shortcuts::ShortcutContext::ChooserBrowse,
+            SessionChooserMode::New => shortcuts::ShortcutContext::ChooserNewText,
+            SessionChooserMode::ConfirmDelete { .. } => {
+                shortcuts::ShortcutContext::ChooserDeleteConfirm
+            }
+        }
     }
 }
 
@@ -876,8 +891,17 @@ async fn run_tui_session_chooser() -> Result<()> {
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        if handle_tui_session_chooser_help_key(&mut state, key) {
+            continue;
+        }
         let browse_before_key = matches!(state.mode, SessionChooserMode::Browse);
-        if browse_before_key && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+        if browse_before_key
+            && shortcuts::match_shortcut_for_context(
+                &state.settings,
+                shortcuts::ShortcutContext::ChooserBrowse,
+                key,
+            ) == Some(shortcuts::ShortcutId::Quit)
+        {
             return Ok(());
         }
         if let Some(entry) = handle_tui_session_chooser_key(&mut state, key).await? {
@@ -893,20 +917,22 @@ async fn handle_tui_session_chooser_key(
     state: &mut SessionChooserState,
     key: KeyEvent,
 ) -> Result<Option<conduit_core::sessions::SessionEntry>> {
+    let context = state.shortcut_context();
+    let action = shortcuts::match_shortcut_for_context(&state.settings, context, key);
     match &mut state.mode {
-        SessionChooserMode::Browse => match key.code {
-            KeyCode::Char('j') | KeyCode::Down => state.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => state.move_selection(-1),
-            KeyCode::Char('r') => {
+        SessionChooserMode::Browse => match action {
+            Some(shortcuts::ShortcutId::MoveDown) => state.move_selection(1),
+            Some(shortcuts::ShortcutId::MoveUp) => state.move_selection(-1),
+            Some(shortcuts::ShortcutId::RefreshSessions) => {
                 state.refresh();
                 state.message = Some("refreshed sessions".to_string());
             }
-            KeyCode::Char('n') => {
+            Some(shortcuts::ShortcutId::NewSession) => {
                 state.input.clear();
                 state.message = None;
                 state.mode = SessionChooserMode::New;
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
+            Some(shortcuts::ShortcutId::DeleteSession) => {
                 if let Some(name) = state.selected_name() {
                     state.mode = SessionChooserMode::ConfirmDelete {
                         name: name.to_string(),
@@ -914,7 +940,7 @@ async fn handle_tui_session_chooser_key(
                     state.message = None;
                 }
             }
-            KeyCode::Enter => {
+            Some(shortcuts::ShortcutId::AttachSession) => {
                 let Some(name) = state.selected_name().map(str::to_string) else {
                     state.message = Some("no sessions to attach".to_string());
                     return Ok(None);
@@ -929,15 +955,12 @@ async fn handle_tui_session_chooser_key(
             }
             _ => {}
         },
-        SessionChooserMode::New => match key.code {
-            KeyCode::Esc => {
+        SessionChooserMode::New => match action {
+            Some(shortcuts::ShortcutId::Cancel) => {
                 state.mode = SessionChooserMode::Browse;
                 state.message = None;
             }
-            KeyCode::Backspace => {
-                state.input.pop();
-            }
-            KeyCode::Enter => {
+            Some(shortcuts::ShortcutId::Confirm) => {
                 let name = state.input.trim().to_string();
                 if name.is_empty() {
                     state.message = Some("session name is required".to_string());
@@ -951,13 +974,18 @@ async fn handle_tui_session_chooser_key(
                     }
                 }
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.input.push(c);
-            }
-            _ => {}
+            _ => match key.code {
+                KeyCode::Backspace => {
+                    state.input.pop();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.input.push(c);
+                }
+                _ => {}
+            },
         },
-        SessionChooserMode::ConfirmDelete { name } => match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+        SessionChooserMode::ConfirmDelete { name } => match action {
+            Some(shortcuts::ShortcutId::Confirm) => {
                 let deleted = name.clone();
                 if std::env::var("CONDUIT_SESSION_NAME").as_deref() == Ok(deleted.as_str()) {
                     state.mode = SessionChooserMode::Browse;
@@ -969,7 +997,7 @@ async fn handle_tui_session_chooser_key(
                 state.mode = SessionChooserMode::Browse;
                 state.message = Some(format!("deleted session '{}'", deleted));
             }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            Some(shortcuts::ShortcutId::Cancel) => {
                 state.mode = SessionChooserMode::Browse;
                 state.message = None;
             }
@@ -977,6 +1005,11 @@ async fn handle_tui_session_chooser_key(
         },
     }
     Ok(None)
+}
+
+fn handle_tui_session_chooser_help_key(state: &mut SessionChooserState, key: KeyEvent) -> bool {
+    let context = state.shortcut_context();
+    shortcuts::handle_help_input(&mut state.help, &state.settings, context, key)
 }
 
 fn render_tui_session_chooser(frame: &mut ratatui::Frame, state: &SessionChooserState) {
@@ -998,12 +1031,8 @@ fn render_tui_session_chooser(frame: &mut ratatui::Frame, state: &SessionChooser
     ])
     .split(inner);
 
-    let status = match state.mode {
-        SessionChooserMode::Browse => "Enter attach/revive  n new  d delete  r refresh  q quit",
-        SessionChooserMode::New => "Enter create and attach  Esc cancel",
-        SessionChooserMode::ConfirmDelete { .. } => "y delete  n/Esc cancel",
-    };
-    frame.render_widget(Paragraph::new(status), chunks[0]);
+    let message = state.message.as_deref().unwrap_or("");
+    frame.render_widget(Paragraph::new(message), chunks[0]);
 
     if state.sessions.is_empty() {
         frame.render_widget(
@@ -1030,13 +1059,23 @@ fn render_tui_session_chooser(frame: &mut ratatui::Frame, state: &SessionChooser
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
     }
 
-    let message = state.message.as_deref().unwrap_or("");
-    frame.render_widget(Paragraph::new(message), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(ui::footer::build_context_hints_for_width(
+            &state.settings,
+            state.shortcut_context(),
+            chunks[2].width,
+        ))
+        .block(Block::default().borders(Borders::TOP)),
+        chunks[2],
+    );
 
     match &state.mode {
         SessionChooserMode::New => render_chooser_input(frame, area, &state.input),
         SessionChooserMode::ConfirmDelete { name } => render_chooser_delete(frame, area, name),
         SessionChooserMode::Browse => {}
+    }
+    if let Some(help) = &state.help {
+        ui::help::render_for_context(frame, area, help, &state.settings);
     }
 }
 
@@ -1379,6 +1418,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                     apply_selection_highlight(frame, sel);
                 }
             }
+            // Help is the final application layer so opening and closing it does
+            // not disturb or visually leak the underlying route and modals.
+            ui::help::render(frame, full, &app);
         })?;
         if let Some(text) = pending_clipboard_text {
             app.pending_copy_selection = None;
@@ -1419,25 +1461,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         continue;
                     }
 
-                    if keymap::is_quit(key)
-                        && !app.is_adding_workspace()
-                        && !app.is_adding_ssh_workspace()
-                        && app.ssh_history_picker.is_none()
-                        && app.agent_picker.is_none()
-                        && !app.is_confirming_delete()
-                        && !app.is_renaming_workspace()
-                        && !app.is_renaming_tab()
-                        && !app.is_committing()
-                        && !app.is_creating_branch()
-                        && !app.is_workspace_command_open()
-                        && !app.is_confirming_discard()
-                        && !app.is_confirming_stash_pull_pop()
-                        && !app.is_confirming_delete_branch()
-                        && !app.is_stashing()
-                        && !app.is_settings_open()
-                        && !app.is_quick_creating()
-                        && !matches!(app.focus, app::Focus::WsTerminal)
-                    {
+                    if handle_help_key(&mut app, key) {
+                        continue;
+                    }
+
+                    let shortcut =
+                        shortcuts::match_shortcut(&app, shortcuts::active_context(&app), key);
+                    if shortcut == Some(shortcuts::ShortcutId::Quit) {
                         break 'main;
                     }
 
@@ -1445,32 +1475,50 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         continue;
                     }
 
+                    if handle_context_global_shortcut(&mut app, key) {
+                        continue;
+                    }
+
                     match app.route {
                         Route::Home => {
                             if app.is_settings_open() {
                                 if app.confirming_delete_agent {
-                                    match key.code {
-                                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Confirm) => {
                                             app.confirm_delete_agent()
                                         }
+                                        Some(shortcuts::ShortcutId::Cancel) => {
+                                            app.cancel_delete_agent()
+                                        }
+                                        // This confirmation intentionally keeps its historic
+                                        // any-non-confirming-key cancellation behavior. Help is
+                                        // handled before modal input reaches this branch.
                                         _ => app.cancel_delete_agent(),
                                     }
                                 } else if app.is_adding_agent() {
                                     // New agent wizard text input
-                                    match key.code {
-                                        KeyCode::Enter => app.new_agent_advance(),
-                                        KeyCode::Esc => app.cancel_new_agent(),
-                                        KeyCode::Backspace => {
-                                            if let Some((_, _, buf)) = &mut app.new_agent_wizard {
-                                                buf.pop();
-                                            }
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Confirm) => {
+                                            app.new_agent_advance()
                                         }
-                                        KeyCode::Char(c) => {
-                                            if let Some((_, _, buf)) = &mut app.new_agent_wizard {
-                                                buf.push(c);
-                                            }
+                                        Some(shortcuts::ShortcutId::Cancel) => {
+                                            app.cancel_new_agent()
                                         }
-                                        _ => {}
+                                        _ => match key.code {
+                                            KeyCode::Backspace => {
+                                                if let Some((_, _, buf)) = &mut app.new_agent_wizard
+                                                {
+                                                    buf.pop();
+                                                }
+                                            }
+                                            KeyCode::Char(c) => {
+                                                if let Some((_, _, buf)) = &mut app.new_agent_wizard
+                                                {
+                                                    buf.push(c);
+                                                }
+                                            }
+                                            _ => {}
+                                        },
                                     }
                                 } else if app.is_editing_keybind() {
                                     // Keybinding rows capture the next key press
@@ -1482,63 +1530,73 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         app.apply_captured_keybind(binding);
                                     }
                                 } else if app.is_editing_setting() {
-                                    match key.code {
-                                        KeyCode::Enter => app.confirm_setting_edit(),
-                                        KeyCode::Esc => app.cancel_setting_edit(),
-                                        KeyCode::Backspace => {
-                                            if let Some(buf) = &mut app.settings_edit_buffer {
-                                                buf.pop();
-                                            }
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Confirm) => {
+                                            app.confirm_setting_edit()
                                         }
-                                        KeyCode::Char(c) => {
-                                            if let Some(buf) = &mut app.settings_edit_buffer {
-                                                buf.push(c);
-                                            }
+                                        Some(shortcuts::ShortcutId::Cancel) => {
+                                            app.cancel_setting_edit()
                                         }
-                                        _ => {}
+                                        _ => match key.code {
+                                            KeyCode::Backspace => {
+                                                if let Some(buf) = &mut app.settings_edit_buffer {
+                                                    buf.pop();
+                                                }
+                                            }
+                                            KeyCode::Char(c) => {
+                                                if let Some(buf) = &mut app.settings_edit_buffer {
+                                                    buf.push(c);
+                                                }
+                                            }
+                                            _ => {}
+                                        },
                                     }
                                 } else {
-                                    match key.code {
-                                        KeyCode::Esc | KeyCode::Char('S') => app.close_settings(),
-                                        KeyCode::Down | KeyCode::Char('j') => {
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Cancel) => app.close_settings(),
+                                        Some(shortcuts::ShortcutId::MoveDown) => {
                                             app.settings_selected = (app.settings_selected + 1)
                                                 .min(app.settings_count() - 1);
                                         }
-                                        KeyCode::Up | KeyCode::Char('k') => {
+                                        Some(shortcuts::ShortcutId::MoveUp) => {
                                             app.settings_selected =
                                                 app.settings_selected.saturating_sub(1);
                                         }
-                                        KeyCode::Enter | KeyCode::Char(' ') => {
+                                        Some(shortcuts::ShortcutId::ToggleSetting) => {
                                             app.toggle_selected_setting()
                                         }
-                                        KeyCode::Left | KeyCode::Char('h') => {
+                                        Some(shortcuts::ShortcutId::AdjustSettingLeft) => {
                                             app.adjust_selected_setting(-1)
                                         }
-                                        KeyCode::Right | KeyCode::Char('l') => {
+                                        Some(shortcuts::ShortcutId::AdjustSettingRight) => {
                                             app.adjust_selected_setting(1)
                                         }
-                                        KeyCode::Char('n') if app.settings_selected == 0 => {
+                                        Some(shortcuts::ShortcutId::NewAgent)
+                                            if app.settings_selected == 0 =>
+                                        {
                                             app.begin_new_agent()
                                         }
-                                        KeyCode::Char('d') if app.settings_selected == 0 => {
+                                        Some(shortcuts::ShortcutId::DeleteAgent)
+                                            if app.settings_selected == 0 =>
+                                        {
                                             app.begin_delete_agent()
                                         }
                                         _ => {}
                                     }
                                 }
                             } else if app.is_confirming_delete() {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         confirm_pending_delete(&mut app, &backend).await;
                                     }
-                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_delete_workspace()
                                     }
                                     _ => {}
                                 }
                             } else if app.ssh_history_picker.is_some() {
-                                match key.code {
-                                    KeyCode::Char('j') | KeyCode::Down => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::MoveDown) => {
                                         if let Some(ref mut picker) = app.ssh_history_picker {
                                             let len = app.ssh_history.len();
                                             if len > 0 {
@@ -1546,7 +1604,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Char('k') | KeyCode::Up => {
+                                    Some(shortcuts::ShortcutId::MoveUp) => {
                                         if let Some(ref mut picker) = app.ssh_history_picker {
                                             let len = app.ssh_history.len();
                                             if len > 0 {
@@ -1554,21 +1612,29 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Enter => app.select_ssh_history_entry(),
-                                    KeyCode::Char('n') => app.begin_new_ssh_from_picker(),
-                                    KeyCode::Esc => app.cancel_ssh_history_picker(),
+                                    Some(shortcuts::ShortcutId::Confirm) => {
+                                        app.select_ssh_history_entry()
+                                    }
+                                    Some(shortcuts::ShortcutId::SelectNewSsh) => {
+                                        app.begin_new_ssh_from_picker()
+                                    }
+                                    Some(shortcuts::ShortcutId::Cancel) => {
+                                        app.cancel_ssh_history_picker()
+                                    }
                                     _ => {}
                                 }
                                 continue;
                             } else if app.is_adding_ssh_workspace() {
-                                match key.code {
-                                    KeyCode::Esc => app.cancel_ssh_workspace(),
-                                    KeyCode::Tab | KeyCode::BackTab => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
+                                        app.cancel_ssh_workspace()
+                                    }
+                                    Some(shortcuts::ShortcutId::NextField) => {
                                         if let Some(ref mut input) = app.ssh_workspace_input {
                                             input.cycle_field();
                                         }
                                     }
-                                    KeyCode::Enter => {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         // Record history before taking the request
                                         if let Some(ref input) = app.ssh_workspace_input {
                                             let host = input.host.trim().to_string();
@@ -1603,62 +1669,70 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Char(c) => {
-                                        if let Some(ref mut input) = app.ssh_workspace_input {
-                                            input.active_input_mut().push(c);
+                                    _ => match key.code {
+                                        KeyCode::Char(c) => {
+                                            if let Some(ref mut input) = app.ssh_workspace_input {
+                                                input.active_input_mut().push(c);
+                                            }
                                         }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(ref mut input) = app.ssh_workspace_input {
-                                            input.active_input_mut().pop();
+                                        KeyCode::Backspace => {
+                                            if let Some(ref mut input) = app.ssh_workspace_input {
+                                                input.active_input_mut().pop();
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                                 continue;
                             } else if app.is_adding_workspace() {
                                 let editing =
                                     app.dir_browser.as_ref().map_or(false, |b| b.editing_path);
                                 if editing {
-                                    match key.code {
-                                        KeyCode::Esc => app.cancel_add_workspace(),
-                                        KeyCode::Enter => {
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Cancel) => {
+                                            app.cancel_add_workspace()
+                                        }
+                                        Some(shortcuts::ShortcutId::Confirm) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.confirm_path_edit();
                                             }
                                         }
-                                        KeyCode::Backspace => {
-                                            if let Some(browser) = app.dir_browser_mut() {
-                                                browser.path_input.pop();
-                                            }
-                                        }
-                                        KeyCode::Tab => {
+                                        Some(shortcuts::ShortcutId::NextField) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 apply_path_autocomplete(&mut browser.path_input);
                                                 browser.confirm_path_edit();
                                             }
                                         }
-                                        KeyCode::Char(c) => {
-                                            if let Some(browser) = app.dir_browser_mut() {
-                                                browser.path_input.push(c);
+                                        _ => match key.code {
+                                            KeyCode::Backspace => {
+                                                if let Some(browser) = app.dir_browser_mut() {
+                                                    browser.path_input.pop();
+                                                }
                                             }
-                                        }
-                                        _ => {}
+                                            KeyCode::Char(c) => {
+                                                if let Some(browser) = app.dir_browser_mut() {
+                                                    browser.path_input.push(c);
+                                                }
+                                            }
+                                            _ => {}
+                                        },
                                     }
                                 } else {
-                                    match key.code {
-                                        KeyCode::Esc => app.cancel_add_workspace(),
-                                        KeyCode::Char('j') | KeyCode::Down => {
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Cancel) => {
+                                            app.cancel_add_workspace()
+                                        }
+                                        Some(shortcuts::ShortcutId::MoveDown) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.move_selection(1);
                                             }
                                         }
-                                        KeyCode::Char('k') | KeyCode::Up => {
+                                        Some(shortcuts::ShortcutId::MoveUp) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.move_selection(-1);
                                             }
                                         }
-                                        KeyCode::Enter => {
+                                        Some(shortcuts::ShortcutId::Confirm) => {
                                             if let Some((name, path)) =
                                                 app.take_add_workspace_request()
                                             {
@@ -1676,27 +1750,27 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                     .await;
                                             }
                                         }
-                                        KeyCode::Backspace => {
+                                        Some(shortcuts::ShortcutId::GoToParent) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.go_up();
                                             }
                                         }
-                                        KeyCode::Char('.') => {
+                                        Some(shortcuts::ShortcutId::ToggleHidden) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.toggle_hidden();
                                             }
                                         }
-                                        KeyCode::Char('/') => {
+                                        Some(shortcuts::ShortcutId::EditPath) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.begin_path_edit();
                                             }
                                         }
-                                        KeyCode::Tab => {
+                                        Some(shortcuts::ShortcutId::EnterDirectory) => {
                                             if let Some(browser) = app.dir_browser_mut() {
                                                 browser.enter_selected();
                                             }
                                         }
-                                        KeyCode::Char(' ') => {
+                                        Some(shortcuts::ShortcutId::SelectDirectory) => {
                                             let child_path = app
                                                 .dir_browser
                                                 .as_ref()
@@ -1724,9 +1798,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                 }
                             } else if app.is_renaming_workspace() {
-                                match key.code {
-                                    KeyCode::Esc => app.cancel_rename_workspace(),
-                                    KeyCode::Enter => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
+                                        app.cancel_rename_workspace()
+                                    }
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some((id, name)) = app.take_rename_request_home() {
                                             let _ = backend
                                                 .cmd_tx
@@ -1734,21 +1810,23 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.rename_input_mut() {
-                                            input.pop();
+                                    _ => match key.code {
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app.rename_input_mut() {
+                                                input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.rename_input_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app.rename_input_mut() {
+                                                input.push(c);
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                             } else if app.moving_workspace {
-                                match key.code {
-                                    KeyCode::Down | KeyCode::Char('j') => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::MoveDown) => {
                                         if let Some((id, delta)) = app.swap_workspace(1) {
                                             let _ = backend
                                                 .cmd_tx
@@ -1756,7 +1834,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => {
+                                    Some(shortcuts::ShortcutId::MoveUp) => {
                                         if let Some((id, delta)) = app.swap_workspace(-1) {
                                             let _ = backend
                                                 .cmd_tx
@@ -1764,7 +1842,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('M') => {
+                                    Some(shortcuts::ShortcutId::MoveWorkspace) => {
                                         app.end_move_workspace();
                                     }
                                     _ => {}
@@ -1779,11 +1857,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             // A delete confirmation or quick-create can be raised
                             // from the summary, so service those modals first.
                             if app.is_confirming_delete() {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         confirm_pending_delete(&mut app, &backend).await;
                                     }
-                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_delete_workspace();
                                     }
                                     _ => {}
@@ -1803,11 +1881,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             // A delete confirmation can be raised from the sidebar while a
                             // workspace is open, so it must be answerable from this route too.
                             if app.is_confirming_delete() {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         confirm_pending_delete(&mut app, &backend).await;
                                     }
-                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_delete_workspace();
                                     }
                                     _ => {}
@@ -1842,33 +1920,33 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             .cloned()
                                             .map(|file| (id, file))
                                     };
-                                match key.code {
-                                    KeyCode::Esc => app.exit_review_mode(),
-                                    KeyCode::Tab => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Back) => app.exit_review_mode(),
+                                    Some(shortcuts::ShortcutId::ToggleReviewPane) => {
                                         app.focus = if app.focus == app::Focus::ReviewFiles {
                                             app::Focus::ReviewDiff
                                         } else {
                                             app::Focus::ReviewFiles
                                         };
                                     }
-                                    KeyCode::Char('P') => {
+                                    Some(shortcuts::ShortcutId::Push) => {
                                         let _ = backend.cmd_tx.send(Command::GitPush { id }).await;
                                     }
-                                    KeyCode::Char('O') => {
+                                    Some(shortcuts::ShortcutId::OpenPullRequest) => {
                                         let _ = backend
                                             .cmd_tx
                                             .send(Command::OpenPullRequest { id })
                                             .await;
                                     }
-                                    KeyCode::Char('J') => {
+                                    Some(shortcuts::ShortcutId::ReviewPageDown) => {
                                         app.review_diff_scroll =
                                             app.review_diff_scroll.saturating_add(10);
                                     }
-                                    KeyCode::Char('K') => {
+                                    Some(shortcuts::ShortcutId::ReviewPageUp) => {
                                         app.review_diff_scroll =
                                             app.review_diff_scroll.saturating_sub(10);
                                     }
-                                    KeyCode::Down | KeyCode::Char('j') => {
+                                    Some(shortcuts::ShortcutId::MoveDown) => {
                                         if app.focus == app::Focus::ReviewDiff {
                                             app.review_diff_scroll =
                                                 app.review_diff_scroll.saturating_add(1);
@@ -1884,7 +1962,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => {
+                                    Some(shortcuts::ShortcutId::MoveUp) => {
                                         if app.focus == app::Focus::ReviewDiff {
                                             app.review_diff_scroll =
                                                 app.review_diff_scroll.saturating_sub(1);
@@ -1899,7 +1977,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Enter => {
+                                    Some(shortcuts::ShortcutId::OpenReviewFile) => {
                                         if let Some((id, file)) = load_selected(&mut app) {
                                             app.review_diff_scroll = 0;
                                             let _ = backend
@@ -1918,13 +1996,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     .as_ref()
                                     .is_some_and(|p| p.custom_input.is_some());
                                 if in_custom {
-                                    match key.code {
-                                        KeyCode::Esc => {
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::Cancel) => {
                                             if let Some(picker) = app.agent_picker.as_mut() {
                                                 picker.custom_input = None;
                                             }
                                         }
-                                        KeyCode::Enter => {
+                                        Some(shortcuts::ShortcutId::Confirm) => {
                                             let entry = app.agent_picker.as_ref().and_then(|p| {
                                                 p.custom_input
                                                     .as_deref()
@@ -1942,36 +2020,40 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                             }
                                         }
-                                        KeyCode::Backspace => {
-                                            if let Some(input) = app
-                                                .agent_picker
-                                                .as_mut()
-                                                .and_then(|p| p.custom_input.as_mut())
-                                            {
-                                                input.pop();
+                                        _ => match key.code {
+                                            KeyCode::Backspace => {
+                                                if let Some(input) = app
+                                                    .agent_picker
+                                                    .as_mut()
+                                                    .and_then(|p| p.custom_input.as_mut())
+                                                {
+                                                    input.pop();
+                                                }
                                             }
-                                        }
-                                        KeyCode::Char(c) => {
-                                            if let Some(input) = app
-                                                .agent_picker
-                                                .as_mut()
-                                                .and_then(|p| p.custom_input.as_mut())
-                                            {
-                                                input.push(c);
+                                            KeyCode::Char(c) => {
+                                                if let Some(input) = app
+                                                    .agent_picker
+                                                    .as_mut()
+                                                    .and_then(|p| p.custom_input.as_mut())
+                                                {
+                                                    input.push(c);
+                                                }
                                             }
-                                        }
-                                        _ => {}
+                                            _ => {}
+                                        },
                                     }
                                 } else {
-                                    match key.code {
-                                        KeyCode::Char('j') | KeyCode::Down => {
+                                    match shortcut {
+                                        Some(shortcuts::ShortcutId::MoveDown) => {
                                             app.agent_picker_move(1)
                                         }
-                                        KeyCode::Char('k') | KeyCode::Up => {
+                                        Some(shortcuts::ShortcutId::MoveUp) => {
                                             app.agent_picker_move(-1)
                                         }
-                                        KeyCode::Esc => app.cancel_agent_picker(),
-                                        KeyCode::Enter => {
+                                        Some(shortcuts::ShortcutId::Cancel) => {
+                                            app.cancel_agent_picker()
+                                        }
+                                        Some(shortcuts::ShortcutId::Confirm) => {
                                             let selection = app
                                                 .agent_picker
                                                 .as_ref()
@@ -2000,28 +2082,32 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             if app.is_renaming_tab() {
-                                match key.code {
-                                    KeyCode::Esc => app.cancel_rename_tab(),
-                                    KeyCode::Enter => app.apply_rename_tab(),
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.rename_tab_input_mut() {
-                                            input.pop();
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => app.cancel_rename_tab(),
+                                    Some(shortcuts::ShortcutId::Confirm) => app.apply_rename_tab(),
+                                    _ => match key.code {
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app.rename_tab_input_mut() {
+                                                input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.rename_tab_input_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app.rename_tab_input_mut() {
+                                                input.push(c);
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                                 continue;
                             }
 
                             if app.is_renaming_workspace() {
-                                match key.code {
-                                    KeyCode::Esc => app.cancel_rename_workspace(),
-                                    KeyCode::Enter => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
+                                        app.cancel_rename_workspace()
+                                    }
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some((id, name)) = app.take_rename_request() {
                                             let _ = backend
                                                 .cmd_tx
@@ -2029,27 +2115,29 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.rename_input_mut() {
-                                            input.pop();
+                                    _ => match key.code {
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app.rename_input_mut() {
+                                                input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.rename_input_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app.rename_input_mut() {
+                                                input.push(c);
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                                 continue;
                             }
 
                             if app.is_creating_branch() {
-                                match key.code {
-                                    KeyCode::Esc => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_create_branch();
                                     }
-                                    KeyCode::Enter => {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(name) = app.create_branch_input.take() {
                                             let trimmed = name.trim().to_string();
                                             if !trimmed.is_empty() {
@@ -2064,27 +2152,29 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.create_branch_input.as_mut() {
-                                            input.pop();
+                                    _ => match key.code {
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app.create_branch_input.as_mut() {
+                                                input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.create_branch_input.as_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app.create_branch_input.as_mut() {
+                                                input.push(c);
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                                 continue;
                             }
 
                             if app.is_committing() {
-                                match key.code {
-                                    KeyCode::Esc => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.commit_input = None;
                                     }
-                                    KeyCode::Enter => {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(msg) = app.commit_input.take() {
                                             let trimmed = msg.trim().to_string();
                                             if !trimmed.is_empty() {
@@ -2098,24 +2188,26 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.commit_input.as_mut() {
-                                            input.pop();
+                                    _ => match key.code {
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app.commit_input.as_mut() {
+                                                input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.commit_input.as_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app.commit_input.as_mut() {
+                                                input.push(c);
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                                 continue;
                             }
 
                             if app.is_confirming_discard() {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(file) = app.take_discard_file() {
                                             let _ = backend
                                                 .cmd_tx
@@ -2123,7 +2215,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Char('n') | KeyCode::Esc => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_discard();
                                     }
                                     _ => {}
@@ -2132,8 +2224,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             if app.is_confirming_discard_all() {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(ws_id) = app.take_discard_all() {
                                             app.begin_git_op(ws_id);
                                             let _ = backend
@@ -2142,7 +2234,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Char('n') | KeyCode::Esc => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_discard_all();
                                     }
                                     _ => {}
@@ -2151,8 +2243,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             if app.is_confirming_stash_pull_pop() {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(ws_id) = app.take_stash_pull_pop() {
                                             app.begin_git_op(ws_id);
                                             let _ = backend
@@ -2161,7 +2253,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Char('n') | KeyCode::Esc => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_stash_pull_pop();
                                     }
                                     _ => {}
@@ -2170,8 +2262,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             if app.is_confirming_delete_branch() {
-                                match key.code {
-                                    KeyCode::Char('y') => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(target) = app.take_delete_branch() {
                                             match target {
                                                 app::DeleteBranchTarget::Local { branch } => {
@@ -2201,7 +2293,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.cancel_delete_branch();
                                     }
                                     _ => {}
@@ -2210,11 +2302,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             if app.is_stashing() {
-                                match key.code {
-                                    KeyCode::Esc => {
+                                match shortcut {
+                                    Some(shortcuts::ShortcutId::Cancel) => {
                                         app.stash_input = None;
                                     }
-                                    KeyCode::Enter => {
+                                    Some(shortcuts::ShortcutId::Confirm) => {
                                         if let Some(msg) = app.stash_input.take() {
                                             let message = if msg.trim().is_empty() {
                                                 None
@@ -2227,23 +2319,25 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .await;
                                         }
                                     }
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.stash_input.as_mut() {
-                                            input.pop();
+                                    _ => match key.code {
+                                        KeyCode::Backspace => {
+                                            if let Some(input) = app.stash_input.as_mut() {
+                                                input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.stash_input.as_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(input) = app.stash_input.as_mut() {
+                                                input.push(c);
+                                            }
                                         }
-                                    }
-                                    _ => {}
+                                        _ => {}
+                                    },
                                 }
                                 continue;
                             }
 
                             // Configurable hotkey for terminal command mode.
-                            if keymap::matches_keybinding(key, &app.settings.passthrough_key)
+                            if shortcut == Some(shortcuts::ShortcutId::ToggleTerminalCommandMode)
                                 && matches!(app.focus, app::Focus::WsTerminal)
                             {
                                 app.toggle_terminal_command_mode();
@@ -2326,7 +2420,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
                             // Configurable "scroll terminal to bottom" hotkey
                             // (resets scrollback). Works from any workspace pane.
-                            if keymap::matches_keybinding(key, &app.settings.scroll_to_bottom_key) {
+                            if shortcut == Some(shortcuts::ShortcutId::ScrollTerminalToBottom) {
                                 let tab_id = app.active_tab_id();
                                 app.reset_terminal_scrollback(id, &tab_id);
                                 continue;
@@ -2335,16 +2429,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             // Configurable fullscreen hotkey. Works from any
                             // workspace pane once terminal passthrough has
                             // yielded command mode or focus is elsewhere.
-                            if keymap::matches_keybinding(
-                                key,
-                                &app.settings.terminal_fullscreen_key,
-                            ) {
+                            if shortcut == Some(shortcuts::ShortcutId::ToggleFullscreen) {
                                 app.toggle_terminal_fullscreen();
                                 continue;
                             }
 
                             // Shift+Y toggles YOLO mode from any workspace pane.
-                            if key.code == KeyCode::Char('Y') {
+                            if shortcut == Some(shortcuts::ShortcutId::ToggleYolo) {
                                 app.toggle_yolo_mode();
                                 if app.workspace_agent_running(id) {
                                     app.suppress_next_agent_exit(id);
@@ -2375,7 +2466,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            if key.code == KeyCode::Esc {
+                            if shortcut == Some(shortcuts::ShortcutId::Back) {
                                 if matches!(app.focus, app::Focus::WsTerminal) {
                                     app.focus = app::Focus::WsTerminalTabs;
                                 } else {
@@ -2385,8 +2476,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
 
                             if matches!(app.focus, app::Focus::WsTerminal)
-                                && key.code != KeyCode::Tab
-                                && key.code != KeyCode::BackTab
+                                && should_forward_terminal_command_key(shortcut, key)
                             {
                                 if let Some(bytes) = key_to_terminal_bytes(key) {
                                     let _ = backend
@@ -2403,8 +2493,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 }
                             }
 
-                            match key.code {
-                                KeyCode::Enter => {
+                            match shortcut {
+                                Some(shortcuts::ShortcutId::ToggleLogItem) => {
                                     if matches!(app.focus, app::Focus::WsLog) {
                                         match app.log_item_at(app.ws_selected_commit) {
                                             app::LogItem::UncommittedHeader => {
@@ -2460,29 +2550,21 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         }
                                     }
                                 }
-                                KeyCode::Tab => {
-                                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                        app.focus = cycle_workspace_focus_reverse(app.focus);
-                                    } else {
-                                        app.focus = cycle_workspace_focus(app.focus);
-                                    }
+                                Some(shortcuts::ShortcutId::NextPane) => {
+                                    app.focus = cycle_workspace_focus(app.focus);
                                 }
-                                KeyCode::BackTab => {
+                                Some(shortcuts::ShortcutId::PreviousPane) => {
                                     app.focus = cycle_workspace_focus_reverse(app.focus)
                                 }
-                                KeyCode::Char(':') if workspace_command_shortcut_enabled(&app) => {
-                                    app.begin_workspace_command();
-                                }
-                                KeyCode::Char(';')
-                                    if key.modifiers.contains(KeyModifiers::SHIFT)
-                                        && workspace_command_shortcut_enabled(&app) =>
+                                Some(shortcuts::ShortcutId::OpenWorkspaceCommand)
+                                    if workspace_command_shortcut_enabled(&app) =>
                                 {
                                     app.begin_workspace_command();
                                 }
-                                KeyCode::Char('g') => {
+                                Some(shortcuts::ShortcutId::RefreshGit) => {
                                     let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
                                 }
-                                KeyCode::Down | KeyCode::Char('j') => match app.focus {
+                                Some(shortcuts::ShortcutId::MoveDown) => match app.focus {
                                     app::Focus::WsLog => {
                                         app.move_workspace_commit_selection(1);
                                         if let Some(file) = app.selected_log_file() {
@@ -2511,7 +2593,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     _ => {}
                                 },
-                                KeyCode::Up | KeyCode::Char('k') => match app.focus {
+                                Some(shortcuts::ShortcutId::MoveUp) => match app.focus {
                                     app::Focus::WsLog => {
                                         app.move_workspace_commit_selection(-1);
                                         if let Some(file) = app.selected_log_file() {
@@ -2540,7 +2622,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     _ => {}
                                 },
-                                KeyCode::Char(' ')
+                                Some(shortcuts::ShortcutId::ToggleStage)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && matches!(
                                             app.log_item_at(app.ws_selected_commit),
@@ -2561,26 +2643,26 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         let _ = backend.cmd_tx.send(cmd).await;
                                     }
                                 }
-                                KeyCode::Char('+')
+                                Some(shortcuts::ShortcutId::StageAll)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
                                     let _ = backend.cmd_tx.send(Command::GitStageAll { id }).await;
                                 }
-                                KeyCode::Char('-')
+                                Some(shortcuts::ShortcutId::UnstageAll)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
                                     let _ =
                                         backend.cmd_tx.send(Command::GitUnstageAll { id }).await;
                                 }
-                                KeyCode::Char('c')
+                                Some(shortcuts::ShortcutId::Commit)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
                                     app.commit_input = Some(String::new());
                                 }
-                                KeyCode::Char('d')
+                                Some(shortcuts::ShortcutId::Discard)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && matches!(
                                             app.log_item_at(app.ws_selected_commit),
@@ -2590,7 +2672,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 {
                                     app.begin_discard();
                                 }
-                                KeyCode::Char('D')
+                                Some(shortcuts::ShortcutId::DiscardAll)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
@@ -2603,13 +2685,13 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         app.begin_discard_all(id);
                                     }
                                 }
-                                KeyCode::Char('s')
+                                Some(shortcuts::ShortcutId::Stash)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
                                     app.stash_input = Some(String::new());
                                 }
-                                KeyCode::Char('S')
+                                Some(shortcuts::ShortcutId::StashAll)
                                     if matches!(app.focus, app::Focus::WsLog)
                                         && app.log_item_is_file_context() =>
                                 {
@@ -2624,35 +2706,37 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             backend.cmd_tx.send(Command::GitStashAll { id }).await;
                                     }
                                 }
-                                KeyCode::Char('t') if matches!(app.focus, app::Focus::WsLog) => {
+                                Some(shortcuts::ShortcutId::ToggleTags)
+                                    if matches!(app.focus, app::Focus::WsLog) =>
+                                {
                                     app.ws_tag_filter = !app.ws_tag_filter;
                                     app.ws_selected_commit = app
                                         .ws_selected_commit
                                         .min(app.total_log_items().saturating_sub(1));
                                 }
-                                KeyCode::Char('c')
+                                Some(shortcuts::ShortcutId::CreateBranch)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     if matches!(app.ws_branch_sub_pane, app::BranchSubPane::Local) {
                                         app.begin_create_branch();
                                     }
                                 }
-                                KeyCode::Char('D')
+                                Some(shortcuts::ShortcutId::DeleteBranch)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     app.begin_delete_branch();
                                 }
-                                KeyCode::Char('[')
+                                Some(shortcuts::ShortcutId::SelectLocalBranches)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     app.toggle_branch_sub_pane(app::BranchSubPane::Local);
                                 }
-                                KeyCode::Char(']')
+                                Some(shortcuts::ShortcutId::SelectRemoteBranches)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     app.toggle_branch_sub_pane(app::BranchSubPane::Remote);
                                 }
-                                KeyCode::Char(' ')
+                                Some(shortcuts::ShortcutId::CheckoutBranch)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     match app.ws_branch_sub_pane {
@@ -2692,37 +2776,41 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         }
                                     }
                                 }
-                                KeyCode::Char('p')
+                                Some(shortcuts::ShortcutId::Pull)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     let _ = backend.cmd_tx.send(Command::GitPull { id }).await;
                                     app.begin_git_op(id);
                                 }
-                                KeyCode::Char('f')
+                                Some(shortcuts::ShortcutId::Fetch)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     let _ = backend.cmd_tx.send(Command::GitFetch { id }).await;
                                     app.begin_git_op(id);
                                 }
-                                KeyCode::Char('P')
+                                Some(shortcuts::ShortcutId::Push)
                                     if matches!(app.focus, app::Focus::WsBranches) =>
                                 {
                                     let _ = backend.cmd_tx.send(Command::GitPush { id }).await;
                                     app.begin_git_op(id);
                                 }
-                                KeyCode::Char('1') => app.set_active_tab_index(0),
-                                KeyCode::Char('2') => app.set_active_tab_index(1),
-                                KeyCode::Right | KeyCode::Char('l')
+                                Some(shortcuts::ShortcutId::SelectFirstTab) => {
+                                    app.set_active_tab_index(0)
+                                }
+                                Some(shortcuts::ShortcutId::SelectSecondTab) => {
+                                    app.set_active_tab_index(1)
+                                }
+                                Some(shortcuts::ShortcutId::NextTerminalTab)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     app.move_terminal_tab(1);
                                 }
-                                KeyCode::Left | KeyCode::Char('h')
+                                Some(shortcuts::ShortcutId::PreviousTerminalTab)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     app.move_terminal_tab(-1);
                                 }
-                                KeyCode::Char('n')
+                                Some(shortcuts::ShortcutId::NewShellTab)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     app.add_shell_tab();
@@ -2738,7 +2826,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         })
                                         .await;
                                 }
-                                KeyCode::Char('x')
+                                Some(shortcuts::ShortcutId::CloseTerminalTab)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     if let Some(closed) = app.close_active_tab() {
@@ -2752,17 +2840,17 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             .await;
                                     }
                                 }
-                                KeyCode::Char('r')
+                                Some(shortcuts::ShortcutId::RenameTerminalTab)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     app.begin_rename_tab();
                                 }
-                                KeyCode::Char('c')
+                                Some(shortcuts::ShortcutId::SwitchAgent)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     app.begin_agent_picker(id);
                                 }
-                                KeyCode::Char('a')
+                                Some(shortcuts::ShortcutId::StartActiveTerminal)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     let _ = backend
@@ -2778,40 +2866,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         .await;
                                     app.focus = app::Focus::WsTerminal;
                                 }
-                                KeyCode::Char('A')
-                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
-                                {
-                                    let kind = app.active_tab_kind();
-                                    if kind == TerminalKind::Agent
-                                        && app.workspace_agent_running(id)
-                                    {
-                                        app.suppress_next_agent_exit(id);
-                                    }
-                                    let _ = backend
-                                        .cmd_tx
-                                        .send(Command::StopTerminal {
-                                            id,
-                                            kind,
-                                            tab_id: Some(app.active_tab_id()),
-                                        })
-                                        .await;
-                                }
-                                KeyCode::Char('s')
-                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
-                                {
-                                    let _ = backend
-                                        .cmd_tx
-                                        .send(Command::StartTerminal {
-                                            id,
-                                            kind: app.active_tab_kind(),
-                                            tab_id: Some(app.active_tab_id()),
-                                            cmd: Vec::new(),
-                                            cols: app.terminal_content_size.0,
-                                            rows: app.terminal_content_size.1,
-                                        })
-                                        .await;
-                                }
-                                KeyCode::Char('S')
+                                Some(shortcuts::ShortcutId::StopActiveTerminal)
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
                                     let kind = app.active_tab_kind();
@@ -2864,7 +2919,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    handle_mouse(&mut app, &backend.cmd_tx, &mut terminal, mouse).await;
+                    if app.help.is_none() {
+                        handle_mouse(&mut app, &backend.cmd_tx, &mut terminal, mouse).await;
+                    }
                 }
                 _ => {}
             }
@@ -2905,9 +2962,10 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
     if !app.is_quick_creating() {
         return false;
     }
-    match key.code {
-        KeyCode::Esc => app.cancel_quick_create(),
-        KeyCode::Tab | KeyCode::BackTab => {
+    let shortcut = shortcuts::match_shortcut(app, shortcuts::ShortcutContext::QuickCreateText, key);
+    match shortcut {
+        Some(shortcuts::ShortcutId::Cancel) => app.cancel_quick_create(),
+        Some(shortcuts::ShortcutId::NextField | shortcuts::ShortcutId::PreviousField) => {
             if let Some(qc) = app.quick_create.as_mut() {
                 if !qc.expanded {
                     qc.expanded = true;
@@ -2920,7 +2978,7 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                             qc.branch_filter = b.display.clone();
                         }
                     }
-                    if key.code == KeyCode::BackTab {
+                    if shortcut == Some(shortcuts::ShortcutId::PreviousField) {
                         qc.prev_field();
                     } else {
                         qc.next_field();
@@ -2928,7 +2986,7 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 }
             }
         }
-        KeyCode::Left | KeyCode::Right => {
+        Some(shortcuts::ShortcutId::PreviousChoice | shortcuts::ShortcutId::NextChoice) => {
             // ←/→ toggle the mode field, and cycle configured agents while the
             // agent field is focused in selection mode. Once expanded into
             // command-edit mode (or on other fields) the arrows do nothing — so
@@ -2937,19 +2995,23 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 if qc.field == app::QuickCreateField::Mode {
                     qc.cycle_mode();
                 } else if qc.field == app::QuickCreateField::Agent && !qc.agent_command_edit {
-                    let delta = if key.code == KeyCode::Left { -1 } else { 1 };
+                    let delta = if shortcut == Some(shortcuts::ShortcutId::PreviousChoice) {
+                        -1
+                    } else {
+                        1
+                    };
                     qc.cycle_agent(&app.settings.agents, delta);
                 }
             }
         }
-        KeyCode::Up | KeyCode::Down => {
+        Some(shortcuts::ShortcutId::MoveUp | shortcuts::ShortcutId::MoveDown) => {
             // ↑/↓ move the branch-picker highlight.
             if let Some(qc) = app.quick_create.as_mut() {
                 if qc.field == app::QuickCreateField::Branch {
                     let len = qc.filtered_branches().len();
                     if len > 0 {
                         let cur = qc.branch_selected.min(len - 1);
-                        qc.branch_selected = if key.code == KeyCode::Down {
+                        qc.branch_selected = if shortcut == Some(shortcuts::ShortcutId::MoveDown) {
                             (cur + 1).min(len - 1)
                         } else {
                             cur.saturating_sub(1)
@@ -2958,7 +3020,7 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                 }
             }
         }
-        KeyCode::Enter => {
+        Some(shortcuts::ShortcutId::Confirm) => {
             // First Enter on the agent selector expands the chosen agent into
             // its full launch command for editing, instead of creating. Read the
             // name under an immutable borrow, then mutate (so `&app.settings` and
@@ -3040,31 +3102,58 @@ async fn handle_quick_create_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
                     .await;
             }
         }
-        KeyCode::Backspace => {
-            if let Some(qc) = app.quick_create.as_mut() {
-                // Selector fields (mode, agent profile cycling) have no text
-                // buffer; `active_input_mut` returns None for them.
-                if let Some(input) = qc.active_input_mut() {
-                    input.pop();
-                    if qc.field == app::QuickCreateField::Branch {
-                        qc.branch_selected = 0;
+        _ => match key.code {
+            KeyCode::Backspace => {
+                if let Some(qc) = app.quick_create.as_mut() {
+                    // Selector fields (mode, agent profile cycling) have no text
+                    // buffer; `active_input_mut` returns None for them.
+                    if let Some(input) = qc.active_input_mut() {
+                        input.pop();
+                        if qc.field == app::QuickCreateField::Branch {
+                            qc.branch_selected = 0;
+                        }
                     }
                 }
             }
-        }
-        KeyCode::Char(c) => {
-            if let Some(qc) = app.quick_create.as_mut() {
-                if let Some(input) = qc.active_input_mut() {
-                    input.push(c);
-                    if qc.field == app::QuickCreateField::Branch {
-                        qc.branch_selected = 0;
+            KeyCode::Char(c) => {
+                if let Some(qc) = app.quick_create.as_mut() {
+                    if let Some(input) = qc.active_input_mut() {
+                        input.push(c);
+                        if qc.field == app::QuickCreateField::Branch {
+                            qc.branch_selected = 0;
+                        }
                     }
                 }
             }
-        }
-        _ => {}
+            _ => {}
+        },
     }
     true
+}
+
+/// Opens shortcut help for an eligible application context, or handles all
+/// navigation while help is already open.
+fn handle_help_key(app: &mut TuiApp, key: KeyEvent) -> bool {
+    let context = shortcuts::underlying_context(app);
+    shortcuts::handle_help_input(&mut app.help, &app.settings, context, key)
+}
+
+/// Handles application-wide commands that are available only in selected
+/// catalog contexts. In particular this keeps Ctrl+B out of normal PTY input.
+fn handle_context_global_shortcut(app: &mut TuiApp, key: KeyEvent) -> bool {
+    let context = shortcuts::underlying_context(app);
+    if shortcuts::match_shortcut(app, context, key) == Some(shortcuts::ShortcutId::CycleSidebar) {
+        app.cycle_sidebar_mode();
+        return true;
+    }
+    false
+}
+
+fn should_forward_terminal_command_key(
+    shortcut: Option<shortcuts::ShortcutId>,
+    key: KeyEvent,
+) -> bool {
+    shortcut.is_none() && !matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
 }
 
 fn workspace_hotkeys_allowed(app: &TuiApp) -> bool {
@@ -3096,12 +3185,11 @@ async fn handle_global_workspace_hotkey(
         return false;
     }
 
-    let switch_delta = if keymap::matches_keybinding(key, &app.settings.prev_workspace_key) {
-        Some(-1)
-    } else if keymap::matches_keybinding(key, &app.settings.next_workspace_key) {
-        Some(1)
-    } else {
-        None
+    let switch_delta = match shortcuts::match_shortcut(app, shortcuts::underlying_context(app), key)
+    {
+        Some(shortcuts::ShortcutId::PreviousWorkspace) => Some(-1),
+        Some(shortcuts::ShortcutId::NextWorkspace) => Some(1),
+        _ => None,
     };
 
     if let Some(delta) = switch_delta {
@@ -3143,21 +3231,21 @@ async fn handle_sidebar_key(
     key: KeyEvent,
     allow_modals: bool,
 ) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let action = shortcuts::match_shortcut(app, shortcuts::underlying_context(app), key);
     if app.sidebar_mode == app::SidebarMode::Rail && app.sidebar_popout.is_some() {
         // Pop-out open: navigate/open the repo's workspaces.
-        match key.code {
-            KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
-            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => app.close_sidebar_popout(),
-            KeyCode::Down | KeyCode::Char('j') => app.move_popout_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => app.move_popout_selection(-1),
-            KeyCode::Enter | KeyCode::Char('l') => {
+        match action {
+            Some(shortcuts::ShortcutId::CycleSidebar) => app.cycle_sidebar_mode(),
+            Some(shortcuts::ShortcutId::ClosePopout) => app.close_sidebar_popout(),
+            Some(shortcuts::ShortcutId::MoveDown) => app.move_popout_selection(1),
+            Some(shortcuts::ShortcutId::MoveUp) => app.move_popout_selection(-1),
+            Some(shortcuts::ShortcutId::Open) => {
                 if let Some(id) = app.selected_popout_workspace_id() {
                     app.close_sidebar_popout();
                     activate_workspace(app, backend, id).await;
                 }
             }
-            KeyCode::Char('D') => {
+            Some(shortcuts::ShortcutId::Delete) => {
                 if let Some(id) = app.selected_popout_workspace_id() {
                     app.pending_delete_workspace = Some(id);
                 }
@@ -3166,12 +3254,12 @@ async fn handle_sidebar_key(
         }
     } else if app.sidebar_mode == app::SidebarMode::Rail {
         // Rail, no pop-out: navigate repos; Enter opens the pop-out.
-        match key.code {
-            KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
-            KeyCode::Down | KeyCode::Char('j') => app.move_rail_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => app.move_rail_selection(-1),
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.toggle_sidebar_popout(),
-            KeyCode::Char('n') => match app.selected_rail_repo() {
+        match action {
+            Some(shortcuts::ShortcutId::CycleSidebar) => app.cycle_sidebar_mode(),
+            Some(shortcuts::ShortcutId::MoveDown) => app.move_rail_selection(1),
+            Some(shortcuts::ShortcutId::MoveUp) => app.move_rail_selection(-1),
+            Some(shortcuts::ShortcutId::Open) => app.toggle_sidebar_popout(),
+            Some(shortcuts::ShortcutId::NewWorkspace) => match app.selected_rail_repo() {
                 Some(repo_id) => {
                     app.begin_quick_create(repo_id);
                     // Populate the existing-branch picker in the background.
@@ -3187,7 +3275,7 @@ async fn handle_sidebar_key(
                     ));
                 }
             },
-            KeyCode::Char('N') if allow_modals => {
+            Some(shortcuts::ShortcutId::AddRepository) if allow_modals => {
                 let cwd = std::env::current_dir()
                     .unwrap_or_else(|_| PathBuf::from("."))
                     .display()
@@ -3195,23 +3283,23 @@ async fn handle_sidebar_key(
                 app.begin_add_workspace(cwd);
             }
             // `D` — remove the selected repository.
-            KeyCode::Char('D') => {
+            Some(shortcuts::ShortcutId::Delete) => {
                 if let Some(repo_id) = app.selected_rail_repo() {
                     app.pending_delete_repo = Some(repo_id);
                 }
             }
-            KeyCode::Char('f') => {
+            Some(shortcuts::ShortcutId::ToggleReviewFilter) => {
                 app.sidebar_review_filter = !app.sidebar_review_filter;
             }
-            KeyCode::Char('S') if allow_modals => app.open_settings(),
+            Some(shortcuts::ShortcutId::OpenSettings) if allow_modals => app.open_settings(),
             _ => return false,
         }
     } else {
         // Sidebar (Repository -> Workspace tree) is focused.
-        match key.code {
-            KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
+        match action {
+            Some(shortcuts::ShortcutId::CycleSidebar) => app.cycle_sidebar_mode(),
             // `n` — new workspace under the selected repo.
-            KeyCode::Char('n') => match app.sidebar_context_repo() {
+            Some(shortcuts::ShortcutId::NewWorkspace) => match app.sidebar_context_repo() {
                 Some(repo_id) => {
                     app.begin_quick_create(repo_id);
                     // Populate the existing-branch picker in the background.
@@ -3228,27 +3316,27 @@ async fn handle_sidebar_key(
                 }
             },
             // `N` — add (register) a new repository.
-            KeyCode::Char('N') if allow_modals => {
+            Some(shortcuts::ShortcutId::AddRepository) if allow_modals => {
                 let cwd = std::env::current_dir()
                     .unwrap_or_else(|_| PathBuf::from("."))
                     .display()
                     .to_string();
                 app.begin_add_workspace(cwd);
             }
-            KeyCode::Down | KeyCode::Char('j') => app.move_sidebar_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => app.move_sidebar_selection(-1),
-            KeyCode::Left | KeyCode::Char('h') => {
+            Some(shortcuts::ShortcutId::MoveDown) => app.move_sidebar_selection(1),
+            Some(shortcuts::ShortcutId::MoveUp) => app.move_sidebar_selection(-1),
+            Some(shortcuts::ShortcutId::Collapse) => {
                 if let Some(app::SidebarRow::Repo(id)) = app.selected_sidebar_row() {
                     app.collapsed_repos.insert(id);
                 }
             }
-            KeyCode::Right => {
+            Some(shortcuts::ShortcutId::Expand) => {
                 if let Some(app::SidebarRow::Repo(id)) = app.selected_sidebar_row() {
                     app.collapsed_repos.remove(&id);
                 }
             }
             // `Enter` — open the repo's status summary, or open a workspace.
-            KeyCode::Enter => match app.selected_sidebar_row() {
+            Some(shortcuts::ShortcutId::Open) => match app.selected_sidebar_row() {
                 Some(app::SidebarRow::Repo(id)) => app.open_repo_summary(id),
                 Some(app::SidebarRow::Workspace(id)) => {
                     activate_workspace(app, backend, id).await;
@@ -3257,23 +3345,18 @@ async fn handle_sidebar_key(
             },
             // `l` — expand the repo (collapse/expand stays on h/l/arrows), or
             // open a workspace.
-            KeyCode::Char('l') => match app.selected_sidebar_row() {
+            Some(shortcuts::ShortcutId::ExpandOrOpen) => match app.selected_sidebar_row() {
                 Some(app::SidebarRow::Repo(_)) => app.toggle_collapse_selected(),
                 Some(app::SidebarRow::Workspace(id)) => {
                     activate_workspace(app, backend, id).await;
                 }
                 None => {}
             },
-            KeyCode::Char('a') if allow_modals => {
-                let cwd = std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .display()
-                    .to_string();
-                app.begin_add_workspace(cwd);
+            Some(shortcuts::ShortcutId::AddSshRepository) if allow_modals => {
+                app.begin_add_ssh_workspace()
             }
-            KeyCode::Char('A') if allow_modals => app.begin_add_ssh_workspace(),
             // `D` — delete the selected workspace, or remove the selected repository.
-            KeyCode::Char('D') => match app.selected_sidebar_row() {
+            Some(shortcuts::ShortcutId::Delete) => match app.selected_sidebar_row() {
                 Some(app::SidebarRow::Workspace(id)) => {
                     app.pending_delete_workspace = Some(id);
                 }
@@ -3282,14 +3365,14 @@ async fn handle_sidebar_key(
                 }
                 None => {}
             },
-            KeyCode::Char('R') => {
+            Some(shortcuts::ShortcutId::Review) => {
                 if let Some(id) = app.selected_sidebar_workspace_id() {
                     activate_workspace(app, backend, id).await;
                     app.enter_review_mode();
                     let _ = backend.cmd_tx.send(Command::LoadBranchDiff { id }).await;
                 }
             }
-            KeyCode::Char(' ') => {
+            Some(shortcuts::ShortcutId::ToggleReady) => {
                 if let Some(id) = app.selected_sidebar_workspace_id() {
                     let ready = app
                         .workspaces
@@ -3303,15 +3386,15 @@ async fn handle_sidebar_key(
                         .await;
                 }
             }
-            KeyCode::Char('f') => {
+            Some(shortcuts::ShortcutId::ToggleReviewFilter) => {
                 app.sidebar_review_filter = !app.sidebar_review_filter;
             }
-            KeyCode::Char('g') => {
+            Some(shortcuts::ShortcutId::RefreshGit) => {
                 if let Some(id) = app.selected_sidebar_workspace_id() {
                     let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
                 }
             }
-            KeyCode::Char('S') if allow_modals => app.open_settings(),
+            Some(shortcuts::ShortcutId::OpenSettings) if allow_modals => app.open_settings(),
             _ => return false,
         }
     }
@@ -3322,19 +3405,18 @@ async fn handle_sidebar_key(
 /// list, open the selected one, or step back to Home. Returns `true` when the
 /// key was consumed.
 async fn handle_repo_summary_key(app: &mut TuiApp, backend: &Backend, key: KeyEvent) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Char('b') if ctrl => app.cycle_sidebar_mode(),
-        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => app.go_home(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_repo_summary_selection(1),
-        KeyCode::Up | KeyCode::Char('k') => app.move_repo_summary_selection(-1),
-        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+    match shortcuts::match_shortcut(app, shortcuts::ShortcutContext::RepoSummary, key) {
+        Some(shortcuts::ShortcutId::CycleSidebar) => app.cycle_sidebar_mode(),
+        Some(shortcuts::ShortcutId::Back) => app.go_home(),
+        Some(shortcuts::ShortcutId::MoveDown) => app.move_repo_summary_selection(1),
+        Some(shortcuts::ShortcutId::MoveUp) => app.move_repo_summary_selection(-1),
+        Some(shortcuts::ShortcutId::Open) => {
             if let Some(id) = app.selected_repo_summary_workspace_id() {
                 activate_workspace(app, backend, id).await;
             }
         }
         // `n` — new workspace under this repo (mirrors the empty-state hint).
-        KeyCode::Char('n') => {
+        Some(shortcuts::ShortcutId::NewWorkspace) => {
             if let Some(repo_id) = app.repo_summary_repo_id() {
                 app.begin_quick_create(repo_id);
                 let _ = backend
@@ -3344,12 +3426,12 @@ async fn handle_repo_summary_key(app: &mut TuiApp, backend: &Backend, key: KeyEv
             }
         }
         // `D` — delete the selected workspace.
-        KeyCode::Char('D') => {
+        Some(shortcuts::ShortcutId::Delete) => {
             if let Some(id) = app.selected_repo_summary_workspace_id() {
                 app.pending_delete_workspace = Some(id);
             }
         }
-        KeyCode::Char('g') => {
+        Some(shortcuts::ShortcutId::RefreshGit) => {
             if let Some(id) = app.selected_repo_summary_workspace_id() {
                 let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
             }
@@ -3369,9 +3451,11 @@ async fn handle_workspace_command_key(
         return false;
     }
 
-    match key.code {
-        KeyCode::Esc => app.close_workspace_command(),
-        KeyCode::Enter => {
+    let action =
+        shortcuts::match_shortcut(app, shortcuts::ShortcutContext::WorkspaceCommandText, key);
+    match action {
+        Some(shortcuts::ShortcutId::Cancel) => app.close_workspace_command(),
+        Some(shortcuts::ShortcutId::RunCommand) => {
             if let Some(command) = app.take_workspace_command_request() {
                 let _ = backend
                     .cmd_tx
@@ -3379,52 +3463,54 @@ async fn handle_workspace_command_key(
                     .await;
             }
         }
-        KeyCode::Left => {
-            if let Some(state) = app.workspace_command_mut() {
-                state.input.move_left();
-            }
-        }
-        KeyCode::Right => {
-            if let Some(state) = app.workspace_command_mut() {
-                state.input.move_right();
-            }
-        }
-        KeyCode::Home => {
-            if let Some(state) = app.workspace_command_mut() {
-                state.input.move_home();
-            }
-        }
-        KeyCode::End => {
-            if let Some(state) = app.workspace_command_mut() {
-                state.input.move_end();
-            }
-        }
-        KeyCode::Backspace => {
-            if let Some(state) = app.workspace_command_mut() {
-                if !state.running {
-                    state.input.backspace();
+        Some(shortcuts::ShortcutId::OutputUp) => app.scroll_workspace_command_output(-1),
+        Some(shortcuts::ShortcutId::OutputDown) => app.scroll_workspace_command_output(1),
+        Some(shortcuts::ShortcutId::OutputPageUp) => app.scroll_workspace_command_output(-10),
+        Some(shortcuts::ShortcutId::OutputPageDown) => app.scroll_workspace_command_output(10),
+        _ => match key.code {
+            KeyCode::Left => {
+                if let Some(state) = app.workspace_command_mut() {
+                    state.input.move_left();
                 }
             }
-        }
-        KeyCode::Delete => {
-            if let Some(state) = app.workspace_command_mut() {
-                if !state.running {
-                    state.input.delete();
+            KeyCode::Right => {
+                if let Some(state) = app.workspace_command_mut() {
+                    state.input.move_right();
                 }
             }
-        }
-        KeyCode::Up => app.scroll_workspace_command_output(-1),
-        KeyCode::Down => app.scroll_workspace_command_output(1),
-        KeyCode::PageUp => app.scroll_workspace_command_output(-10),
-        KeyCode::PageDown => app.scroll_workspace_command_output(10),
-        KeyCode::Char(c) => {
-            if let Some(state) = app.workspace_command_mut() {
-                if !state.running {
-                    state.input.insert_char(c);
+            KeyCode::Home => {
+                if let Some(state) = app.workspace_command_mut() {
+                    state.input.move_home();
                 }
             }
-        }
-        _ => {}
+            KeyCode::End => {
+                if let Some(state) = app.workspace_command_mut() {
+                    state.input.move_end();
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(state) = app.workspace_command_mut() {
+                    if !state.running {
+                        state.input.backspace();
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(state) = app.workspace_command_mut() {
+                    if !state.running {
+                        state.input.delete();
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(state) = app.workspace_command_mut() {
+                    if !state.running {
+                        state.input.insert_char(c);
+                    }
+                }
+            }
+            _ => {}
+        },
     }
 
     true
@@ -4626,6 +4712,8 @@ mod tests {
             },
             input: String::new(),
             message: None,
+            settings: app::Settings::default(),
+            help: None,
         };
 
         let out = handle_tui_session_chooser_key(
@@ -4641,6 +4729,31 @@ mod tests {
             state.message.as_deref(),
             Some("cannot delete the attached session")
         );
+    }
+
+    #[test]
+    fn tui_chooser_help_respects_text_entry_and_closes_with_question() {
+        let mut state = SessionChooserState {
+            sessions: Vec::new(),
+            selected: 0,
+            mode: SessionChooserMode::Browse,
+            input: String::new(),
+            message: None,
+            settings: app::Settings::default(),
+            help: None,
+        };
+        let question = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+
+        assert!(handle_tui_session_chooser_help_key(&mut state, question));
+        assert_eq!(
+            state.help.as_ref().map(|help| help.context),
+            Some(shortcuts::ShortcutContext::ChooserBrowse)
+        );
+        assert!(handle_tui_session_chooser_help_key(&mut state, question));
+        assert!(state.help.is_none());
+
+        state.mode = SessionChooserMode::New;
+        assert!(!handle_tui_session_chooser_help_key(&mut state, question));
     }
 
     #[test]
@@ -5195,6 +5308,157 @@ mod tests {
 
         // A point outside the area falls back to the detail area.
         assert_eq!(selection_confine_rect(area, &app, 200, 200), area);
+    }
+
+    #[test]
+    fn terminal_passthrough_keeps_ctrl_b_and_question_literal() {
+        let mut app = TuiApp::default();
+        app.route = Route::Workspace {
+            id: uuid::Uuid::new_v4(),
+        };
+        app.focus = app::Focus::WsTerminal;
+
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        let question = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        assert!(!handle_context_global_shortcut(&mut app, ctrl_b));
+        assert!(!handle_help_key(&mut app, question));
+        assert_eq!(key_to_terminal_bytes(ctrl_b), Some(vec![0x02]));
+        assert_eq!(key_to_terminal_bytes(question), Some(vec![b'?']));
+        assert_eq!(app.sidebar_mode, app::SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn terminal_command_mode_forwards_only_unmatched_non_navigation_keys() {
+        let g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        assert!(!should_forward_terminal_command_key(
+            Some(shortcuts::ShortcutId::RefreshGit),
+            g,
+        ));
+        assert!(!should_forward_terminal_command_key(
+            Some(shortcuts::ShortcutId::OpenWorkspaceCommand),
+            KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT),
+        ));
+        assert!(!should_forward_terminal_command_key(
+            Some(shortcuts::ShortcutId::SelectFirstTab),
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        ));
+
+        assert!(should_forward_terminal_command_key(None, g));
+        assert!(!should_forward_terminal_command_key(
+            None,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        ));
+    }
+
+    #[test]
+    fn text_entry_does_not_open_help() {
+        let mut app = TuiApp::default();
+        app.begin_quick_create(uuid::Uuid::new_v4());
+        let question = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        assert!(!handle_help_key(&mut app, question));
+        assert!(app.help.is_none());
+        assert_eq!(
+            shortcuts::match_shortcut(&app, shortcuts::ShortcutContext::QuickCreateText, question,),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_b_cycles_every_conduit_owned_workspace_context() {
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        let mut home = TuiApp::default();
+        for expected in [
+            app::SidebarMode::Rail,
+            app::SidebarMode::Hidden,
+            app::SidebarMode::Expanded,
+        ] {
+            assert!(handle_context_global_shortcut(&mut home, ctrl_b));
+            assert_eq!(home.sidebar_mode, expected);
+        }
+
+        let mut repository = TuiApp::default();
+        repository.route = Route::Repo {
+            id: uuid::Uuid::new_v4(),
+        };
+        assert!(handle_context_global_shortcut(&mut repository, ctrl_b));
+        assert_eq!(repository.sidebar_mode, app::SidebarMode::Rail);
+
+        for focus in [
+            app::Focus::Sidebar,
+            app::Focus::WsTerminalTabs,
+            app::Focus::WsLog,
+            app::Focus::WsBranches,
+            app::Focus::WsDiff,
+            app::Focus::ReviewFiles,
+            app::Focus::ReviewDiff,
+        ] {
+            let mut app = TuiApp::default();
+            app.route = Route::Workspace {
+                id: uuid::Uuid::new_v4(),
+            };
+            app.focus = focus;
+            assert!(
+                handle_context_global_shortcut(&mut app, ctrl_b),
+                "{focus:?}"
+            );
+            assert_eq!(app.sidebar_mode, app::SidebarMode::Rail);
+        }
+
+        let mut command_mode = TuiApp::default();
+        command_mode.route = Route::Workspace {
+            id: uuid::Uuid::new_v4(),
+        };
+        command_mode.focus = app::Focus::WsTerminal;
+        command_mode.toggle_terminal_command_mode();
+        assert!(handle_context_global_shortcut(&mut command_mode, ctrl_b));
+    }
+
+    #[test]
+    fn help_navigation_preserves_underlying_state() {
+        let mut app = TuiApp::default();
+        app.home_selected = 3;
+        app.sidebar_selected = 2;
+        app.home_scroll_offset = 7;
+        let question = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+
+        assert!(handle_help_key(&mut app, question));
+        assert_eq!(
+            app.help.as_ref().map(|help| help.context),
+            Some(shortcuts::ShortcutContext::HomeSidebar)
+        );
+        assert!(handle_help_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.help.as_ref().map(|help| help.scroll), Some(1));
+        assert!(handle_help_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.help.as_ref().map(|help| help.scroll), Some(11));
+        assert!(handle_help_key(
+            &mut app,
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.help.as_ref().map(|help| help.scroll), Some(u16::MAX));
+        assert!(handle_help_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+        ));
+        assert_eq!(
+            app.help.as_ref().map(|help| help.view),
+            Some(shortcuts::HelpView::All)
+        );
+        assert_eq!(app.help.as_ref().map(|help| help.scroll), Some(0));
+        assert!(handle_help_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert!(app.help.is_none());
+        assert_eq!(app.route, Route::Home);
+        assert_eq!(app.home_selected, 3);
+        assert_eq!(app.sidebar_selected, 2);
+        assert_eq!(app.home_scroll_offset, 7);
     }
 }
 

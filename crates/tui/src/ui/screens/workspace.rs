@@ -1045,7 +1045,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Create Branch modal ---
     if let Some(input) = &app.create_branch_input {
         let modal_w = 60u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1054,19 +1054,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new(format!("{input}_"))
-                .block(
-                    Block::default()
-                        .title("New Branch (Enter to create, Esc to cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(
-                            Style::default()
-                                .fg(Color::LightBlue)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from(format!("{input}_")),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::CreateBranchText,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" New Branch ")
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(Color::LightBlue)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1074,7 +1082,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Commit modal ---
     if let Some(input) = &app.commit_input {
         let modal_w = 60u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1083,19 +1091,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new(format!("{input}_"))
-                .block(
-                    Block::default()
-                        .title("Commit Message (Enter to commit, Esc to cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(
-                            Style::default()
-                                .fg(Color::LightBlue)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from(format!("{input}_")),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::CommitText,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" Commit Message ")
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(Color::LightBlue)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1103,7 +1119,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Discard confirmation modal ---
     if let Some(file) = &app.confirm_discard_file {
         let modal_w = 60u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1112,15 +1128,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new(format!("Discard changes to {file}?"))
-                .block(
-                    Block::default()
-                        .title("Confirm (y/Enter = yes, n/Esc = cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from(format!("Discard changes to {file}?")),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::DiscardConfirm,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" Confirm Discard ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1128,7 +1152,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Discard-all confirmation modal ---
     if app.confirm_discard_all.is_some() {
         let modal_w = 64u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1137,15 +1161,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new("Discard ALL uncommitted changes? Cannot be undone.")
-                .block(
-                    Block::default()
-                        .title("Confirm (y/Enter = yes, n/Esc = cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from("Discard ALL uncommitted changes? Cannot be undone."),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::DiscardAllConfirm,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" Confirm Discard All ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1153,7 +1185,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Stash-pull-pop confirmation modal ---
     if app.confirm_stash_pull_pop.is_some() {
         let modal_w = 64u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1162,19 +1194,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new("Local changes would be overwritten. Stash, pull, then pop?")
-                .block(
-                    Block::default()
-                        .title("Confirm (y/Enter = yes, n/Esc = cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from("Local changes would be overwritten. Stash, pull, then pop?"),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::StashPullPopConfirm,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" Confirm Stash and Pull ")
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1190,7 +1230,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             }
         };
         let modal_w = 60u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1199,15 +1239,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new(prompt)
-                .block(
-                    Block::default()
-                        .title("Confirm (y = yes, n/Esc/Enter = cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from(prompt),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::DeleteBranchConfirm,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" Confirm Delete Branch ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1215,7 +1263,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     // --- Stash message modal ---
     if let Some(input) = &app.stash_input {
         let modal_w = 60u16.min(area.width.saturating_sub(4));
-        let modal_h = 5u16;
+        let modal_h = 7u16;
         let modal_rect = Rect::new(
             area.x + (area.width.saturating_sub(modal_w)) / 2,
             area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1224,19 +1272,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
-            Paragraph::new(format!("{input}_"))
-                .block(
-                    Block::default()
-                        .title("Stash Message (Enter to stash, Esc to cancel)")
-                        .borders(Borders::ALL)
-                        .border_style(
-                            Style::default()
-                                .fg(Color::LightBlue)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .border_type(BorderType::Thick),
-                )
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![
+                Line::from(format!("{input}_")),
+                Line::from(""),
+                footer::build_modal_hints(
+                    app,
+                    crate::shortcuts::ShortcutContext::StashText,
+                    modal_w.saturating_sub(2),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(" Stash Message ")
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(Color::LightBlue)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .border_type(BorderType::Thick),
+            )
+            .wrap(Wrap { trim: false }),
             modal_rect,
         );
     }
@@ -1261,22 +1317,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             )),
             Line::from(format!("  {preview}")),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "[Enter]",
-                    Style::default()
-                        .fg(Color::LightBlue)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" to re-run    "),
-                Span::styled(
-                    "[Esc]",
-                    Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" for shell"),
-            ]),
+            footer::build_modal_hints(
+                app,
+                crate::shortcuts::ShortcutContext::ResurrectConfirm,
+                modal_w.saturating_sub(2),
+            ),
         ];
         frame.render_widget(Clear, modal_rect);
         frame.render_widget(
@@ -1295,14 +1340,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
     // --- Workspace command modal ---
     if let Some(command) = app.workspace_command() {
-        render_workspace_command_modal(frame, area, command);
+        render_workspace_command_modal(frame, area, app, command);
     }
 
     // --- Agent picker modal ---
     if let Some(ref picker) = app.agent_picker {
         if let Some(ref input) = picker.custom_input {
             let modal_w = 60u16.min(area.width.saturating_sub(4));
-            let modal_h = 5u16;
+            let modal_h = 7u16;
             let modal_rect = Rect::new(
                 area.x + (area.width.saturating_sub(modal_w)) / 2,
                 area.y + (area.height.saturating_sub(modal_h)) / 2,
@@ -1311,19 +1356,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             );
             frame.render_widget(Clear, modal_rect);
             frame.render_widget(
-                Paragraph::new(format!("{input}_"))
-                    .block(
-                        Block::default()
-                            .title("Custom Agent Command (Enter to switch, Esc to back)")
-                            .borders(Borders::ALL)
-                            .border_style(
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                            .border_type(BorderType::Rounded),
-                    )
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(vec![
+                    Line::from(format!("{input}_")),
+                    Line::from(""),
+                    footer::build_modal_hints(
+                        app,
+                        crate::shortcuts::ShortcutContext::AgentCommandText,
+                        modal_w.saturating_sub(2),
+                    ),
+                ])
+                .block(
+                    Block::default()
+                        .title(" Custom Agent Command ")
+                        .borders(Borders::ALL)
+                        .border_style(
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                        .border_type(BorderType::Rounded),
+                )
+                .wrap(Wrap { trim: false }),
                 modal_rect,
             );
         } else {
@@ -1386,18 +1439,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             list_state.select(Some(picker.selected));
             frame.render_stateful_widget(list, sections[0], &mut list_state);
 
-            let key_style = Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD);
-            let desc_style = Style::default().fg(Color::DarkGray);
-            let hints = Line::from(vec![
-                Span::styled("j/k", key_style),
-                Span::styled(" nav  ", desc_style),
-                Span::styled("Enter", key_style),
-                Span::styled(" select  ", desc_style),
-                Span::styled("Esc", key_style),
-                Span::styled(" cancel", desc_style),
-            ]);
+            let hints = footer::build_modal_hints(
+                app,
+                crate::shortcuts::ShortcutContext::AgentPicker,
+                sections[1].width,
+            );
             frame.render_widget(Paragraph::new(vec![Line::from(""), hints]), sections[1]);
         }
     }
@@ -1413,6 +1459,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 fn render_workspace_command_modal(
     frame: &mut Frame,
     area: Rect,
+    app: &TuiApp,
     command: &crate::app::WorkspaceCommandState,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -1440,7 +1487,7 @@ fn render_workspace_command_modal(
             .add_modifier(Modifier::BOLD)
     };
     let outer = Block::default()
-        .title("Command (Enter to run, Esc to close)")
+        .title(" Workspace Command ")
         .borders(Borders::ALL)
         .border_style(border_style)
         .border_type(BorderType::Thick);
@@ -1453,6 +1500,7 @@ fn render_workspace_command_modal(
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Min(1),
+            Constraint::Length(1),
         ])
         .split(inner);
 
@@ -1512,6 +1560,14 @@ fn render_workspace_command_modal(
             .scroll((command.output_scroll, 0)),
         chunks[2],
     );
+    frame.render_widget(
+        Paragraph::new(footer::build_modal_hints(
+            app,
+            crate::shortcuts::ShortcutContext::WorkspaceCommandText,
+            chunks[3].width,
+        )),
+        chunks[3],
+    );
 }
 
 fn command_input_view(input: &crate::app::EditableText, width: u16) -> (String, u16) {
@@ -1543,10 +1599,14 @@ fn render_review_overlay(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let inner = outer.inner(modal);
     frame.render_widget(outer, modal);
 
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(inner);
+        .split(rows[0]);
 
     let files = app.review_files.get(&id).cloned().unwrap_or_default();
     let files_focused = app.focus == crate::app::Focus::ReviewFiles;
@@ -1600,12 +1660,24 @@ fn render_review_overlay(frame: &mut Frame, area: Rect, app: &TuiApp) {
         } else {
             Color::DarkGray
         }))
-        .title(" Diff   j/k file · J/K scroll · Tab · P push · O PR · Esc ");
+        .title(" Diff ");
     frame.render_widget(
         Paragraph::new(diff_lines)
             .block(diff_block)
             .scroll((app.review_diff_scroll, 0)),
         cols[1],
+    );
+    frame.render_widget(
+        Paragraph::new(footer::build_modal_hints(
+            app,
+            if files_focused {
+                crate::shortcuts::ShortcutContext::ReviewFiles
+            } else {
+                crate::shortcuts::ShortcutContext::ReviewDiff
+            },
+            rows[1].width,
+        )),
+        rows[1],
     );
 }
 
